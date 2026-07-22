@@ -1,0 +1,508 @@
+---
+# =============================================================================
+# Deploy Workflow — commit-to-main GitOps for the secure-wazuh product
+# =============================================================================
+# ONE repo, TWO targets, driven by every push to main:
+#
+#   proxmox  — the PERMANENT live instance. Terraform applies IN PLACE (never
+#              destroys); Ansible then (re)configures the all-in-one Wazuh stack.
+#   aws      — an EPHEMERAL proof-of-concept. Terraform applies, Ansible
+#              configures, an end-to-end proof gates success, and the environment
+#              is ALWAYS torn down afterwards (deploy -> test -> destroy).
+#
+# Both jobs COMPOSE Ansible at run time: the generic loader + shared roles — including
+# `wazuh_agent` and `linux_disk_manager` — live in the pinned `ansible-framework` (SHA in
+# .github/.framework-pin); this repo's ONE product-specific role (`wazuh_server`) is overlaid
+# on top into a throwaway `_dev-build/` tree, exactly as the dev-only compose script does locally.
+#
+# Terraform is DATA-ONLY here: this repo ships terraform/{proxmox,aws}.tfvars and
+# NO .tf files. The resource logic lives in the pinned proxmox-vm-terraform-
+# framework / aws-terraform-framework, which we check out and run with
+# -var-file pointing back at this repo's tfvars.
+#
+# -----------------------------------------------------------------------------
+# FIRST CUT — human review required. Every place an operator must wire a secret,
+# an OIDC role, a runner label, or a framework ref is flagged inline with
+# `# WIRE:`. Nothing here is expected to run green until those are configured.
+# -----------------------------------------------------------------------------
+
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ansible/**
+      - terraform/**
+      - .github/.framework-pin
+  workflow_dispatch:
+
+# Least privilege at the workflow level; each job elevates only what it needs.
+permissions: {}
+
+# Exactly one deploy in flight per ref. cancel-in-progress is FALSE on purpose —
+# an in-flight `terraform apply` must never be interrupted mid-mutation.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Framework source repositories composed/run at deploy time.
+  # WIRE: confirm these org/repo slugs; the pinned refs are repo variables below.
+  ANSIBLE_FRAMEWORK_REPO: nwarila-platform/ansible-framework
+  PROXMOX_TF_FRAMEWORK_REPO: nwarila-platform/proxmox-vm-terraform-framework
+  AWS_TF_FRAMEWORK_REPO: nwarila-platform/aws-terraform-framework
+  # Controller toolchain. RHEL/Rocky 8 targets run platform-python 3.6.8, so the
+  # CONTROLLER ansible-core must stay on the last line that can manage a 3.6 target.
+  ANSIBLE_CORE_SPEC: ">=2.16,<2.17"
+
+jobs:
+
+  # ===========================================================================
+  # PROXMOX — PERMANENT live instance, applied IN PLACE (no destroy, ever)
+  # ===========================================================================
+  proxmox:
+    name: Proxmox (permanent, in-place)
+    # WIRE: the permanent instance lives on a private lab VLAN (10.69.112.0/24),
+    # unreachable from GitHub-hosted runners. This job MUST run on a self-hosted
+    # runner with line-of-sight to the Proxmox API AND SSH to the target VM.
+    runs-on: [self-hosted, linux, proxmox-lab]
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+
+    env:
+      # The permanent instance tracks the `int` environment overlay; the offline
+      # bundle bucket is `<account-id>-ansible` (the bucket name is NOT env-suffixed).
+      WAZUH_ENV: int
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Source checkout + pinned framework checkouts
+      # -----------------------------------------------------------------------
+      - name: Checkout secure-wazuh
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve ansible-framework pin
+        id: pin
+        run: echo "sha=$(tr -d ' \n\r' < .github/.framework-pin)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout ansible-framework (pinned)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.ANSIBLE_FRAMEWORK_REPO }}
+          ref: ${{ steps.pin.outputs.sha }}
+          path: .frameworks/ansible-framework
+          persist-credentials: false
+          # ansible-framework is public — the default GITHUB_TOKEN reads it; no PAT needed.
+
+      - name: Checkout proxmox-vm-terraform-framework (pinned)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.PROXMOX_TF_FRAMEWORK_REPO }}
+          # WIRE: pin the Terraform framework to a release tag/SHA via a repo variable.
+          ref: ${{ vars.PROXMOX_TF_FRAMEWORK_REF }}
+          path: .frameworks/proxmox-tf
+          persist-credentials: false
+          token: ${{ secrets.FRAMEWORK_REPO_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # Terraform — apply IN PLACE against the permanent instance
+      # -----------------------------------------------------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        with:
+          terraform_version: "1.15.3"
+          terraform_wrapper: false
+
+      - name: Terraform init (proxmox)
+        working-directory: .frameworks/proxmox-tf/terraform
+        env:
+          # Provider auth. The tfvars intentionally EXCLUDES these secret inputs.
+          # WIRE: Proxmox API token + endpoint + cloud-init identity as secrets.
+          TF_VAR_proxmox_hostname: ${{ secrets.PROXMOX_HOSTNAME }}
+          TF_VAR_proxmox_api_token_id: ${{ secrets.PROXMOX_API_TOKEN_ID }}
+          TF_VAR_proxmox_api_token_secret: ${{ secrets.PROXMOX_API_TOKEN_SECRET }}
+          TF_VAR_proxmox_cloud_init_user_name: ${{ secrets.PROXMOX_CLOUD_INIT_USER_NAME }}
+          TF_VAR_proxmox_cloud_init_user_password: ${{ secrets.PROXMOX_CLOUD_INIT_USER_PASSWORD }}
+          TF_VAR_proxmox_cloud_init_user_public_key: ${{ secrets.PROXMOX_CLOUD_INIT_USER_PUBLIC_KEY }}
+          # The framework backend is S3 with partial config; supply the rest here.
+          # The state bucket is an AWS S3 bucket, so AWS creds are needed for state I/O.
+          # WIRE: remote-state backend bucket/key/region + the AWS creds to reach it.
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_S3_BUNDLE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_BUNDLE_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_S3_BUNDLE_REGION }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=secure-wazuh/proxmox.tfstate" \
+            -backend-config="region=${{ vars.TF_STATE_REGION }}"
+
+      - name: Terraform apply (proxmox, in-place — NO destroy)
+        working-directory: .frameworks/proxmox-tf/terraform
+        env:
+          TF_VAR_proxmox_hostname: ${{ secrets.PROXMOX_HOSTNAME }}
+          TF_VAR_proxmox_api_token_id: ${{ secrets.PROXMOX_API_TOKEN_ID }}
+          TF_VAR_proxmox_api_token_secret: ${{ secrets.PROXMOX_API_TOKEN_SECRET }}
+          TF_VAR_proxmox_cloud_init_user_name: ${{ secrets.PROXMOX_CLOUD_INIT_USER_NAME }}
+          TF_VAR_proxmox_cloud_init_user_password: ${{ secrets.PROXMOX_CLOUD_INIT_USER_PASSWORD }}
+          TF_VAR_proxmox_cloud_init_user_public_key: ${{ secrets.PROXMOX_CLOUD_INIT_USER_PUBLIC_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_S3_BUNDLE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_BUNDLE_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_S3_BUNDLE_REGION }}
+        run: |
+          terraform apply -auto-approve \
+            -var-file="${{ github.workspace }}/terraform/proxmox.tfvars"
+
+      # -----------------------------------------------------------------------
+      # Ansible — compose the framework + this repo's roles, then configure
+      # -----------------------------------------------------------------------
+      - name: Setup Python (controller)
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Compose _dev-build (framework base + product-role overlay)
+        run: |
+          set -euo pipefail
+          DEV_BUILD="${GITHUB_WORKSPACE}/_dev-build"
+          rm -rf "${DEV_BUILD}"; mkdir -p "${DEV_BUILD}"
+          # 1) Framework base: generic loader, shared roles (linux_disk_manager,
+          #    python3_pip), operating_systems dispatch tree, framework ansible.cfg.
+          rsync -a "${GITHUB_WORKSPACE}/.frameworks/ansible-framework/" "${DEV_BUILD}/"
+          # 2) Overlay THIS repo's ansible tree. The product roles land under
+          #    applications/, and this repo's ansible.cfg intentionally WINS — it
+          #    must NOT pin interpreter_python (RHEL 8 needs platform-python for the
+          #    selinux/dnf/firewalld C-bindings; the venv is used only on S3 tasks).
+          rsync -a "${GITHUB_WORKSPACE}/ansible/" "${DEV_BUILD}/"
+
+      - name: Install ansible-core + collections
+        working-directory: _dev-build
+        env:
+          # Collections must land in the SAME collections_path the composed ansible.cfg
+          # points ansible-playbook at (must run AFTER Compose, for the same reason).
+          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
+        run: |
+          python -m pip install --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}"
+          ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
+
+      - name: Write target SSH key
+        run: |
+          set -euo pipefail
+          # WIRE: private key for `ansible_user` on the target (inventory pins the
+          # path to /root/.ssh/id_rsa_wazuh). Adjust the destination to match the
+          # self-hosted runner user's home if it is not root.
+          install -d -m 0700 /root/.ssh
+          install -m 0600 /dev/stdin /root/.ssh/id_rsa_wazuh <<< "${{ secrets.WAZUH_SSH_PRIVATE_KEY }}"
+
+      - name: Run site.yml (all-in-one stack)
+        working-directory: _dev-build
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
+          # These become Ansible VARS via playbooks/aws_runner_env.yml and are passed
+          # as no_log module args to amazon.aws.s3_object for the offline bundle.
+          # They are the CONTROLLER/runner env only — never exported into the target
+          # shell (Wazuh logs sudo argv, so a leaked key would land in an alert).
+          # WIRE: AWS creds scoped read-only to s3://<account-id>-ansible/.
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_S3_BUNDLE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_BUNDLE_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_S3_BUNDLE_REGION }}
+          # The ONE operator-provided password (dashboard / OpenSearch `admin`).
+          # Every other credential is generated fresh per run (rotate-every-deploy).
+          WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # STIG hosts mount /tmp,/home,/var/tmp noexec; ansible.cfg stages under /opt.
+          sudo install -d -m 0770 -o "$(id -u)" -g "$(id -g)" /opt/wazuh-deploy/.tmp || true
+          ansible-playbook -i inventory/proxmox.yml playbooks/site.yml \
+            -e "env=${WAZUH_ENV}" \
+            -e "wazuh_admin_password=${WAZUH_ADMIN_PASSWORD}"
+
+  # ===========================================================================
+  # AWS — EPHEMERAL proof-of-concept, deploy -> test -> ALWAYS destroy
+  # ===========================================================================
+  aws:
+    name: AWS (ephemeral, deploy-test-destroy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+      id-token: write # required for AWS OIDC federation (no long-lived keys)
+
+    env:
+      # The ephemeral PoC tracks the `test` environment overlay; bundle bucket
+      # is the SAME `<account-id>-ansible` bucket as proxmox int (not env-suffixed).
+      WAZUH_ENV: test
+      TF_DIR: .frameworks/aws-tf/terraform
+
+    steps:
+      - name: Checkout secure-wazuh
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve ansible-framework pin
+        id: pin
+        run: echo "sha=$(tr -d ' \n\r' < .github/.framework-pin)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout ansible-framework (pinned)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.ANSIBLE_FRAMEWORK_REPO }}
+          ref: ${{ steps.pin.outputs.sha }}
+          path: .frameworks/ansible-framework
+          persist-credentials: false
+          # ansible-framework is public — the default GITHUB_TOKEN reads it; no PAT needed.
+
+      - name: Checkout aws-terraform-framework (pinned)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.AWS_TF_FRAMEWORK_REPO }}
+          # WIRE: pin the Terraform framework to a release tag/SHA via a repo variable.
+          ref: ${{ vars.AWS_TF_FRAMEWORK_REF }}
+          path: .frameworks/aws-tf
+          persist-credentials: false
+          token: ${{ secrets.FRAMEWORK_REPO_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # AWS auth via OIDC — no long-lived credentials in the repo
+      # -----------------------------------------------------------------------
+      - name: Configure AWS credentials (OIDC)
+        # WIRE: verify/re-pin this SHA at wire-up time.
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          # WIRE: create an IAM role trusting this repo's OIDC subject and store its
+          # ARN as a secret. Scope it to EC2/EBS/VPC for the framework + read on the
+          # offline-bundle bucket + read/write on the Terraform state bucket.
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+        # configure-aws-credentials exports AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY /
+        # _SESSION_TOKEN / AWS_REGION into the runner env for every later step, which
+        # is exactly what aws_runner_env.yml reads for the offline-bundle download.
+
+      # -----------------------------------------------------------------------
+      # Terraform — apply the ephemeral environment
+      # -----------------------------------------------------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        with:
+          terraform_version: "1.15.3"
+          terraform_wrapper: false
+
+      - name: Terraform init (aws)
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=secure-wazuh/aws.tfstate" \
+            -backend-config="region=${{ vars.TF_STATE_REGION }}"
+
+      - name: Terraform apply (aws)
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform apply -auto-approve \
+            -var-file="${{ github.workspace }}/terraform/aws.tfvars"
+
+      # -----------------------------------------------------------------------
+      # Ansible — compose + generate inventory from Terraform outputs + configure
+      # -----------------------------------------------------------------------
+      - name: Setup Python (controller)
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Compose _dev-build (framework base + product-role overlay)
+        run: |
+          set -euo pipefail
+          DEV_BUILD="${GITHUB_WORKSPACE}/_dev-build"
+          rm -rf "${DEV_BUILD}"; mkdir -p "${DEV_BUILD}"
+          rsync -a "${GITHUB_WORKSPACE}/.frameworks/ansible-framework/" "${DEV_BUILD}/"
+          rsync -a "${GITHUB_WORKSPACE}/ansible/" "${DEV_BUILD}/"
+
+      - name: Install ansible-core + collections
+        working-directory: _dev-build
+        env:
+          # Collections must land in the SAME collections_path the composed ansible.cfg
+          # points ansible-playbook at (must run AFTER Compose, for the same reason).
+          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
+        run: |
+          python -m pip install --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}"
+          ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
+
+      - name: Generate ephemeral inventory from Terraform outputs
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          # WIRE: SSH key matching the EC2 key pair used in terraform/aws.tfvars.
+          EC2_SSH_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 0600 /dev/stdin "${GITHUB_WORKSPACE}/_dev-build/aws_ec2_key.pem" <<< "${EC2_SSH_KEY}"
+          # `aws_instances` is keyed by hostname and exposes private_ip/os_family.
+          # WIRE: reachability to a private IP requires a VPC-attached (self-hosted)
+          # runner OR a public IP on the instance (add one in aws.tfvars) OR SSM.
+          terraform output -json aws_instances > "${GITHUB_WORKSPACE}/_dev-build/_tf_instances.json"
+          python3 - "$GITHUB_WORKSPACE/_dev-build/_tf_instances.json" \
+            "$GITHUB_WORKSPACE/_dev-build/aws_ec2_key.pem" \
+            > "${GITHUB_WORKSPACE}/_dev-build/inventory/aws.yml" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          key = sys.argv[2]
+          # First (only) linux host becomes the all-in-one wazuh_servers member.
+          host = next(h for h in data.values() if h.get("os_family") == "linux")
+          print("all:")
+          print("  vars:")
+          print("    ansible_connection: ssh")
+          print("    ansible_user: ec2-user")
+          print(f"    ansible_ssh_private_key_file: {key}")
+          print("wazuh_servers:")
+          print("  hosts:")
+          print(f"    {host['hostname']}:")
+          print(f"      ansible_host: {host['private_ip']}")
+          print("wazuh_agents:")
+          print("  hosts: {}")
+          PY
+          cat "${GITHUB_WORKSPACE}/_dev-build/inventory/aws.yml"
+
+      - name: Run site.yml (all-in-one stack)
+        working-directory: _dev-build
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
+          # AWS_* for the offline bundle come from the OIDC step above (runner env).
+          # Same discipline as proxmox: no_log module args, never target shell env.
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+          WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ansible-playbook -i inventory/aws.yml playbooks/site.yml \
+            -e "env=${WAZUH_ENV}" \
+            -e "wazuh_admin_password=${WAZUH_ADMIN_PASSWORD}"
+
+      # -----------------------------------------------------------------------
+      # TEST — the success gate. All three checks must pass.
+      #   (a) OpenSearch cluster health is green or yellow
+      #   (b) the dashboard answers HTTPS
+      #   (c) headline FIM-EVENT proof: modify a monitored file, assert a rule 550
+      #       alert is indexed in wazuh-alerts-*
+      #
+      # STOPGAP: this is a minimal, positive-only gate. The rigorous proof
+      # (_handoff/REARCH-PLAN.md §6) additionally requires: watch a DIRECTORY (not a
+      # bare file) armed with realtime="yes" whodata="no"; let the post-restart
+      # baseline scan SETTLE before the delta; query with the dashboard-READ
+      # credential (not admin); and carry a NEGATIVE control. Wire that proof
+      # playbook in here once it exists.
+      # -----------------------------------------------------------------------
+      - name: E2E proof (health + dashboard + FIM rule 550)
+        working-directory: _dev-build
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
+          WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Generated at runtime so the admin password stays a no_log lookup and the
+          # search body is templated cleanly. Replace with the committed §6 proof.
+          cat > playbooks/_ci_e2e_proof.yml <<'YAML'
+          ---
+          - name: 'secure-wazuh CI E2E proof (stopgap)'
+            hosts: 'wazuh_servers'
+            gather_facts: true
+            become: true
+            vars:
+              admin_password: "{{ lookup('ansible.builtin.env', 'WAZUH_ADMIN_PASSWORD') }}"
+              opensearch_url: 'https://127.0.0.1:9200'
+              dashboard_url: 'https://127.0.0.1:443'
+              # /etc is one of the directories the wazuh_server role arms with realtime FIM
+              # (present_redhat.yml's syscheck stanza — see defaults/main.yml manager.fim).
+              # Write the canary DIRECTLY into it: this step has no task that creates fim_dir
+              # first, and ansible.builtin.copy does not create missing parent directories, so
+              # a not-yet-existing subdirectory would fail the seed task below.
+              fim_dir: '/etc'
+              fim_file: '/etc/deploy-proof.txt'
+            tasks:
+              - name: '(a) OpenSearch cluster health is green/yellow'
+                ansible.builtin.uri:
+                  url: "{{ opensearch_url }}/_cluster/health"
+                  method: 'GET'
+                  validate_certs: false
+                  force_basic_auth: true
+                  url_username: 'admin'
+                  url_password: "{{ admin_password }}"
+                  return_content: true
+                no_log: true
+                register: 'health'
+                until: "health.json.status in ['green', 'yellow']"
+                retries: 30
+                delay: 10
+
+              - name: '(b) Dashboard answers HTTPS'
+                ansible.builtin.uri:
+                  url: "{{ dashboard_url }}"
+                  method: 'GET'
+                  validate_certs: false
+                  status_code: [200, 302]
+                register: 'dashboard'
+                until: "dashboard.status in [200, 302]"
+                retries: 30
+                delay: 10
+
+              # rule 550 = "Integrity checksum changed" (file MODIFIED). The file must
+              # already exist and be armed, then be changed, for 550 (a brand-new file
+              # is rule 554). Seed it, let the baseline settle, then mutate it.
+              - name: '(c.1) Seed the monitored file'
+                ansible.builtin.copy:
+                  dest: "{{ fim_file }}"
+                  content: "baseline\n"
+                  mode: '0644'
+
+              - name: '(c.2) Let the FIM baseline settle before the delta'
+                ansible.builtin.wait_for:
+                  timeout: 90
+
+              - name: '(c.3) Modify the monitored file (the delta under test)'
+                ansible.builtin.copy:
+                  dest: "{{ fim_file }}"
+                  content: "delta-{{ ansible_date_time.iso8601_basic_short }}\n"
+                  mode: '0644'
+
+              - name: '(c.4) Assert a rule 550 alert for the file is indexed'
+                ansible.builtin.uri:
+                  url: "{{ opensearch_url }}/wazuh-alerts-*/_search"
+                  method: 'POST'
+                  validate_certs: false
+                  force_basic_auth: true
+                  url_username: 'admin'
+                  url_password: "{{ admin_password }}"
+                  body_format: 'json'
+                  body:
+                    size: 0
+                    query:
+                      bool:
+                        must:
+                          - {match: {'rule.id': '550'}}
+                          - {match_phrase: {'syscheck.path': "{{ fim_file }}"}}
+                  return_content: true
+                no_log: true
+                register: 'fim'
+                until: "(fim.json.hits.total.value | default(0)) >= 1"
+                retries: 30
+                delay: 10
+
+              - name: 'PROOF — rule 550 FIM event observed for the monitored file'
+                ansible.builtin.debug:
+                  msg: "FIM rule 550 alerts indexed for {{ fim_file }}: {{ fim.json.hits.total.value }}"
+          YAML
+          ansible-playbook -i inventory/aws.yml playbooks/_ci_e2e_proof.yml
+
+      # -----------------------------------------------------------------------
+      # DESTROY — always tear the ephemeral environment down, pass or fail
+      # -----------------------------------------------------------------------
+      - name: Terraform destroy (aws, ephemeral)
+        if: ${{ always() }}
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform destroy -auto-approve \
+            -var-file="${{ github.workspace }}/terraform/aws.tfvars"
