@@ -1,0 +1,29 @@
+# =============================================================================
+# Development Dependencies — RHEL/Rocky 8 (ansible-core 2.16) toolchain
+# =============================================================================
+# This repo deploys to STIG RHEL/Rocky 8 targets running platform-python 3.6.8 —
+# the only interpreter on RHEL 8 carrying the libselinux/dnf/firewalld C-bindings
+# the roles need. The CONTROLLER ansible-core must stay on the last line that can
+# still manage a 3.6 target (2.16.x); ansible-core/ansible-lint 25.x require 2.17+
+# and emit `from __future__ import annotations`, which SyntaxErrors on 3.6.
+# Runtime collection pins (community.general<8, ansible.posix<2) live in
+# ansible/requirements.yml.
+#
+# Update via: pip install --upgrade -r requirements-dev.txt
+# =============================================================================
+
+# YAML linting
+yamllint==1.35.1
+
+# Ansible linting + syntax checking (24.x supports ansible-core 2.16; 25.x needs 2.17+)
+ansible-lint>=24.2,<25
+ansible-core>=2.16,<2.17
+
+# Pre-commit hook framework
+pre-commit==4.0.1
+
+# boto3/botocore on the CONTROLLER: the Windows agent path downloads the MSI from S3 with
+# amazon.aws.s3_object DELEGATED to the runner (a Windows target can't run boto3), so the
+# runner venv needs these. (Linux agents get boto3 from the target's /opt/ansible/venv instead.)
+boto3
+botocore
