@@ -1,0 +1,58 @@
+---
+# =============================================================================
+# Dependabot Configuration — secure-wazuh
+# =============================================================================
+# Automatically opens PRs to keep dependency versions current.
+# All PRs target main and follow Conventional Commits so release-please
+# categorizes them correctly in the changelog.
+# =============================================================================
+
+version: 2
+updates:
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions
+  # ---------------------------------------------------------------------------
+  # Keeps workflow action SHAs and tags up to date. Dependabot proposes
+  # SHA-pinned bumps that preserve the trailing "# vX" comment-pin convention
+  # this repo enforces on every action reference.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/New_York"
+    target-branch: "main"
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  # ---------------------------------------------------------------------------
+  # pip (requirements-dev.txt)
+  # ---------------------------------------------------------------------------
+  # Keeps the RHEL/Rocky 8 controller toolchain current: yamllint, ansible-lint,
+  # ansible-core, and pre-commit. Respect the upper bounds pinned in
+  # requirements-dev.txt — ansible-core / ansible-lint 25.x drop the RHEL 8
+  # (platform-python 3.6) support this repo depends on.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/New_York"
+    target-branch: "main"
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"

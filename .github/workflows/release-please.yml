@@ -1,0 +1,56 @@
+---
+# =============================================================================
+# Release Please — Automated Changelog & Release Management (secure-wazuh)
+# =============================================================================
+# Triggered on every push to main. Release Please:
+#   1. Analyzes conventional commit messages since the last release
+#   2. Opens/updates a "Release PR" bumping the version and updating CHANGELOG.md
+#   3. When the Release PR is merged, creates a GitHub Release and git tag
+#
+# Config lives in release-please-config.json (release-type: simple) and the
+# version is tracked in .release-please-manifest.json.
+#
+# Conventional commit format (enforced by pre-commit); scope = role name or
+# 'framework':
+#   <type>(<scope>): <description>
+#
+#   feat(wazuh_server): add FIPS-mode OpenSearch keystore task
+#   fix(wazuh_agent): correct client.keys enrollment retry loop
+#   security(framework): bump pinned ansible-framework commit
+# =============================================================================
+
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+# Minimal permissions at workflow level
+permissions:
+  contents: read
+
+jobs:
+
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Elevated permissions scoped to this job only
+    permissions:
+      contents: write
+      pull-requests: write
+
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
