@@ -1,0 +1,105 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in secure-wazuh
+title: "bug: "
+labels: ["bug", "triage"]
+assignees:
+  - NWarila
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out the sections below as completely as possible.
+
+        Do not paste secrets (AWS keys, Wazuh passwords, certificate material) into any field — this is a public tracker.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug.
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+      placeholder: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Run the composed playbook with the `wazuh_server` role
+        2. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: Paste the exact error output here.
+      render: shell
+    validations:
+      required: false
+
+  - type: dropdown
+    id: target
+    attributes:
+      label: Deployment target
+      description: Which delivery target were you deploying to when the bug occurred?
+      options:
+        - Proxmox (permanent live instance)
+        - AWS (ephemeral proof-of-concept)
+        - Vagrant lab
+        - Other / not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: ansible_version
+    attributes:
+      label: Ansible version
+      placeholder: "e.g. 2.16.14"
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      placeholder: "e.g. 3.6.8 (target platform-python) / 3.12 (bootstrap venv)"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Target OS
+      placeholder: "e.g. Rocky Linux 8.10 / RHEL 8.10"
+    validations:
+      required: true
+
+  - type: input
+    id: role
+    attributes:
+      label: Role or component affected
+      placeholder: "e.g. wazuh_server, wazuh_agent, linux_disk_manager, framework loader (tasks/main.yml)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Any other relevant information (logs, screenshots, related issues, framework pin commit).
+    validations:
+      required: false
