@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# ansible-lint Configuration — secure-wazuh
+# =============================================================================
+# Mirrors the nwarila-platform/ansible-framework convention so the canonical
+# generic role loader (which expects the uppercase ENV play-var and uses
+# __dunder__ loop vars) lints cleanly across every sibling repo.
+# =============================================================================
+
+profile: safety
+
+exclude_paths:
+  - .git/
+  - .github/
+
+warn_list:
+  - experimental
+  - yaml[line-length]
+
+# Loop variables across this platform use the __dunder__ convention so the
+# generic role loader's scratch facts (e.g., __overlay__) cannot be shadowed.
+loop_var_prefix: ^__.*__$
+
+# Platform-wide play-var convention. The canonical role loader at
+# applications/<role>/tasks/main.yml requires it to be set (validated by an
+# assert at INIT). ansible-lint's default var-naming pattern rejects uppercase,
+# but ENV is intentional and matches flexnet, python3_pip, and tcnhq-kasm01.
+var_naming_pattern: '^[A-Z][A-Z0-9_]*$|^[a-z_][a-z0-9_]*$'
+
+offline: true
+
+mock_roles: []
+mock_modules: []
