@@ -1,0 +1,164 @@
+# =========================================================================== #
+# .gitignore — deny-all, EXPLICIT allowlist (org ADR-0003, hardened)
+# --------------------------------------------------------------------------- #
+# `**` ignores everything; every tracked path is then re-included EXPLICITLY
+# below. The ONLY glob permitted is the leading `**` — no other wildcards. A
+# path is committable only if it is named here, so a stray secret or scratch
+# file (e.g. ansible/secrets.yml) can never be swept in by a glob; it simply
+# will not be tracked until someone deliberately allowlists it.
+#
+# Consequence: adding a NEW committed file requires adding its line here. CI's
+# `make allowlist-check` fails on a deliverable file that is not allowlisted.
+#
+# Everything else — compose scripts, `_dev-build/`, lab helpers, `.env`,
+# Terraform state, editor/agent tooling — lives on disk, never committed.
+# =========================================================================== #
+
+# Ignore everything by default.
+**
+
+# --------------------------------------------------------------------------- #
+#  Repository root — governance + tooling config.
+#  (CONTRIBUTING / CODE_OF_CONDUCT / SECURITY / SUPPORT are inherited org-wide
+#   from github.com/nwarila-platform/.github and linked from the README.)
+# --------------------------------------------------------------------------- #
+!/.ansible-lint
+!/.editorconfig
+!/.gitattributes
+!/.gitignore
+!/.pre-commit-config.yaml
+!/.release-please-manifest.json
+!/.yamllint.yml
+!/AGENTS.md
+!/CHANGELOG.md
+!/LICENSE
+!/Makefile
+!/README.md
+!/mkdocs.yml
+!/release-please-config.json
+!/requirements-dev.txt
+
+# --------------------------------------------------------------------------- #
+#  GitHub — CI, the deploy loop, templates, CODEOWNERS, framework pin.
+# --------------------------------------------------------------------------- #
+!/.github/
+!/.github/.framework-pin
+!/.github/CODEOWNERS
+!/.github/ISSUE_TEMPLATE/
+!/.github/ISSUE_TEMPLATE/bug_report.yml
+!/.github/ISSUE_TEMPLATE/config.yml
+!/.github/ISSUE_TEMPLATE/feature_request.yml
+!/.github/dependabot.yml
+!/.github/pull_request_template.md
+!/.github/workflows/
+!/.github/workflows/ci.yml
+!/.github/workflows/deploy.yml
+!/.github/workflows/release-please.yml
+!/.github/workflows/security.yaml
+
+# --------------------------------------------------------------------------- #
+#  Documentation (Diátaxis) + ADRs.
+# --------------------------------------------------------------------------- #
+!/docs/
+!/docs/README.md
+!/docs/decision-records/
+!/docs/decision-records/README.md
+!/docs/decision-records/org/
+!/docs/decision-records/org/.gitkeep
+!/docs/decision-records/repo/
+!/docs/decision-records/repo/.gitkeep
+!/docs/decision-records/repo/0001-secrets-and-tls.md
+!/docs/decision-records/repo/0002-combined-terraform-ansible-delivery.md
+!/docs/decision-records/repo/0003-deny-all-explicit-gitignore.md
+!/docs/decision-records/template/
+!/docs/decision-records/template/.gitkeep
+!/docs/explanation/
+!/docs/explanation/.gitkeep
+!/docs/explanation/architecture.md
+!/docs/explanation/composition-model.md
+!/docs/explanation/toolchain-rhel8.md
+!/docs/how-to/
+!/docs/how-to/.gitkeep
+!/docs/how-to/deploy-the-stack.md
+!/docs/how-to/provide-aws-credentials-safely.md
+!/docs/reference/
+!/docs/reference/.gitkeep
+!/docs/reference/inventory-and-topology.md
+!/docs/reference/s3-artifacts.md
+!/docs/tutorials/
+!/docs/tutorials/.gitkeep
+
+# --------------------------------------------------------------------------- #
+#  Docs tooling (layout checker).
+# --------------------------------------------------------------------------- #
+!/tools/
+!/tools/check_docs_layout.py
+
+# --------------------------------------------------------------------------- #
+#  Ansible — product roles + playbooks + inventory (loader/shared roles composed in).
+#  linux_disk_manager AND wazuh_agent are composed in from the pinned ansible-framework, not
+#  vendored — their source of truth is ansible-framework/applications/. Only wazuh_server (the
+#  product-specific central stack role) is vendored here.
+# --------------------------------------------------------------------------- #
+!/ansible/
+!/ansible/README.md
+!/ansible/ansible.cfg
+!/ansible/applications/
+!/ansible/applications/wazuh_server/
+!/ansible/applications/wazuh_server/README.md
+!/ansible/applications/wazuh_server/defaults/
+!/ansible/applications/wazuh_server/defaults/main.yml
+!/ansible/applications/wazuh_server/files/
+!/ansible/applications/wazuh_server/files/.gitkeep
+!/ansible/applications/wazuh_server/handlers/
+!/ansible/applications/wazuh_server/handlers/main.yml
+!/ansible/applications/wazuh_server/library/
+!/ansible/applications/wazuh_server/library/.gitkeep
+!/ansible/applications/wazuh_server/lookup_plugins/
+!/ansible/applications/wazuh_server/lookup_plugins/.gitkeep
+!/ansible/applications/wazuh_server/meta/
+!/ansible/applications/wazuh_server/meta/main.yml
+!/ansible/applications/wazuh_server/module_utils/
+!/ansible/applications/wazuh_server/module_utils/.gitkeep
+!/ansible/applications/wazuh_server/molecule/
+!/ansible/applications/wazuh_server/molecule/.gitkeep
+!/ansible/applications/wazuh_server/tasks/
+!/ansible/applications/wazuh_server/tasks/clean_redhat.yml
+!/ansible/applications/wazuh_server/tasks/main.yml
+!/ansible/applications/wazuh_server/tasks/present_redhat.yml
+!/ansible/applications/wazuh_server/templates/
+!/ansible/applications/wazuh_server/templates/.gitkeep
+!/ansible/applications/wazuh_server/templates/filebeat.yml.j2
+!/ansible/applications/wazuh_server/templates/internal_users.yml.j2
+!/ansible/applications/wazuh_server/templates/opensearch.yml.j2
+!/ansible/applications/wazuh_server/templates/opensearch_dashboards.yml.j2
+!/ansible/applications/wazuh_server/templates/syscheck.xml.j2
+!/ansible/applications/wazuh_server/templates/wazuh-module.yml.j2
+!/ansible/applications/wazuh_server/templates/wazuh.yml.j2
+!/ansible/applications/wazuh_server/vars/
+!/ansible/applications/wazuh_server/vars/main.yml
+!/ansible/applications/wazuh_server/vars/redhat_int.yml
+!/ansible/applications/wazuh_server/vars/redhat_prod.yml
+!/ansible/applications/wazuh_server/vars/redhat_test.yml
+!/ansible/inventory/
+!/ansible/inventory/proxmox.yml
+!/ansible/playbooks/
+!/ansible/playbooks/aws_runner_env.yml
+!/ansible/playbooks/bootstrap.yml
+!/ansible/playbooks/deploy_all.yml
+!/ansible/playbooks/linux_disk_manager.yml
+!/ansible/playbooks/site.yml
+!/ansible/playbooks/wazuh_agent.yml
+!/ansible/playbooks/wazuh_agent_windows.yml
+!/ansible/playbooks/wazuh_pipeline_smoke.yml
+!/ansible/playbooks/wazuh_server.yml
+!/ansible/playbooks/wazuh_trigger_fim.yml
+!/ansible/playbooks/wazuh_trigger_fim_windows.yml
+!/ansible/requirements.yml
+
+# --------------------------------------------------------------------------- #
+#  Terraform — per-target INPUT DATA only (no .tf; frameworks own resources).
+# --------------------------------------------------------------------------- #
+!/terraform/
+!/terraform/aws.tfvars
+!/terraform/proxmox.tfvars
