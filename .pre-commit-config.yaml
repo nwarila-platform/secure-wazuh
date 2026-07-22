@@ -1,0 +1,91 @@
+---
+# =============================================================================
+# Pre-Commit Hook Configuration
+# =============================================================================
+# Run locally:  pre-commit run --all-files
+# Install hook: pre-commit install && pre-commit install --hook-type commit-msg
+# Update revs:  pre-commit autoupdate
+# =============================================================================
+
+minimum_pre_commit_version: '3.0.0'
+
+repos:
+
+  # ---------------------------------------------------------------------------
+  # General Hygiene
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: ['--markdown-linebreak-ext=md']
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+      - id: check-yaml
+        args: ['--unsafe']          # allow !vault / !unsafe Ansible tags
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: detect-private-key       # no key material is ever committed (PKI is minted on-target)
+      - id: check-json
+      - id: no-commit-to-branch
+        args: ['--branch=main']
+
+  # ---------------------------------------------------------------------------
+  # YAML Linting
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: ['--config-file=.yamllint.yml']
+
+  # ---------------------------------------------------------------------------
+  # Ansible Linting (RHEL-8 toolchain: ansible-lint 24.x / ansible-core 2.16)
+  # ---------------------------------------------------------------------------
+  # NOTE: the product roles are consumers of ansible-framework and fully resolve
+  # only inside the composed tree (see .github/.framework-pin / the dev compose flow).
+  # This hook catches per-file style/syntax fast; CI runs the authoritative lint
+  # against the composed tree.
+  - repo: https://github.com/ansible/ansible-lint
+    rev: v24.12.2
+    hooks:
+      - id: ansible-lint
+        additional_dependencies:
+          - 'ansible-core>=2.16,<2.17'
+
+  # ---------------------------------------------------------------------------
+  # Deny-all allowlist guard — fail if a deliverable-area file is not
+  # explicitly allowlisted in .gitignore (the forgot-to-allowlist footgun).
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: allowlist-check
+        name: 'gitignore allowlist guard'
+        entry: make allowlist-check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # ---------------------------------------------------------------------------
+  # Conventional Commits — <type>(<scope>): <desc>; scope = role name or 'framework'
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args:
+          - feat
+          - fix
+          - docs
+          - style
+          - refactor
+          - test
+          - chore
+          - perf
+          - ci
+          - build
+          - revert
+          - security
