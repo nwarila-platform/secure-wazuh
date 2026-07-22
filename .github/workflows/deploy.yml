@@ -276,7 +276,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Configure AWS credentials (OIDC)
         # WIRE: verify/re-pin this SHA at wire-up time.
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           # WIRE: create an IAM role trusting this repo's OIDC subject and store its
           # ARN as a secret. Scope it to EC2/EBS/VPC for the framework + read on the
