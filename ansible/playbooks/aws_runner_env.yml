@@ -1,0 +1,14 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/aws_runner_env.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Controller-side AWS credential bridge. Source short-lived AWS credentials into the runner
+# environment before invoking ansible-playbook. These values become Ansible variables consumed
+# by the current role-specific no_log amazon.aws.s3_object tasks; they are not exported to
+# target shells.
+# =========================================================================================== #
+
+AWS_ACCESS_KEY_ID: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
+AWS_SECRET_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
+AWS_SESSION_TOKEN: "{{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') }}"
+AWS_DEFAULT_REGION: "{{ lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION') }}"

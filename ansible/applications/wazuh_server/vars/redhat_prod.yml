@@ -1,0 +1,14 @@
+---
+# =========================================================================================== #
+# File: '{{ role_path }}/vars/redhat_prod.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Per-env overlay loaded by the generic role loader when os_family=redhat AND ENV=prod.
+# Replace every CHANGE_ME placeholder with the real prod-env value before running
+# `-e env=prod`.
+# =========================================================================================== #
+
+s3:
+  bucket:        'CHANGE_ME-ansible-prod'
+  bundle_key:    'CHANGE_ME/wazuh-offline.tar.gz'
+  bundle_sha256: 'CHANGE_ME-64-character-sha256-of-the-prod-bundle'
+  certs_prefix:  'CHANGE_ME/certs'

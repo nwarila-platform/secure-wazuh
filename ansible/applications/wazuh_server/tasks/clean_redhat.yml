@@ -1,0 +1,9 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/tasks/clean_redhat.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# RHEL 8 / state=clean - no-op. Loader's temp dir auto-cleans at end of every role run.
+# =========================================================================================== #
+
+- name: 'INFO | Entering OS Tasks (clean_redhat - wazuh_server)'
+  ansible.builtin.debug:
+    msg: 'No staging artifacts to clean; the loader temp dir is removed automatically after each role run.'

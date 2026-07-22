@@ -1,0 +1,221 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/bootstrap.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Builds the canonical /opt/ansible/venv on every Linux Wazuh target. site.yml imports this as
+# its first play so a single `ansible-playbook site.yml` provisions the venv and then runs the
+# Wazuh stages against it. The venv is NOT the default interpreter: RHEL 8 ships the
+# libselinux/dnf/firewalld C bindings only for platform-python (3.6), so the roles run under
+# platform-python and borrow /opt/ansible/venv ONLY on the amazon.aws.s3_object tasks (a
+# block-level `ansible_python_interpreter` override), which need a modern boto3/botocore that
+# 3.6 cannot install. See ansible.cfg and docs/explanation/toolchain-rhel8.md.
+#
+# The bootstrap itself runs under whatever interpreter Ansible auto-discovers (platform-python
+# on RHEL 8), because the venv it creates does not yet exist when this play starts.
+#
+# Scope: the exec-capable Ansible remote-tmp base (ansible.cfg's remote_tmp), the venv, the
+# SELinux bindings the venv needs, and fapolicyd trust on the venv tree. Hostname / /etc/hosts /
+# repo configuration belong in a separate host-baseline play.
+# =========================================================================================== #
+
+# Exclude Windows endpoints: /opt/ansible/venv is a Linux (RHEL) boto3-on-target concern, and
+# the Windows agent path pulls the MSI via the controller's venv, not the target's. Without this
+# exclusion the RHEL-8 assert below fails on any wazuh_agents_windows host in a combined run.
+- name: 'Bootstrap | /opt/ansible/venv on every Linux target'
+  hosts: 'all:!wazuh_agents_windows'
+  gather_facts: false
+  become: true
+  tasks:
+
+    #region ------ [ Initialization ] ------------------------------------------------------- #
+
+    - name: 'INIT | Load Distribution Facts'
+      when: >-
+        ansible_facts.os_family is not defined
+        or ansible_facts.distribution_major_version is not defined
+      ansible.builtin.setup:
+        gather_subset:
+          - '!all'
+          - '!min'
+          - 'distribution'
+
+    - name: 'INIT | Assert OS Is RHEL 8'
+      ansible.builtin.assert:
+        that:
+          - (ansible_facts.os_family | string) == 'RedHat'
+          - (ansible_facts.distribution_major_version | int) == 8
+        fail_msg: >-
+          The bootstrap playbook targets RHEL 8 only. Detected:
+          {{ ansible_facts.distribution | default('?') }}
+          {{ ansible_facts.distribution_version | default('?') }}
+        quiet: true
+
+    # ansible.cfg pins remote_tmp to /opt/wazuh-deploy/.tmp because /tmp, /var/tmp and /home
+    # are noexec on the STIG baseline, and Ansible's remote tmp must be exec-capable: any
+    # non-pipelined module (notably the amazon.aws.s3_object file transfers in the Wazuh roles)
+    # stages its AnsiballZ payload there. /opt is root-owned, so the login user cannot create
+    # the path on its own — pipelined bootstrap tasks never need it, but the first non-pipelined
+    # task otherwise fails UNREACHABLE at `mkdir /opt/wazuh-deploy`. Create it once here, under
+    # become, owned by the automation user so later tasks can make per-task ansible-tmp-* dirs
+    # without sudo. SELinux usr_t (exec-capable) mirrors /opt/ansible below.
+    - name: 'INIT | Ensure Ansible Remote-Tmp Base Exists (exec-capable, automation-user owned)'
+      ansible.builtin.file:
+        path:    '/opt/wazuh-deploy/.tmp'
+        state:   'directory'
+        owner:   "{{ ansible_user }}"
+        group:   "{{ ansible_user }}"
+        mode:    '0700'
+        selevel: 's0'
+        serole:  'object_r'
+        setype:  'usr_t'
+        seuser:  'system_u'
+
+    #endregion --- [ Initialization ] ------------------------------------------------------- #
+
+    #region ------ [ Main: Prerequisite Packages ] ------------------------------------------ #
+
+    # RHEL/Rocky 8 only ships libselinux/firewall/dnf Python bindings for platform-python
+    # (no python3.12-libselinux, python3.12-firewall, or python3.12-dnf exist in
+    # AppStream/EPEL). The venv is therefore NOT the default interpreter — ansible.cfg
+    # leaves auto-discovery to pick platform-python, and the venv is only invoked on
+    # tasks that need modern boto3 (the amazon.aws.s3_object S3 download blocks in the
+    # Wazuh roles, gated by a block-level ansible_python_interpreter override).
+    - name: 'MAIN | Install Bootstrap Prerequisite Packages'
+      ansible.builtin.dnf:
+        name:
+          - 'python3.12'
+        state:             'present'
+        disable_gpg_check: false
+        sslverify:         true
+        validate_certs:    true
+
+    - name: 'MAIN | Read python3.12 Full Version (For Drift Detection)'
+      changed_when: false
+      register: '__python312_version__'
+      ansible.builtin.command:
+        cmd: '/usr/bin/python3.12 --version'
+
+    #endregion --- [ Main: Prerequisite Packages ] ------------------------------------------ #
+
+    #region ------ [ Main: Venv ] ----------------------------------------------------------- #
+
+    - name: 'MAIN | Ensure /opt/ansible Exists With SELinux Contexts'
+      ansible.builtin.file:
+        path:    '/opt/ansible'
+        state:   'directory'
+        owner:   'root'
+        group:   'root'
+        mode:    '0755'
+        selevel: 's0'
+        serole:  'object_r'
+        setype:  'usr_t'
+        seuser:  'system_u'
+
+    # check_mode + lineinfile that would APPEND the expected version line returns
+    # "line added" when the line is missing OR has drifted to a different value — both
+    # cases mean the venv was built against a different python3.12 patch release and
+    # should be rebuilt. Same pattern for the --system-site-packages flag probe below.
+    - name: 'MAIN | Probe Existing Venv Python Version Line'
+      changed_when: false
+      check_mode: true
+      failed_when: false
+      register: '__venv_version_probe__'
+      ansible.builtin.lineinfile:
+        path:   '/opt/ansible/venv/pyvenv.cfg'
+        line:   "version = {{ __python312_version__.stdout.split()[1] }}"
+        state:  'present'
+        create: false
+
+    - name: 'MAIN | Probe Existing Venv --system-site-packages Flag'
+      changed_when: false
+      check_mode: true
+      failed_when: false
+      register: '__venv_site_packages_probe__'
+      ansible.builtin.lineinfile:
+        path: '/opt/ansible/venv/pyvenv.cfg'
+        line: 'include-system-site-packages = true'
+
+    - name: 'MAIN | Remove Drifted Venv (Wrong Python Or Missing system-site-packages)'
+      when: >-
+        ('line added' in (__venv_version_probe__.msg | default('')))
+        or ('line added' in (__venv_site_packages_probe__.msg | default('')))
+      ansible.builtin.file:
+        path:  '/opt/ansible/venv'
+        state: 'absent'
+
+    - name: 'MAIN | Create Venv (--system-site-packages, owned by root)'
+      ansible.builtin.command:
+        cmd:     '/usr/bin/python3.12 -m venv --system-site-packages /opt/ansible/venv'
+        creates: '/opt/ansible/venv/bin/python'
+
+    # pip / setuptools / wheel / packaging are bumped to latest first so the boto3 install
+    # below uses a modern resolver. boto3 / botocore are the actual reason this venv exists —
+    # the current amazon.aws collection's boto3 floor is too new for RHEL 8 platform-python.
+    # `state: latest` is intentional: bootstrap is the foundation that downstream roles
+    # consume, and we want a fresh boto3 every time a host is bootstrapped. Pin in this
+    # task when a future regression in boto3 requires a known-good version.
+    - name: 'MAIN | Install Python Packages In Venv'  # noqa: package-latest
+      ansible.builtin.pip:
+        name:
+          - 'pip'
+          - 'setuptools'
+          - 'wheel'
+          - 'packaging'
+          - 'boto3'
+          - 'botocore'
+        virtualenv: '/opt/ansible/venv'
+        state:      'latest'
+
+    - name: 'MAIN | Ensure Venv Interpreters Are Executable'
+      loop:
+        - '/opt/ansible/venv/bin/python'
+        - '/opt/ansible/venv/bin/python3'
+        - '/opt/ansible/venv/bin/pip'
+        - '/opt/ansible/venv/bin/pip3'
+      loop_control:
+        loop_var: '__venv_file__'
+      ansible.builtin.file:
+        path: "{{ __venv_file__ }}"
+        mode: '0755'
+
+    #endregion --- [ Main: Venv ] ----------------------------------------------------------- #
+
+    #region ------ [ Main: fapolicyd Trust ] ------------------------------------------------ #
+
+    # fapolicyd is part of the STIG baseline but this bootstrap also runs on dev hosts that
+    # may not have it. Gate the entire trust block on fapolicyd-cli being present so a dev
+    # host silently skips it.
+    - name: 'MAIN | Detect fapolicyd Presence'
+      register: '__fapolicyd_cli__'
+      ansible.builtin.stat:
+        path: '/usr/sbin/fapolicyd-cli'
+
+    - name: 'MAIN | Trust /opt/ansible/venv In fapolicyd'
+      when: __fapolicyd_cli__.stat.exists | default(false)
+      block:
+
+        - name: 'MAIN | Probe Whether Venv Is Already In fapolicyd Trust'
+          check_mode: true
+          changed_when: false
+          failed_when: false
+          register: '__fapd_venv_probe__'
+          ansible.builtin.lineinfile:
+            path:          '/etc/fapolicyd/fapolicyd.trust'
+            search_string: '/opt/ansible/venv'
+            state:         'absent'
+
+        - name: 'MAIN | Add /opt/ansible/venv To fapolicyd.trust'
+          when: (__fapd_venv_probe__.found | default(0) | int) == 0
+          register: '__fapd_add__'
+          changed_when: __fapd_add__.rc == 0
+          failed_when: __fapd_add__.rc not in [0, 1]
+          ansible.builtin.command:
+            argv: ['fapolicyd-cli', '--file', 'add', '/opt/ansible/venv']
+
+        - name: 'MAIN | Refresh fapolicyd DB Inline (Trust Must Take Effect Now)'  # noqa: no-handler
+          when: __fapd_add__ is changed
+          changed_when: false
+          ansible.builtin.command:
+            argv: ['fapolicyd-cli', '--update']
+
+    #endregion --- [ Main: fapolicyd Trust ] ------------------------------------------------ #
