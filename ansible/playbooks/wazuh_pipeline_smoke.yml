@@ -1,0 +1,86 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/wazuh_pipeline_smoke.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Optional alert-INDEXING smoke test (NOT part of the default deploy). Injects one synthetic
+# alert into the manager's alerts.json and confirms it lands in wazuh-alerts-*, validating the
+# path that drives the dashboard's alert index pattern:
+#
+#   /var/ossec/logs/alerts/alerts.json -> Filebeat Wazuh module -> wazuh-alerts-* index
+#
+# This exercises the INDEXING pipeline only (synthetic alert, agent id 000). To prove a REAL
+# endpoint-sourced FIM event travels agent -> manager -> filebeat -> indexer, use
+# playbooks/wazuh_trigger_fim.yml (Linux) / wazuh_trigger_fim_windows.yml (Windows) instead.
+#
+# Collapsed all-in-one topology: the indexer runs on the wazuh_servers host, so both plays
+# target that group (there is no separate indexer host to query).
+#
+#   ansible-playbook -i <inventory> playbooks/wazuh_pipeline_smoke.yml -e @<become-vars>
+# =========================================================================================== #
+
+- name: 'Pipeline smoke - inject one alert into the manager alerts.json'
+  hosts: 'wazuh_servers'
+  gather_facts: false
+  run_once: true
+  become: true
+  vars:
+    smoke_rule_id: '999999'
+  tasks:
+
+    - name: 'SMOKE | Append Synthetic Alert For Filebeat Pipeline Validation'
+      register: '__smoke_append__'
+      changed_when: true
+      ansible.builtin.shell:
+        executable: '/bin/bash'
+        cmd: |
+          set -euo pipefail
+          smoke_id="wazuh-smoke-$(date +%s)-$RANDOM"
+          ts="$(date +'%Y-%m-%dT%H:%M:%S.%3N%z')"
+          host="$(hostname -f 2>/dev/null || hostname)"
+          printf '{"timestamp":"%s","rule":{"level":3,"description":"Wazuh pipeline smoke test","id":"%s","firedtimes":1,"mail":false,"groups":["pipeline","smoke"]},"agent":{"id":"000","name":"%s"},"manager":{"name":"%s"},"id":"%s","decoder":{"name":"json"},"location":"wazuh-pipeline-smoke","full_log":"wazuh pipeline smoke test"}\n' \
+            "$ts" "{{ smoke_rule_id }}" "$host" "$host" "$smoke_id" >> /var/ossec/logs/alerts/alerts.json
+          printf '%s\n' "$smoke_id"
+
+    - name: 'SMOKE | Record Smoke Alert Id'
+      ansible.builtin.set_fact:
+        __wazuh_smoke_id__: "{{ __smoke_append__.stdout | trim }}"
+
+- name: 'Pipeline smoke - confirm the alert reached the wazuh-alerts index'
+  hosts: 'wazuh_servers'
+  gather_facts: false
+  run_once: true
+  become: true
+  vars:
+    smoke_id: "{{ hostvars[groups['wazuh_servers'][0]].__wazuh_smoke_id__ }}"
+  tasks:
+
+    - name: 'SMOKE | Wait For The Smoke Alert In wazuh-alerts-*'
+      register: '__smoke_search__'
+      retries: 18
+      delay: 5
+      until: (__smoke_search__.json.hits.total.value | default(0) | int) > 0
+      ansible.builtin.uri:
+        # Loopback: this play runs ON the indexer host, and the node cert's SANs are
+        # 127.0.0.1/localhost/<node-name> — NOT the lab ansible_host IP, so an ansible_host URL
+        # would fail TLS hostname verification under validate_certs (matches wazuh_trigger_fim.yml).
+        url: "https://127.0.0.1:9200/wazuh-alerts-*/_search"
+        method: 'POST'
+        client_cert: '/etc/wazuh-indexer/certs/admin.pem'
+        client_key:  '/etc/wazuh-indexer/certs/admin-key.pem'
+        ca_path:     '/etc/wazuh-indexer/certs/root-ca.pem'
+        validate_certs: true
+        body_format: 'json'
+        body:
+          size: 1
+          query:
+            term:
+              id: "{{ smoke_id }}"
+
+    - name: 'SMOKE | Assert The Smoke Alert Was Indexed'
+      ansible.builtin.assert:
+        that:
+          - (__smoke_search__.json.hits.total.value | default(0) | int) > 0
+        fail_msg: >-
+          Synthetic alert {{ smoke_id }} was appended to alerts.json but was not found in
+          wazuh-alerts-* within the timeout. Check filebeat logs and indexer bulk errors.
+        success_msg: "Synthetic alert {{ smoke_id }} reached wazuh-alerts-*."

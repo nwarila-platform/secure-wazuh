@@ -1,0 +1,25 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/deploy_all.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# ONE playbook, whole environment, end-to-end:
+#
+#   1. linux_disk_manager.yml  -> partition/format/mount + grow the /mnt/data data disk
+#      (wazuh_servers). No-op-safe on reruns.
+#   2. site.yml                -> bootstrap venv (all) -> Wazuh all-in-one central stack
+#      (wazuh_servers) -> Linux agents (wazuh_agents) -> Windows agents (wazuh_agents_windows,
+#      via the wazuh_agent role's native main_windows entry).
+#
+# Run (lab):
+#   ANSIBLE_CONFIG=ansible/ansible.cfg \
+#   AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_SESSION_TOKEN=... AWS_DEFAULT_REGION=... \
+#   ansible-playbook -i lab/inventory.yml playbooks/deploy_all.yml -e env=int -e @<lab-become.json>
+#
+# AWS creds come from the runner env (aws_runner_env.yml) — used by the central role's S3 bundle
+# download AND by the Windows agent's delegated MSI download. `env` selects the per-env overlays
+# (redhat_<env>.yml for Linux, windows_<env>.yml for Windows). Any empty inventory group is a
+# no-op, so this same playbook covers AIO-only, +Linux-agent, and +Windows-agent topologies.
+# =========================================================================================== #
+
+- import_playbook: 'linux_disk_manager.yml'
+- import_playbook: 'site.yml'

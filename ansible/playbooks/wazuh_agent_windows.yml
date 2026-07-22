@@ -1,0 +1,32 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/wazuh_agent_windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Standalone WINDOWS agent deploy — a thin wrapper over the wazuh_agent role's NATIVE Windows
+# entry point (tasks/main_windows.yml). The role owns the whole flow (MSI from S3 -> verify ->
+# install + auto-enroll -> real-time FIM -> service); this playbook just targets the Windows
+# group and supplies the AWS runner creds the delegated S3 download needs.
+#
+# The MSI is pulled from S3 exactly like the Linux RPM — pinned by key + sha256 in the role's
+# vars/windows_<env>.yml overlay. Because a Windows target can't run boto3, amazon.aws.s3_object
+# runs DELEGATED to the controller (venv boto3 + these creds) and win_copy pushes the verified
+# MSI. Required vars: env; AWS creds sourced from the runner env by aws_runner_env.yml.
+#
+#   ansible-playbook -i <win-inventory> playbooks/wazuh_agent_windows.yml -e env=int
+#
+# Windows deploys do NOT import bootstrap.yml (the /opt/ansible/venv is a Linux target concern).
+# =========================================================================================== #
+
+- name: 'Deploy Wazuh agent (Windows endpoints)'
+  hosts: 'wazuh_agents_windows'
+  gather_facts: false
+  become: false
+  vars_files: ['aws_runner_env.yml']
+  vars:
+    ENV: "{{ env }}"
+  tasks:
+
+    - name: 'Deploy via the wazuh_agent role (native Windows entry)'
+      ansible.builtin.include_role:
+        name: 'wazuh_agent'
+        tasks_from: 'main_windows'

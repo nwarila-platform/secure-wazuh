@@ -1,0 +1,34 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/meta/main.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Role metadata for wazuh_server.
+# =========================================================================================== #
+
+galaxy_info:
+
+  role_name: 'wazuh_server'
+  namespace: 'nwarila_platform'
+  author: 'nwarila-platform'
+  description: 'Installs and configures the collapsed Wazuh all-in-one central stack (indexer + manager + Filebeat + dashboard) from the offline bundle.'
+
+  license: 'MIT'
+  min_ansible_version: '2.16'
+
+  platforms:
+    - name: 'EL'
+      versions:
+        - '8'
+
+  galaxy_tags:
+    - 'wazuh'
+    - 'siem'
+    - 'indexer'
+    - 'manager'
+    - 'filebeat'
+    - 'dashboard'
+    - 'redhat'
+    - 'offline'
+
+allow_duplicates: false
+
+dependencies: []

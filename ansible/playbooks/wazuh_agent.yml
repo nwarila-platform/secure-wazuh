@@ -1,0 +1,31 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/wazuh_agent.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Standalone Wazuh agent playbook. Targets Linux endpoint hosts in the `wazuh_agents` group.
+#
+# Required Ansible vars:
+#   env (int|test|prod). AWS credentials are sourced from the runner env by
+#   aws_runner_env.yml and passed as no_log module args, not target env vars.
+#
+# Do not put Wazuh manager hosts in `wazuh_agents`; the role refuses to install the
+# standalone agent package on any host in `wazuh_servers`.
+#
+# bootstrap.yml runs first so /opt/ansible/venv exists before the agent role's S3 task borrows
+# it (a block-level `ansible_python_interpreter` override — the venv is NOT the default
+# interpreter; the role otherwise runs under platform-python).
+# =========================================================================================== #
+
+- name: 'Stage 0 - Bootstrap /opt/ansible/venv'
+  import_playbook: bootstrap.yml
+
+- name: 'Deploy Wazuh agent'
+  hosts: 'wazuh_agents'
+  gather_facts: false
+  environment:
+    ENV: "{{ env }}"
+  vars_files: ['aws_runner_env.yml']
+  vars:
+    ENV: "{{ env }}"
+  roles:
+    - role: 'wazuh_agent'

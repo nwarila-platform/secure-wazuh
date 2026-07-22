@@ -1,0 +1,14 @@
+---
+# =========================================================================================== #
+# File: '{{ role_path }}/vars/redhat_test.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Per-env overlay loaded by the generic role loader when os_family=redhat AND ENV=test.
+# Replace every CHANGE_ME placeholder with the real test-env value before running
+# `-e env=test`.
+# =========================================================================================== #
+
+s3:
+  bucket:        'CHANGE_ME-ansible-test'
+  bundle_key:    'CHANGE_ME/wazuh-offline.tar.gz'
+  bundle_sha256: 'CHANGE_ME-64-character-sha256-of-the-test-bundle'
+  certs_prefix:  'CHANGE_ME/certs'
