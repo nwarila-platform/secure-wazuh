@@ -1,0 +1,10 @@
+# =============================================================================
+# Code Owners — secure-wazuh
+# =============================================================================
+# The organization team owns every path by default, so GitHub requests a review
+# from @NWarila on any pull request opened against this repository.
+# More specific rules may be added below; for any file the LAST matching pattern
+# wins, so keep the catch-all first and narrow overrides beneath it.
+# =============================================================================
+
+* @NWarila

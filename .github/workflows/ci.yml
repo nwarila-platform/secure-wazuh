@@ -1,0 +1,223 @@
+---
+# =============================================================================
+# CI Workflow — Lint & Validate (secure-wazuh: hybrid Terraform + Ansible)
+# =============================================================================
+# Runs on every pull request targeting main and on direct pushes to main.
+# Jobs are intentionally independent so they run in parallel — a yamllint
+# failure does not block ansible-lint from reporting its own findings.
+#
+# Each job maps to a `make` target so this workflow and a local `make ci`
+# exercise the same gates:
+#     make ci  ==  lint (yamllint + ansible-lint) + tf-fmt + allowlist-check + docs-layout
+# The pre-commit suite is run as an additional, informational job.
+#
+# COMPOSED-TREE CAVEAT (ansible-lint):
+#   The product roles under ansible/applications/ are CONSUMERS of the
+#   ansible-framework and resolve fully only inside the composed tree — the
+#   generic loader + shared roles (wazuh_agent, linux_disk_manager) are composed
+#   in from the framework pinned at .github/.framework-pin. The `Ansible Lint
+#   (composed tree)` job below builds that tree itself (copy ansible-framework@pin,
+#   overlay this repo's ansible/applications/*, exactly as deploy.yml's compose
+#   step does) and lints there — this is the authoritative lint of the product
+#   roles. `make ansible-lint` (run locally, or by the `pre-commit` job below)
+#   only lints what resolves standalone — see docs/explanation/composition-model.md.
+#
+# Required status checks (configure in branch protection — names MUST match each
+# job's `name:` field below, not its YAML key):
+#   - YAML Lint
+#   - Ansible Lint (composed tree)
+#   - Terraform Format
+#   - Allowlist Guard
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Minimal permissions at workflow level — elevated per-job only where required
+permissions:
+  contents: read
+
+# Limit concurrent runs per branch — cancel stale runs on new push
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # YAML Lint  (make yamllint)
+  # ---------------------------------------------------------------------------
+  yamllint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dev toolchain
+        run: pip install --no-cache-dir -r requirements-dev.txt
+
+      - name: Run yamllint
+        run: make yamllint
+
+  # ---------------------------------------------------------------------------
+  # Ansible Lint  (authoritative: lints the COMPOSED tree)
+  # ---------------------------------------------------------------------------
+  # linux_disk_manager and wazuh_agent are composed in from the pinned
+  # ansible-framework (.github/.framework-pin), not vendored — so playbooks that
+  # reference them do not resolve on a bare clone. This job composes the tree the
+  # same way deploy.yml does (framework base + this repo's ansible/ overlay) and
+  # lints there, exactly as the dev-only compose script does locally.
+  # ---------------------------------------------------------------------------
+  ansible-lint:
+    name: Ansible Lint (composed tree)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ANSIBLE_FRAMEWORK_REPO: nwarila-platform/ansible-framework
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dev toolchain
+        run: pip install --no-cache-dir -r requirements-dev.txt
+
+      - name: Resolve ansible-framework pin
+        id: framework
+        run: echo "sha=$(tr -d ' \n\r' < .github/.framework-pin)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout ansible-framework (pinned)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.ANSIBLE_FRAMEWORK_REPO }}
+          ref: ${{ steps.framework.outputs.sha }}
+          path: .frameworks/ansible-framework
+          persist-credentials: false
+          # WIRE: cross-repo checkout of a private framework repo needs a token with read
+          # access (fine-grained PAT or GitHub App installation token). Drop for public repos.
+          token: ${{ secrets.FRAMEWORK_REPO_TOKEN }}
+
+      - name: Compose _dev-build (framework base + product-role overlay)
+        run: |
+          set -euo pipefail
+          DEV_BUILD="${GITHUB_WORKSPACE}/_dev-build"
+          rm -rf "${DEV_BUILD}"; mkdir -p "${DEV_BUILD}"
+          rsync -a "${GITHUB_WORKSPACE}/.frameworks/ansible-framework/" "${DEV_BUILD}/"
+          rsync -a "${GITHUB_WORKSPACE}/ansible/" "${DEV_BUILD}/"
+
+      - name: Install runtime collections
+        working-directory: _dev-build
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
+        run: ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
+
+      - name: Run ansible-lint (composed tree)
+        working-directory: _dev-build
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
+        run: ansible-lint
+
+  # ---------------------------------------------------------------------------
+  # Terraform Format  (make tf-fmt)
+  # ---------------------------------------------------------------------------
+  # The terraform/ tree is DATA-ONLY (proxmox.tfvars / aws.tfvars — no .tf
+  # files; resource logic lives in the pinned frameworks). `terraform fmt`
+  # still normalizes tfvars formatting, so we gate it here.
+  # ---------------------------------------------------------------------------
+  terraform-fmt:
+    name: Terraform Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        with:
+          terraform_version: "1.15.3"
+          terraform_wrapper: false
+
+      - name: Run terraform fmt check
+        run: make tf-fmt
+
+  # ---------------------------------------------------------------------------
+  # Allowlist Guard  (make allowlist-check)
+  # ---------------------------------------------------------------------------
+  # Deny-all .gitignore is in force. Fail loudly if a deliverable-area file was
+  # added without the matching `!/<path>` allowlist line — otherwise it would
+  # be silently dropped from the repo.
+  # ---------------------------------------------------------------------------
+  allowlist-check:
+    name: Allowlist Guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run allowlist guard
+        run: make allowlist-check
+
+      - name: Check docs layout (Diátaxis quadrants + ADR placement)
+        run: make docs-layout
+
+  # ---------------------------------------------------------------------------
+  # Pre-Commit (full suite, non-blocking — informational only)
+  # ---------------------------------------------------------------------------
+  # Runs the full pre-commit suite to catch any hooks developers may have
+  # skipped locally. Results are reported but do not block merges while the
+  # conventional-commit hook is being adopted.
+  # ---------------------------------------------------------------------------
+  pre-commit:
+    name: Pre-Commit Hooks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dev toolchain
+        run: pip install --no-cache-dir -r requirements-dev.txt
+
+      - name: Run pre-commit
+        run: pre-commit run --all-files
+        continue-on-error: true  # Remove once adoption is complete
