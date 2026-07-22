@@ -1,0 +1,59 @@
+---
+# Rendered by the wazuh_server role from the run's __wazuh_pw__ map (admin = the one operator
+# password; every other user generated fresh each run). Pushed to the OpenSearch security plugin
+# via `securityadmin.sh -cd /etc/wazuh-indexer/opensearch-security/`.
+#
+# SECRETS rotate every run and are never persisted, so the bcrypt hashes below change on every
+# deploy and the securityadmin push ALWAYS runs (no fingerprint skip). securityadmin authenticates
+# with the admin CERT, not a password, so rotating the internal-user passwords never locks it out.
+
+_meta:
+  type: "internalusers"
+  config_version: 2
+
+admin:
+  hash: "{{ __wazuh_pw__.admin | password_hash('bcrypt', rounds=12) }}"
+  reserved: true
+  backend_roles:
+    - "admin"
+  description: "OpenSearch superuser. Used by securityadmin pushes and by wazuh_server's manager keystore."
+
+anomalyadmin:
+  hash: "{{ __wazuh_pw__.anomalyadmin | password_hash('bcrypt', rounds=12) }}"
+  reserved: false
+  description: "Wazuh anomaly detection user for the dashboard."
+
+kibanaserver:
+  hash: "{{ __wazuh_pw__.kibanaserver | password_hash('bcrypt', rounds=12) }}"
+  reserved: true
+  description: "Used by wazuh_dashboard for dashboard ↔ indexer auth."
+
+kibanaro:
+  hash: "{{ __wazuh_pw__.kibanaro | password_hash('bcrypt', rounds=12) }}"
+  reserved: false
+  backend_roles:
+    - "kibanauser"
+    - "readall"
+  description: "Read-only dashboard user."
+
+logstash:
+  hash: "{{ __wazuh_pw__.logstash | password_hash('bcrypt', rounds=12) }}"
+  reserved: false
+  backend_roles:
+    - "logstash"
+    - "wazuh_filebeat_writer"
+  description: "Filebeat ↔ indexer CRUD user (Wazuh names this 'logstash' for upstream compatibility)."
+
+readall:
+  hash: "{{ __wazuh_pw__.readall | password_hash('bcrypt', rounds=12) }}"
+  reserved: false
+  backend_roles:
+    - "readall"
+  description: "Read-all-indices user."
+
+snapshotrestore:
+  hash: "{{ __wazuh_pw__.snapshotrestore | password_hash('bcrypt', rounds=12) }}"
+  reserved: false
+  backend_roles:
+    - "snapshotrestore"
+  description: "Snapshot/restore operations user."

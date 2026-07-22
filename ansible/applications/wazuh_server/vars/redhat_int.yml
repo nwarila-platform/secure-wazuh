@@ -1,0 +1,17 @@
+---
+# =========================================================================================== #
+# File: '{{ role_path }}/vars/redhat_int.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Per-env overlay loaded by the generic role loader when os_family=redhat AND ENV=int.
+# Merged on top of defaults/main.yml::wazuh_server_defaults via recursive combine. The whole
+# s3 dict lives in the env overlay (not defaults) so the bucket + object keys + SHA-256 pins
+# are chosen per environment. The <account-id> placeholder is filled in by the operator — the
+# org convention is an account-scoped `<account-id>-ansible` bucket, not env-suffixed (see
+# docs/reference/s3-artifacts.md) — the real account id is never committed to this repo.
+# =========================================================================================== #
+
+s3:
+  bucket:        '<account-id>-ansible'
+  bundle_key:    'functions/wazuh/4.14.5/wazuh-offline.tar.gz'
+  bundle_sha256: '1a60b8c407a56ed45a1e431256f6c49cba083a329874be7b532ec48a56069bea'
+  certs_prefix:  'functions/wazuh/certs'

@@ -1,0 +1,99 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/wazuh_trigger_fim_windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Windows counterpart of wazuh_trigger_fim.yml: fire a REAL FIM event on a WINDOWS agent and
+# prove it reached the wazuh-alerts index that backs the dashboard UI, attributed to the
+# endpoint agent (agent.id != "000"). Run after wazuh_agent_windows.yml. Defaults fim_demo_dir
+# to C:\Windows\System32\drivers\etc\wazuh-fim-demo — a subdirectory of the path the lab
+# inventory already arms for realtime FIM (wazuh_agent.windows.fim_realtime_paths) — so no
+# extra arming is needed out of the box. Override with -e fim_demo_dir=<other-watched-path>.
+#
+# Needs BOTH the Windows inventory (wazuh_agents_windows) and the central lab inventory
+# (wazuh_servers) — pass both:
+#   ansible-playbook -i lab/inventory.yml -i <win-inv.yml> \
+#     playbooks/wazuh_trigger_fim_windows.yml -e env=int -e @<lab-become.json>
+# =========================================================================================== #
+
+- name: 'Trigger FIM (Windows) - write a monitored file on the agent'
+  hosts: 'wazuh_agents_windows'
+  gather_facts: false
+  become: false
+  vars:
+    fim_demo_dir: 'C:\Windows\System32\drivers\etc\wazuh-fim-demo'
+  tasks:
+
+    - name: 'TRIGGER | Ensure The Real-Time Watched Demo Directory Exists'
+      ansible.windows.win_file:
+        path:  "{{ fim_demo_dir }}"
+        state: 'directory'
+
+    - name: 'TRIGGER | Compute A Unique Marker For This Run'
+      ansible.builtin.set_fact:
+        __fim_marker__: "fim-proof-{{ inventory_hostname }}-{{ 9999999999 | random }}"
+
+    - name: 'TRIGGER | Create The File (The FIM Event The Agent Detects In Real Time)'
+      ansible.windows.win_copy:
+        dest:    "{{ fim_demo_dir }}\\{{ __fim_marker__ }}.txt"
+        content: "secure-wazuh Windows FIM proof {{ __fim_marker__ }}\n"
+
+    - name: 'TRIGGER | Report The Marker'
+      ansible.builtin.debug:
+        msg: "Wrote {{ fim_demo_dir }}\\{{ __fim_marker__ }}.txt on {{ inventory_hostname }} — expect a syscheck 'added' alert from this Windows agent."
+
+- name: 'Trigger FIM (Windows) - prove the AGENT alert reached the indexer (what the UI shows)'
+  hosts: 'wazuh_servers'
+  gather_facts: false
+  become: true
+  run_once: true
+  vars:
+    __agent_host__: "{{ groups['wazuh_agents_windows'][0] }}"
+    __marker__:     "{{ hostvars[groups['wazuh_agents_windows'][0]].__fim_marker__ }}"
+  tasks:
+
+    # Windows syscheck normalises the drive letter (e.g. c:\wazuh-fim-demo\...), so match the
+    # unique marker via a wildcard on the keyword syscheck.path rather than an exact term, and
+    # gate on the endpoint agent name so a manager-local (000) event can never satisfy it.
+    - name: 'PROVE | Wait For The Windows Agent FIM Alert In wazuh-alerts-* (agent.id != 000)'
+      register: '__fim_search__'
+      retries: 24
+      delay: 5
+      until: (__fim_search__.json.hits.total.value | default(0) | int) > 0
+      ansible.builtin.uri:
+        # Loopback: node cert SANs are 127.0.0.1/localhost/<node-name>, not the lab IP.
+        url: "https://127.0.0.1:9200/wazuh-alerts-*/_search"
+        method: 'POST'
+        client_cert: '/etc/wazuh-indexer/certs/admin.pem'
+        client_key:  '/etc/wazuh-indexer/certs/admin-key.pem'
+        ca_path:     '/etc/wazuh-indexer/certs/root-ca.pem'
+        validate_certs: true
+        body_format: 'json'
+        body:
+          size: 1
+          sort: [{ '@timestamp': 'desc' }]
+          query:
+            bool:
+              must:
+                - { term: { 'agent.name': "{{ __agent_host__ }}" } }
+                - { wildcard: { 'syscheck.path': "*{{ __marker__ }}*" } }
+              must_not:
+                - { term: { 'agent.id': '000' } }
+
+    - name: 'PROVE | Assert The Alert Exists And Is Attributed To The WINDOWS Endpoint Agent'
+      vars:
+        __hit__: "{{ __fim_search__.json.hits.hits[0]._source | default({}) }}"
+      ansible.builtin.assert:
+        that:
+          - (__fim_search__.json.hits.total.value | default(0) | int) > 0
+          - __hit__.agent.id | default('000') != '000'
+        fail_msg: >-
+          No agent-sourced FIM alert for marker {{ __marker__ }} from {{ __agent_host__ }} was
+          found. Check the Windows agent is Active on the manager and its ossec.conf has a
+          <directories realtime="yes"> block covering the demo path (default
+          C:\Windows\System32\drivers\etc\wazuh-fim-demo).
+        success_msg: >-
+          PROVEN (Windows): FIM alert from agent id={{ __hit__.agent.id }}
+          name={{ __hit__.agent.name }} rule {{ __hit__.rule.id }}
+          '{{ __hit__.rule.description }}' path '{{ __hit__.syscheck.path | default("?") }}'
+          indexed in {{ __fim_search__.json.hits.hits[0]._index }} — visible in the dashboard
+          FIM/Threat-Hunting filtered on this Windows agent.

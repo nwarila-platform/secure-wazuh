@@ -1,0 +1,68 @@
+{#- =========================================================================================== #}
+{#- File: '{{ role_path }}/templates/syscheck.xml.j2'                                             #}
+{#- --- [ Description ] ----------------------------------------------------------------------- #}
+{#-                                                                                             #}
+{#- The manager's <syscheck> stanza, OWNED by this role (the all-in-one box's local agent 000   #}
+{#- runs FIM here). This REPLACES the vendor default, which monitors /etc on a 12-hour          #}
+{#- SCHEDULED scan and therefore emits no timely change EVENTS.                                 #}
+{#-                                                                                             #}
+{#- THE CONTRACT: realtime="yes" whodata="no".                                                 #}
+{#-   * whodata="no"  => Wazuh installs NO auditd rules; FIM does not touch the audit subsystem. #}
+{#-   * realtime="yes" => inotify watches emit change EVENTS immediately (rules 550/553/554),    #}
+{#-                       instead of waiting for the scheduled scan. Immune to the              #}
+{#-                       restart-rebuilds-the-DB baseline trap that scheduled scans hit.       #}
+{#- <frequency> remains as a backstop full scan for gaps while syscheckd was down.              #}
+{#- =========================================================================================== #}
+<syscheck>
+    <disabled>no</disabled>
+
+    <!-- Backstop scheduled scan; realtime carries the change events, this only catches gaps. -->
+    <frequency>{{ config.manager.fim.frequency }}</frequency>
+    <scan_on_start>yes</scan_on_start>
+
+    <!-- Realtime (inotify) monitoring WITHOUT whodata: change events, zero audit involvement.
+         report_changes is deliberately OFF: check_all already hashes every file and fires
+         rule 550/553/554 on any change, so we still ALERT on /etc/shadow edits — but we never
+         copy their content into the alert stream (password hashes would be offline-crackable)
+         nor churn /var/ossec/queue/diff with useless binary diffs of /usr/bin, /bin, /boot. -->
+{% for d in config.manager.fim.realtime_directories %}
+    <directories realtime="yes" whodata="no" check_all="yes">{{ d }}</directories>
+{% endfor %}
+{% for d in config.manager.fim.scheduled_directories | default([]) %}
+    <directories check_all="yes">{{ d }}</directories>
+{% endfor %}
+
+    <!-- Vendor ignore set: churny/volatile files that would otherwise spam events. -->
+    <ignore>/etc/mtab</ignore>
+    <ignore>/etc/hosts.deny</ignore>
+    <ignore>/etc/mail/statistics</ignore>
+    <ignore>/etc/random-seed</ignore>
+    <ignore>/etc/random.seed</ignore>
+    <ignore>/etc/adjtime</ignore>
+    <ignore>/etc/httpd/logs</ignore>
+    <ignore>/etc/utmpx</ignore>
+    <ignore>/etc/wtmpx</ignore>
+    <ignore>/etc/cups/certs</ignore>
+    <ignore>/etc/dumpdates</ignore>
+    <ignore>/etc/svc/volatile</ignore>
+{% for p in config.manager.fim.ignore | default([]) %}
+    <ignore>{{ p }}</ignore>
+{% endfor %}
+
+    <nodiff>/etc/ssl/private.key</nodiff>
+
+    <skip_nfs>yes</skip_nfs>
+    <skip_dev>yes</skip_dev>
+    <skip_proc>yes</skip_proc>
+    <skip_sys>yes</skip_sys>
+
+    <process_priority>10</process_priority>
+    <max_eps>{{ config.manager.fim.max_eps }}</max_eps>
+
+    <!-- Inventory/state sync (disjoint from the alert path; keeps wazuh-db current). -->
+    <synchronization>
+      <enabled>yes</enabled>
+      <interval>{{ config.manager.fim.sync_interval }}</interval>
+      <max_eps>{{ config.manager.fim.sync_max_eps }}</max_eps>
+    </synchronization>
+</syscheck>

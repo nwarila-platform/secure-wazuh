@@ -1,0 +1,9 @@
+{# Rendered by wazuh_server into /usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml.
+   This is consumed by the Wazuh dashboard plugin to talk to the manager API on port 55000. #}
+hosts:
+  - default:
+      url: https://{{ __manager_host__ }}
+      port: 55000
+      username: "{{ __manager_user__ }}"
+      password: "{{ __manager_pwd__ }}"
+      run_as: false

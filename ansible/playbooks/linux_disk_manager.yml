@@ -1,0 +1,37 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/linux_disk_manager.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Step-0 storage initializer. Run this BEFORE the Wazuh stack so the data disk is provisioned
+# and mounted at /mnt/data for the server role to consume. Selects the disk by its stable WWN
+# (never /dev/sdX) and mounts by UUID (Nitro-safe) — see the linux_disk_manager role README.
+#
+#   ansible-playbook -i lab/inventory.yml playbooks/linux_disk_manager.yml -e env=int
+#
+# The lab WWN below is specific to the tcnhq-waz01c VMware VM (disk.EnableUUID=TRUE). In
+# production the deploy layer (proxmox-vm-terraform-framework) knows each volume's stable id and
+# supplies it via host_vars / extra-vars; this hardcoded lab value mirrors how the Wazuh
+# playbooks hardcode lab inputs.
+# =========================================================================================== #
+
+- name: 'Provision data disks (linux_disk_manager)'
+  hosts: 'wazuh_servers'
+  gather_facts: false
+  become: true
+  vars:
+    ENV: "{{ env }}"
+  environment:
+    ENV: "{{ env }}"
+  roles:
+    - role: 'linux_disk_manager'
+      linux_disk_manager:
+        platform: 'vmware'
+        disks:
+          - unique_id:   'wwn-0x6000c29002d930a06602efdd4ab53a15'
+            mount_point: '/mnt/data'
+            fstype:      'xfs'
+            label:       'wazuh-data'
+            # Data mount: nodev,nosuid (STIG-friendly) but NOT noexec — the Wazuh indexer
+            # stages/runs content under /mnt/data.
+            opts:        'defaults,nodev,nosuid'
+            passno:      2
