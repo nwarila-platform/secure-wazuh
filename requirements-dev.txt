@@ -20,7 +20,7 @@ ansible-lint>=24.2,<25
 ansible-core>=2.16,<2.17
 
 # Pre-commit hook framework
-pre-commit==4.0.1
+pre-commit==4.6.1
 
 # boto3/botocore on the CONTROLLER: the Windows agent path downloads the MSI from S3 with
 # amazon.aws.s3_object DELEGATED to the runner (a Windows target can't run boto3), so the
