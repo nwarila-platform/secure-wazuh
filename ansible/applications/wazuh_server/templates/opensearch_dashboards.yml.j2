@@ -1,0 +1,24 @@
+{# Rendered by wazuh_server. The RPM ships a similar default; we template it ourselves
+   to interpolate the actual indexer host + kibanaserver creds without relying on placeholder
+   regex substitution. #}
+server.host: "{{ config.dashboard.bind_address }}"
+server.port: 443
+opensearch.hosts: ["https://{{ __indexer_host__ }}:9200"]
+opensearch.ssl.verificationMode: certificate
+opensearch.username: "{{ __opensearch_user__ }}"
+# opensearch.password is sourced from /etc/wazuh-dashboard/opensearch_dashboards.keystore
+# (key: opensearch.password). The role refuses to write the plaintext password into this
+# file. Keystore values override anything set here, so even if a future template change
+# put the password back, the keystore would win.
+opensearch.requestHeadersAllowlist: ["securitytenant", "Authorization"]
+opensearch_security.multitenancy.enabled: false
+opensearch_security.readonly_mode.roles: ["kibana_read_only"]
+server.ssl.enabled: true
+server.ssl.key: "{{ config.dashboard.certs_dir }}/dashboard-key.pem"
+server.ssl.certificate: "{{ config.dashboard.certs_dir }}/dashboard.pem"
+opensearch.ssl.certificateAuthorities: ["{{ config.dashboard.certs_dir }}/root-ca.pem"]
+uiSettings.overrides.defaultRoute: /app/wz-home
+# Session expiration settings
+opensearch_security.cookie.ttl: 900000
+opensearch_security.session.ttl: 900000
+opensearch_security.session.keepalive: true

@@ -1,0 +1,24 @@
+---
+# TOOLCHAIN CONSTRAINT — RHEL 8 targets run platform-python 3.6.8, the ONLY interpreter on
+# RHEL 8 that carries the libselinux/dnf/firewalld C-bindings the roles need. Modern Ansible
+# assets emit `from __future__ import annotations` (Python 3.7+) and fail on 3.6 with
+# "SyntaxError: future feature annotations is not defined". So both the CONTROLLER ansible-core
+# AND these collections must stay on the last releases that still support Python 3.6 targets:
+#   - ansible-core  >=2.16,<2.17   (2.21 — the wsus framework pin — CANNOT manage RHEL 8; see
+#                                    _handoff/REARCH-PLAN.md toolchain note. Not set here; it is
+#                                    a controller install, not a collection.)
+#   - community.general <8         (>=8 / 13.x use future-annotations -> break on 3.6)
+#   - ansible.posix     <2         (2.x uses future-annotations -> breaks on 3.6)
+collections:
+  - name: 'ansible.posix'
+    version: '<2.0.0'
+  # community.general supplies the parted + filesystem modules used by linux_disk_manager
+  # (the step-0 storage initializer). Pinned <8 for Python 3.6 target compatibility.
+  - name: 'community.general'
+    version: '<8.0.0'
+  # amazon.aws runs on the TARGET (not controller). python3-boto3 / python3-botocore are
+  # installed via dnf in each role's side_deps.
+  - name: 'amazon.aws'
+  # Windows agent path (native win_* modules; run on the CONTROLLER, so no RHEL8 py3.6 concern).
+  # ansible.windows: win_get_url/win_package/win_file/win_service/win_copy/win_powershell.
+  - name: 'ansible.windows'

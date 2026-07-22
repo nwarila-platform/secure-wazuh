@@ -1,0 +1,10 @@
+{# Rendered by wazuh_server into /etc/filebeat/modules.d/wazuh.yml.
+   Keep the Wazuh module in modules.d so `filebeat modules ...` diagnostics work and
+   Filebeat has one clear module source. #}
+- module: wazuh
+  alerts:
+    enabled: true
+    var.paths:
+      - /var/ossec/logs/alerts/alerts.json
+  archives:
+    enabled: false

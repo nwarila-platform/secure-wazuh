@@ -1,0 +1,207 @@
+---
+# =========================================================================================== #
+# File: '{{ role_path }}/defaults/main.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Defaults for the COLLAPSED wazuh_server role — the all-in-one Wazuh stack on ONE host:
+# indexer (OpenSearch) + manager + filebeat + dashboard. Lowest-precedence layer; the loader
+# merges vars/redhat_<env>.yml overlays and the playbook `wazuh_server:` override on top into
+# `wazuh_server_running` (exposed to task files as `config`).
+#
+# Split-host topology is intentionally not supported — everything is local (127.0.0.1).
+#
+# Operator prereqs:
+#   - The persistent data volume is mounted at data_root (by linux_disk_manager / the deploy
+#     layer) before this role runs.
+#   - `env` via --extra-vars; AWS creds from the runner env (playbooks/aws_runner_env.yml).
+#   - Exactly ONE operator secret: `wazuh_server.secrets.admin_password` (see below). Every
+#     other credential is generated fresh each run (nothing persisted).
+# =========================================================================================== #
+
+wazuh_server_defaults:
+
+  #region ------ [ Lifecycle ] ------------------------------------------------------------------ #
+  state: 'present'
+  #endregion --- [ Lifecycle ] ------------------------------------------------------------------ #
+
+  #region ------ [ Secrets (rotate-every-run; nothing persisted) ] ------------------------------ #
+  # The ONLY operator-provided credential: the OpenSearch `admin` superuser, which is also the
+  # dashboard / web-UI login. Set it in the `wazuh_server.secrets:` override dict.
+  #
+  # Every other credential (OpenSearch internal service users + manager API users) is
+  # PROCEDURALLY GENERATED FRESH ON EVERY RUN and never written to disk — the credential tasks
+  # therefore always report `changed` (rotation by design). `generated_users` is the exact set
+  # rendered into internal_users.yml + the manager API sync + the keystores.
+  secrets:
+    admin_password: ''
+    # Fresh 32-char random every run (OpenSearch internal users + service auth). These live only
+    # in bcrypt hashes (internal_users.yml, pushed via the admin CERT), so rotating them never
+    # locks anything out. The manager API users (wazuh, wazuh-wui) are NOT here — their creds live
+    # in the persistent rbac.db and can only be changed by authenticating with the current one,
+    # so they are DERIVED deterministically from admin_password in present_redhat.yml #region 01
+    # (stable across reruns => always re-authenticatable, still nothing persisted).
+    generated_users:
+      - 'anomalyadmin'    # OpenSearch internal (hash-only)
+      - 'kibanaserver'    # dashboard -> indexer service auth
+      - 'kibanaro'        # OpenSearch internal (hash-only)
+      - 'logstash'        # filebeat -> indexer write auth (backend_role wazuh_filebeat_writer)
+      - 'readall'         # OpenSearch internal (hash-only)
+      - 'snapshotrestore' # OpenSearch internal (hash-only)
+  #endregion --- [ Secrets ] -------------------------------------------------------------------- #
+
+  #region ------ [ Persistent data volume (union of all components) ] --------------------------- #
+  data_root: '/mnt/data/wazuh'
+  data_binds:
+    - { canonical: '/var/lib/wazuh-indexer',   subpath: 'indexer/data' }
+    - { canonical: '/var/log/wazuh-indexer',   subpath: 'indexer/logs' }
+    - { canonical: '/var/ossec',               subpath: 'server/ossec' }
+    - { canonical: '/var/log/filebeat',        subpath: 'server/filebeat-logs' }
+    - { canonical: '/var/lib/wazuh-dashboard', subpath: 'dashboard/data' }
+    - { canonical: '/var/log/wazuh-dashboard', subpath: 'dashboard/logs' }
+  #endregion --- [ Persistent data volume ] ---------------------------------------------------- #
+
+  #region ------ [ Directories ] ---------------------------------------------------------------- #
+  # pre  = created BEFORE RPM install (root-owned bind targets + data subpaths).
+  # post = created AFTER RPM install (service accounts now exist); re-chowns the bind targets.
+  directories:
+    pre:
+      - { path: '/mnt/data/wazuh',              owner: 'root', group: 'root', mode: '0750' }
+      - { path: '/mnt/data/wazuh/indexer/data', owner: 'root', group: 'root', mode: '0750' }
+      - { path: '/mnt/data/wazuh/indexer/logs', owner: 'root', group: 'root', mode: '0750' }
+      - { path: '/var/lib/wazuh-indexer',       owner: 'root', group: 'root', mode: '0750' }
+      - { path: '/var/log/wazuh-indexer',       owner: 'root', group: 'root', mode: '0750' }
+    post:
+      - { path: '/var/lib/wazuh-indexer',           owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }
+      - { path: '/var/log/wazuh-indexer',           owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }
+      - { path: '/etc/wazuh-indexer/certs',         owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0500' }
+      - { path: '/var/lib/wazuh-indexer/tmp',       owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }
+      - { path: '/usr/share/wazuh-indexer/lib/jna', owner: 'root',            group: 'wazuh-indexer',   mode: '0750' }
+      - { path: '/etc/filebeat/certs',              owner: 'root',            group: 'root',            mode: '0500' }
+      - { path: '/etc/wazuh-dashboard/certs',       owner: 'wazuh-dashboard', group: 'wazuh-dashboard', mode: '0500' }
+  #endregion --- [ Directories ] ---------------------------------------------------------------- #
+
+  #region ------ [ Services ] ------------------------------------------------------------------- #
+  # Start ORDER is enforced per-#region (indexer green BEFORE filebeat), NOT by looping this
+  # list. Listed for enable/daemon_reload bookkeeping.
+  services:
+    - { name: 'wazuh-indexer',   enabled: true, state: 'started' }
+    - { name: 'wazuh-manager',   enabled: true, state: 'started' }
+    - { name: 'filebeat',        enabled: true, state: 'started' }
+    - { name: 'wazuh-dashboard', enabled: true, state: 'started' }
+  #endregion --- [ Services ] ------------------------------------------------------------------- #
+
+  #region ------ [ Endpoints (AIO => all local; no group deref — DASH-04 safe) ] ---------------- #
+  indexer_host: '127.0.0.1'   # filebeat + manager indexer-connector + dashboard opensearch.hosts
+  manager_host: '127.0.0.1'   # dashboard wazuh.yml manager API
+  endpoint_host: ''           # on-target reachability (health/api/443); '' => ansible_host|inventory_hostname
+  cert_name: ''               # S3 PEM basename; '' => inventory_hostname
+  node_name: ''               # OpenSearch node.name; '' => cert_name/inventory_hostname
+  #endregion --- [ Endpoints ] ------------------------------------------------------------------ #
+
+  #region ------ [ Firewall (union) ] ----------------------------------------------------------- #
+  firewall:
+    zone: 'public'
+    # 9200 (indexer HTTP API) is deliberately NOT opened: on an all-in-one box every consumer
+    # (filebeat, manager indexer-connector, dashboard, the deploy-time health/template checks)
+    # reaches it via 127.0.0.1, so exposing it externally is only STIG attack surface.
+    ports:
+      - '1514/tcp'    # agent comms
+      - '1514/udp'
+      - '1515/tcp'    # agent registration
+      - '55000/tcp'   # manager API
+      - '443/tcp'     # dashboard HTTPS UI
+  #endregion --- [ Firewall ] ------------------------------------------------------------------- #
+
+  #region ------ [ Sysctl ] --------------------------------------------------------------------- #
+  sysctl:
+    'vm.max_map_count': 262144
+    # Realtime FIM (inotify) on /etc + the vendor set needs headroom above the 8192 default.
+    'fs.inotify.max_user_watches': 524288
+  #endregion --- [ Sysctl ] --------------------------------------------------------------------- #
+
+  #region ------ [ Indexer (OpenSearch) config ] ------------------------------------------------ #
+  certs_dir: '/etc/wazuh-indexer/certs'
+  cluster_name: 'wazuh-cluster'
+  network_host: '0.0.0.0'
+  discovery_seed_hosts: []
+  tls:
+    enabled_protocols:
+      - 'TLSv1.2'
+    enabled_ciphers:
+      - 'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256'
+      - 'TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384'
+      - 'TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256'
+      - 'TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384'
+  fapolicyd:
+    jdk_path: '/usr/share/wazuh-indexer/jdk'
+    jna_path: '/usr/share/wazuh-indexer/lib/jna'
+  #endregion --- [ Indexer config ] ------------------------------------------------------------- #
+
+  #region ------ [ Filebeat config ] ------------------------------------------------------------ #
+  filebeat:
+    certs_dir:          '/etc/filebeat/certs'
+    config_path:        '/etc/filebeat/filebeat.yml'
+    module_config_dir:  '/etc/filebeat/modules.d'
+    module_config_path: '/etc/filebeat/modules.d/wazuh.yml'
+    module_dir:         '/usr/share/filebeat/module'
+    indexer_username:   'logstash'
+  #endregion --- [ Filebeat config ] ------------------------------------------------------------ #
+
+  #region ------ [ Manager (ossec.conf + keystore + API users + FIM) ] -------------------------- #
+  manager:
+    config_path: '/var/ossec/etc/ossec.conf'
+    keystore_bin: '/var/ossec/bin/wazuh-keystore'
+    # The manager indexer-connector authenticates as the cluster admin (full write on
+    # wazuh-states-*). admin is the ONE operator-provided password.
+    keystore_indexer_user: 'admin'
+    api_users:
+      - { id: 1, username: 'wazuh',     default_password: 'wazuh' }
+      - { id: 2, username: 'wazuh-wui', default_password: 'wazuh-wui' }
+
+    # FILE INTEGRITY MONITORING (the headline fix). The all-in-one box's local agent 000 runs
+    # FIM here; this role OWNS the <syscheck> stanza (templates/syscheck.xml.j2), replacing the
+    # vendor 12h-scheduled default with REALTIME (inotify) monitoring, whodata="no" (NO auditd).
+    # Realtime emits change EVENTS immediately and is immune to the restart-rebuilds-DB baseline
+    # trap that made the vendor scheduled scan produce "inventory updates but no events".
+    fim:
+      frequency: 43200          # backstop full scan (12h); realtime carries the events
+      realtime_directories:
+        - '/etc'
+        - '/usr/bin'
+        - '/usr/sbin'
+        - '/bin'
+        - '/sbin'
+        - '/boot'
+      scheduled_directories: []
+      ignore: []
+      max_eps: 100
+      sync_interval: '5m'
+      sync_max_eps: 10
+  #endregion --- [ Manager ] -------------------------------------------------------------------- #
+
+  #region ------ [ Dashboard config ] ----------------------------------------------------------- #
+  dashboard:
+    certs_dir:        '/etc/wazuh-dashboard/certs'
+    main_config:      '/etc/wazuh-dashboard/opensearch_dashboards.yml'
+    wazuh_config:     '/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml'
+    indexer_username: 'kibanaserver'
+    manager_username: 'wazuh-wui'
+    bind_address:     '0.0.0.0'
+    service_state:    'started'
+  #endregion --- [ Dashboard config ] ----------------------------------------------------------- #
+
+  #region ------ [ Side-deps ] ------------------------------------------------------------------ #
+  side_deps:
+    - 'gzip'
+    - 'lsof'
+    - 'openssl'
+    - 'tar'
+  #endregion --- [ Side-deps ] ------------------------------------------------------------------ #
+
+  #region ------ [ STIG (service accounts this stack introduces) ] ------------------------------ #
+  # filebeat runs as root (no service user). Lock the three that get created.
+  stig:
+    local_users:
+      - 'wazuh-indexer'
+      - 'wazuh'
+      - 'wazuh-dashboard'
+  #endregion --- [ STIG ] ----------------------------------------------------------------------- #
