@@ -1,0 +1,91 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/site.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Site playbook — deploys the all-in-one Wazuh stack. After the indexer+server+dashboard
+# collapse, the whole central stack (indexer + manager + filebeat + dashboard) is ONE role
+# (wazuh_server) on ONE host. Split-host topology is no longer supported.
+#
+# Prerequisite (step 0): the data volume must be mounted at /mnt/data before this runs —
+# provision it with `playbooks/linux_disk_manager.yml` (the disk is selected by stable WWN and
+# mounted by UUID; see that role). Then this playbook: bootstrap venv -> AIO stack -> agents.
+#
+# Required Ansible vars:
+#   env                    - environment slug (int|test|prod); the loader picks up
+#                            wazuh_server/vars/redhat_<env>.yml (per-env S3 bucket) automatically.
+#   AWS_ACCESS_KEY_ID      - sourced from the runner env by aws_runner_env.yml, passed directly
+#   AWS_SECRET_ACCESS_KEY    to amazon.aws.s3_object module args (never into the target shell env).
+#   AWS_DEFAULT_REGION       AWS_SESSION_TOKEN optional.
+#
+# SECRETS: the operator provides exactly ONE password — the dashboard / OpenSearch `admin`
+# login below. Every other credential is generated fresh on every run and never persisted
+# (see the wazuh_server role, #region 01). Replace the lab admin password before real use.
+# =========================================================================================== #
+
+- name: 'Stage 0 - Bootstrap /opt/ansible/venv'
+  import_playbook: bootstrap.yml
+
+- name: 'Stage 1 - Wazuh all-in-one stack (indexer + manager + filebeat + dashboard)'
+  hosts: 'wazuh_servers'
+  gather_facts: false
+  environment:
+    ENV: "{{ env }}"
+    # Route the role loader's staging dir onto the /mnt/data data disk. The shared loader
+    # creates its staging dir with a bare ansible.builtin.tempfile, which honors $TMPDIR and
+    # otherwise falls back to /tmp — a small STIG partition, far too small for the 1.66 GB
+    # offline bundle + its extraction. /mnt/data (the provisioned Wazuh data disk) is the
+    # intended, roomy home; the pre_task below guarantees the base path exists first.
+    TMPDIR: '/mnt/data/.ansible/tmp'
+  vars_files: ['aws_runner_env.yml']
+  vars:
+    ENV: "{{ env }}"
+    wazuh_server:
+      secrets:
+        # The ONE operator-provided secret. CI/GitOps passes it as -e wazuh_admin_password
+        # (see .github/workflows/deploy.yml); the lab default keeps a bare local run working.
+        # Replace the lab default before any run against retained data or real users.
+        admin_password: "{{ wazuh_admin_password | default('WazuhLab-Admin-2026!') }}"
+  pre_tasks:
+    - name: 'PREP | Ensure Loader Staging Root Exists On The Data Disk'
+      become: true
+      ansible.builtin.file:
+        path:    '/mnt/data/.ansible/tmp'
+        state:   'directory'
+        owner:   'root'
+        group:   'root'
+        mode:    '0700'
+        selevel: 's0'
+        serole:  'object_r'
+        setype:  'tmp_t'
+        seuser:  'system_u'
+  roles:
+    - role: 'wazuh_server'
+
+- name: 'Stage 2 - Wazuh agents (Linux endpoints)'
+  hosts: 'wazuh_agents'
+  gather_facts: false
+  environment:
+    ENV: "{{ env }}"
+  vars_files: ['aws_runner_env.yml']
+  vars:
+    ENV: "{{ env }}"
+  roles:
+    - role: 'wazuh_agent'
+
+# Windows endpoints use the SAME wazuh_agent role via its native Windows entry point
+# (tasks/main_windows.yml) — the Linux loader can't run on Windows. The MSI comes from S3 like
+# the Linux RPM (pinned in vars/windows_<env>.yml): amazon.aws.s3_object downloads it DELEGATED
+# to the controller (venv boto3 + these AWS creds), then win_copy pushes it. No bootstrap venv
+# on the target. No-op when the wazuh_agents_windows group is empty.
+- name: 'Stage 3 - Wazuh agents (Windows endpoints)'
+  hosts: 'wazuh_agents_windows'
+  gather_facts: false
+  become: false
+  vars_files: ['aws_runner_env.yml']
+  vars:
+    ENV: "{{ env }}"
+  tasks:
+    - name: 'Deploy Wazuh agent via native Windows entry'
+      ansible.builtin.include_role:
+        name: 'wazuh_agent'
+        tasks_from: 'main_windows'

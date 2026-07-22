@@ -1,0 +1,73 @@
+---
+# =========================================================================================== #
+# File: '{{ role_path }}/handlers/main.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Service handlers for the collapsed all-in-one wazuh_server role (manager + filebeat +
+# dashboard). Notified by config/keystore/TLS changes in tasks/present_redhat.yml; some are
+# flushed mid-play (meta: flush_handlers) so downstream validation runs against the restarted
+# service. Handlers cannot see task-level vars, so host overrides are read from the loader's
+# `wazuh_server_running` merged-config fact.
+# =========================================================================================== #
+# Handlers run only when notified by a changed task.
+
+# Notified by tasks that modify /var/ossec/etc/ossec.conf or the manager keystore.
+# Flushed mid-play (via meta: flush_handlers) so the API user sync stage hits a
+# manager already running with the new config. Use an explicit stop/drain/start
+# sequence because wazuh-apid can leave 55000 bound after systemd reports stopped.
+- name: 'Wazuh manager config changed | stop'
+  listen: 'wazuh-manager-config-changed'
+  ansible.builtin.systemd:
+    name:  'wazuh-manager'
+    state: 'stopped'
+
+- name: 'Wazuh manager config changed | terminate stale API child'
+  listen: 'wazuh-manager-config-changed'
+  register: '__wazuh_apid_pkill__'
+  changed_when: __wazuh_apid_pkill__.rc == 0
+  failed_when: __wazuh_apid_pkill__.rc not in [0, 1]
+  ansible.builtin.command:
+    argv:
+      - 'pkill'
+      - '-u'
+      - 'wazuh'
+      - '-f'
+      - '/var/ossec/api/scripts/wazuh_apid.py'
+
+# Handlers cannot see task-level vars, so the endpoint override is read from the v3.1.0
+# loader's `<role>_running` merged-config fact (persists for the play, so it is still set
+# when handlers flush mid-play) with the same ansible_host → inventory_hostname fallback
+# chain the role tasks use.
+- name: 'Wazuh manager config changed | wait for API port to drain'
+  listen: 'wazuh-manager-config-changed'
+  ansible.builtin.wait_for:
+    host: "{{ wazuh_server_running.endpoint_host | default(ansible_host | default(inventory_hostname), true) }}"
+    port: 55000
+    state: 'stopped'
+    timeout: 60
+
+- name: 'Wazuh manager config changed | start'
+  listen: 'wazuh-manager-config-changed'
+  ansible.builtin.systemd:
+    name:  'wazuh-manager'
+    state: 'started'
+
+# Notified when filebeat.yml is rendered/changed. Filebeat reloads cleanly via a
+# restart; flushed mid-play (with the manager handler) so the post-render
+# `filebeat test output` smoke check runs against the new config.
+- name: 'Filebeat config changed'
+  listen: 'filebeat-config-changed'
+  ansible.builtin.systemd:
+    name:  'filebeat'
+    state: 'restarted'
+
+# Notified when the dashboard's TLS material, opensearch_dashboards.yml, keystore password, or
+# wazuh.yml changes. Gated on __wazuh_dashboard_start__ (set in present_redhat.yml BEGIN from
+# config.dashboard.service_state) — that dedicated fact is used instead of the loader's merged
+# config because the loader's always-block wipes it before a play-end flush (finding F58).
+- name: 'Restart wazuh-dashboard'
+  listen: 'wazuh-dashboard-config-changed'
+  when: __wazuh_dashboard_start__ | default(true)
+  ansible.builtin.systemd:
+    name:          'wazuh-dashboard'
+    state:         'restarted'
+    daemon_reload: true

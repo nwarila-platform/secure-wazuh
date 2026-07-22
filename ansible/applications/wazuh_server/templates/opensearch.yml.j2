@@ -1,0 +1,68 @@
+{# Rendered by wazuh_server from templates/opensearch.yml.j2 — replaces the RPM's stock
+   /etc/wazuh-indexer/opensearch.yml wholesale. Content tracks the Wazuh 4.14 stock config
+   (upstream wazuh-ansible opensearch.yml.j2); node identity, bind address, cluster name,
+   DN allowlists, and TLS policy are role variables instead of in-place regex patches.
+
+   admin_dn / nodes_dn are NOT guessed: present_redhat.yml reads the RFC2253 subject of the
+   actual admin.pem / indexer.pem placed under config.certs_dir and passes them in as
+   __admin_dn__ / __indexer_dn__, so the security plugin trusts exactly the certs installed
+   on this host. A multi-node indexer cluster would need every peer node's DN listed under
+   plugins.security.nodes_dn — extend here when that topology ships. #}
+network.host: "{{ config.network_host }}"
+node.name: "{{ __node_name__ }}"
+cluster.name: "{{ config.cluster_name }}"
+cluster.initial_master_nodes:
+- "{{ __node_name__ }}"
+{% if config.discovery_seed_hosts | length > 0 %}
+discovery.seed_hosts:
+{% for host in config.discovery_seed_hosts %}
+- "{{ host }}"
+{% endfor %}
+{% endif %}
+
+node.max_local_storage_nodes: "3"
+path.data: /var/lib/wazuh-indexer
+path.logs: /var/log/wazuh-indexer
+
+{# Canonical cert filenames: the role renames the per-node PEMs (<cert_name>.pem) to
+   indexer.pem / indexer-key.pem on copy, so these paths stay stable across hosts. #}
+plugins.security.ssl.http.pemcert_filepath: {{ config.certs_dir }}/indexer.pem
+plugins.security.ssl.http.pemkey_filepath: {{ config.certs_dir }}/indexer-key.pem
+plugins.security.ssl.http.pemtrustedcas_filepath: {{ config.certs_dir }}/root-ca.pem
+plugins.security.ssl.transport.pemcert_filepath: {{ config.certs_dir }}/indexer.pem
+plugins.security.ssl.transport.pemkey_filepath: {{ config.certs_dir }}/indexer-key.pem
+plugins.security.ssl.transport.pemtrustedcas_filepath: {{ config.certs_dir }}/root-ca.pem
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.transport.enforce_hostname_verification: false
+plugins.security.ssl.transport.resolve_hostname: false
+{% if config.tls.enabled_ciphers | length > 0 %}
+plugins.security.ssl.http.enabled_ciphers:
+{% for cipher in config.tls.enabled_ciphers %}
+- "{{ cipher }}"
+{% endfor %}
+{% endif %}
+{% if config.tls.enabled_protocols | length > 0 %}
+plugins.security.ssl.http.enabled_protocols:
+{% for protocol in config.tls.enabled_protocols %}
+- "{{ protocol }}"
+{% endfor %}
+{% endif %}
+
+plugins.security.authcz.admin_dn:
+{# to_json (not hand-wrapped quotes): RFC2253 backslash-escapes commas/quotes in DN attribute
+   values (e.g. O=Company\, Inc.), and \, is an invalid escape inside a double-quoted YAML
+   scalar. to_json emits a valid JSON string literal that YAML parses back to the exact DN. #}
+- {{ __admin_dn__ | to_json }}
+plugins.security.check_snapshot_restore_write_privileges: true
+plugins.security.enable_snapshot_restore_privilege: true
+plugins.security.nodes_dn:
+- {{ __indexer_dn__ | to_json }}
+plugins.security.restapi.roles_enabled:
+- "all_access"
+- "security_rest_api_access"
+
+plugins.security.system_indices.enabled: true
+plugins.security.system_indices.indices: [".plugins-ml-model", ".plugins-ml-task", ".opendistro-alerting-config", ".opendistro-alerting-alert*", ".opendistro-anomaly-results*", ".opendistro-anomaly-detector*", ".opendistro-anomaly-checkpoints", ".opendistro-anomaly-detection-state", ".opendistro-reports-*", ".opendistro-notifications-*", ".opendistro-notebooks", ".opensearch-observability", ".opendistro-asynchronous-search-response*", ".replication-metadata-store"]
+
+### Option to allow Filebeat-oss 7.10.2 to work ###
+compatibility.override_main_response_version: true

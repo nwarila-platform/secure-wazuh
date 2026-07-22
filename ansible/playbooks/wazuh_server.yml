@@ -1,0 +1,55 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/wazuh_server.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Standalone wazuh_server playbook — the collapsed all-in-one stack (indexer + manager +
+# filebeat + dashboard) on one host. Same as site.yml Stage 1 without the agents.
+#
+# Prerequisite: /mnt/data mounted (playbooks/linux_disk_manager.yml).
+#
+# Required Ansible vars:
+#   env (int|test|prod). AWS credentials are sourced from the runner env by aws_runner_env.yml
+#   and passed as no_log module args, not target env vars.
+#
+# SECRETS: operator provides ONLY the admin (dashboard/OpenSearch) password; everything else is
+# generated fresh each run and never persisted (see the wazuh_server role, #region 01).
+# =========================================================================================== #
+
+- name: 'Stage 0 - Bootstrap /opt/ansible/venv'
+  import_playbook: bootstrap.yml
+
+- name: 'Deploy Wazuh all-in-one stack (offline bundle)'
+  hosts: 'wazuh_servers'
+  gather_facts: false
+  environment:
+    ENV: "{{ env }}"
+    # Route the role loader's staging dir onto the /mnt/data data disk. The shared loader
+    # creates its staging dir with a bare ansible.builtin.tempfile, which honors $TMPDIR and
+    # otherwise falls back to /tmp — a small STIG partition, far too small for the 1.66 GB
+    # offline bundle + its extraction. /mnt/data (the provisioned Wazuh data disk) is the
+    # intended, roomy home; the pre_task below guarantees the base path exists first.
+    TMPDIR: '/mnt/data/.ansible/tmp'
+  vars_files: ['aws_runner_env.yml']
+  vars:
+    ENV: "{{ env }}"
+    wazuh_server:
+      secrets:
+        # The ONE operator-provided secret. CI/GitOps passes it as -e wazuh_admin_password
+        # (see .github/workflows/deploy.yml); the lab default keeps a bare local run working.
+        # Replace the lab default before any run against retained data or real users.
+        admin_password: "{{ wazuh_admin_password | default('WazuhLab-Admin-2026!') }}"
+  pre_tasks:
+    - name: 'PREP | Ensure Loader Staging Root Exists On The Data Disk'
+      become: true
+      ansible.builtin.file:
+        path:    '/mnt/data/.ansible/tmp'
+        state:   'directory'
+        owner:   'root'
+        group:   'root'
+        mode:    '0700'
+        selevel: 's0'
+        serole:  'object_r'
+        setype:  'tmp_t'
+        seuser:  'system_u'
+  roles:
+    - role: 'wazuh_server'

@@ -1,0 +1,46 @@
+---
+# =========================================================================================== #
+# File: 'ansible/inventory/proxmox.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Production inventory for the Proxmox-hosted Wazuh all-in-one. Mirrors the `ansible.groups` +
+# `ansible.host_vars` that `proxmox-vm-terraform-framework` renders from `terraform/proxmox.tfvars`
+# (VM `wazuh-aio`, VLAN 212, IP 10.69.112.72) — keep the two in sync when the tfvars change.
+#
+# Collapsed all-in-one topology: the whole central stack (indexer + manager + filebeat +
+# dashboard) is ONE role (wazuh_server) on ONE host. `wazuh_indexers`/`wazuh_dashboards` remain
+# only because the loader/consumers still reference them; the AIO host is a member of all three
+# central groups. Endpoint agents run on SEPARATE hosts — `wazuh_agents` (Linux) and
+# `wazuh_agents_windows` (Windows) are intentionally empty here (the agent role's BEGIN guard
+# refuses to install on any wazuh_servers member).
+# =========================================================================================== #
+
+all:
+  children:
+
+    # Central all-in-one host — defined once here with its connection + data-disk vars.
+    wazuh_servers:
+      hosts:
+        wazuh-aio:
+          ansible_host: 10.69.112.72
+          ansible_user: ansible_admin
+          ansible_ssh_private_key_file: /root/.ssh/id_rsa_wazuh
+          node_name: tcnhq-prxmx01
+          vm_id: 1000
+          wazuh_data_device: /dev/disk/by-id/scsi-SQEMU_QEMU_HARDDISK_wazuh-data
+          wazuh_data_mount: /mnt/data
+          wazuh_data_fstype: xfs
+
+    # Vestigial central groups — the same AIO host, vars inherited from wazuh_servers above.
+    wazuh_indexers:
+      hosts:
+        wazuh-aio: {}
+    wazuh_dashboards:
+      hosts:
+        wazuh-aio: {}
+
+    # Endpoint agent groups (populated per environment; empty on the AIO-only topology).
+    wazuh_agents:
+      hosts: {}
+    # Windows-over-SSH: connection vars (ansible_shell_type=powershell, ansible_become=false) come from inventory
+    wazuh_agents_windows:
+      hosts: {}
