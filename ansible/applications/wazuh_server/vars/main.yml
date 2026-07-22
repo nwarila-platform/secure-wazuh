@@ -1,0 +1,11 @@
+---
+# =========================================================================================== #
+# File: '{{ role_path }}/vars/main.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Internal role constants — NOT intended to be overridden by users.
+#
+# (Empty: the old `wazuh_server_required_passwords` list is gone. Under the rotate-every-run
+# secrets model the only operator input is `config.secrets.admin_password`; every other
+# credential is generated in present_redhat.yml #region 01, so there is no required-key list to
+# assert against.)
+# =========================================================================================== #
