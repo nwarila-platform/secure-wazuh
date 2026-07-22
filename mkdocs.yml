@@ -1,0 +1,87 @@
+site_name: secure-wazuh
+site_description: STIG- and FIPS-hardened Wazuh 4.14.5 SIEM delivered by Terraform + Ansible GitOps
+site_url: https://nwarila-platform.github.io/secure-wazuh/
+repo_url: https://github.com/nwarila-platform/secure-wazuh
+repo_name: nwarila-platform/secure-wazuh
+edit_uri: edit/main/docs/
+copyright: "Copyright &copy; 2026 Smarter > Harder &mdash; MIT License"
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - tables
+  - toc:
+      permalink: true
+  - attr_list
+  - md_in_html
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/nwarila-platform
+      name: nwarila-platform on GitHub
+
+# Diátaxis-organized navigation. Wire each new page in under its quadrant as content lands
+# (tutorials/ is still empty — the first-deploy walkthrough currently lives in how-to/).
+nav:
+  - Home: README.md
+  - How-to guides:
+      - Deploy the stack: how-to/deploy-the-stack.md
+      - Provide AWS credentials safely: how-to/provide-aws-credentials-safely.md
+  - Reference:
+      - Inventory and topology: reference/inventory-and-topology.md
+      - S3 artifacts: reference/s3-artifacts.md
+  - Explanation:
+      - Architecture: explanation/architecture.md
+      - Composition model: explanation/composition-model.md
+      - RHEL 8 toolchain: explanation/toolchain-rhel8.md
+  - Decision records: decision-records/README.md
