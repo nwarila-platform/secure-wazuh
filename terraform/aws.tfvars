@@ -24,7 +24,7 @@ readiness_private_key_paths = {
 
 # STIG-hardened RHEL/Rocky 8 images commonly mount /tmp, /var/tmp, and /dev/shm noexec, which
 # breaks the gate's default remote-exec upload dir. Point it at the login user's home instead.
-readiness_linux_script_dir = "/home/rocky"
+readiness_linux_script_dir = "/home/ec2-user"
 
 all_systems = [
   {
@@ -37,12 +37,16 @@ all_systems = [
     subnet_id            = "subnet-REPLACE_ME"    # private subnet in us-east-1a
     key_name             = "secure-wazuh-poc-key" # must match a readiness_private_key_paths key
     iam_instance_profile = "REPLACE_ME-wazuh-poc-profile"
-    aws_kms_alias        = "REPLACE_ME-wazuh-poc-ebs" # EBS CMK alias WITHOUT the "alias/" prefix
+    # aws/ebs = the AWS-managed default EBS key (satisfies encrypted-at-rest for STIG/FIPS). A
+    # customer-managed CMK is an optional hardening upgrade (key control/rotation/audit), not required.
+    aws_kms_alias = "aws/ebs" # AWS-managed default EBS key alias (no "alias/" prefix)
 
-    # Self-built, STIG/FIPS-baselined Rocky 8 AMI family (resolves to the glob
-    # rocky_linux_8_x64_v*). Default login user on the image is "rocky".
-    ami            = "rocky_linux_8_x64"
-    readiness_user = "rocky"
+    # CIS/DISA RHEL 8 Benchmark STIG marketplace AMI (Red Hat, DISA-STIG-hardened). Marketplace AMI
+    # IDs are region-specific and require accepting the product subscription once per account; supply
+    # the target-region product AMI ID. Default login user on the image is "ec2-user". (Rocky 8 is the
+    # free on-prem/Proxmox image; AWS deploys the RHEL 8 DISA STIG marketplace image.)
+    ami            = "ami-REPLACE_ME" # CIS/DISA RHEL 8 STIG marketplace AMI ID for us-east-1a
+    readiness_user = "ec2-user"
 
     # 4 vCPU / 16 GB - clears the AIO floor (>=4 vCPU / 8 GB) with headroom for the OpenSearch
     # JVM heap. Mirrors the permanent Proxmox box (4 cores / 8 GB) with slack for indexing bursts.
