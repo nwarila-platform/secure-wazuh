@@ -1,0 +1,127 @@
+---
+# =========================================================================================== #
+# File: 'ansible/inventory/aws/aws_ec2.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Generic, env-driven dynamic inventory for any nwarila-platform AWS Wazuh deployment. Discovers
+# running EC2 instances by the org's mandatory auto-tags via the amazon.aws.aws_ec2 plugin, so the
+# deploy -> test -> destroy loop always reflects whatever stack currently exists instead of a
+# hand-maintained, staleness-prone host list. Region and account/creds come from the standard AWS
+# environment (below); only the Function auto-tag -> group mapping is Wazuh-product-specific and
+# intentionally NOT genericized (see groups:).
+#
+# This does not replace `.github/workflows/deploy.yml`'s "Generate ephemeral inventory from
+# Terraform outputs" step — that generator stays as the CI job's own inline inventory (a
+# `terraform output` one-shot script, self-flagged FIRST CUT in that workflow's header). This
+# file is the equivalent for driving `ansible-playbook`/`ansible-inventory` directly against a
+# live PoC stack. ADR-0002 (docs/decision-records/repo/0002-combined-terraform-ansible-delivery.md)
+# governs the Terraform layer (data-only) and the Ansible composition (loader + shared roles from
+# ansible-framework); it does not mandate that Terraform output be the inventory source.
+#
+# WHY THIS LIVES IN ITS OWN 'aws/' BASEDIR (not flat under ansible/inventory/, alongside
+# proxmox.yml): Ansible discovers group_vars/host_vars as siblings of each inventory SOURCE's own
+# directory. A prior revision put this file's group_vars/ directly under ansible/inventory/, which
+# meant EVERY run — including `-i inventory/proxmox.yml` against the PERMANENT target — silently
+# picked up the SSM ProxyCommand + user + PoC key, and CI's `rsync -a ansible/ _dev-build/`
+# (deploy.yml) put the same group_vars/ beside the CI-generated `_dev-build/inventory/aws.yml`,
+# where inventory group_vars (precedence 4) would have silently overridden that file's own
+# ec2-user/CI-key vars (precedence 3). Isolating this plugin + its group_vars in their own
+# directory scopes them to ONLY `-i inventory/aws/aws_ec2.yml` runs. The basename still ends in
+# `aws_ec2.yml`, which is all the plugin's own filename check requires
+# (INVENTORY_FILE_SUFFIXES = ("aws_ec2.yml", "aws_ec2.yaml"), amazon.aws.aws_ec2 plugin source).
+#
+# TEMPLATING: regions/filters below use Jinja + `lookup('ansible.builtin.env', ...)`. This is NOT
+# generic Ansible inventory-config behavior — plain YAML config values in an inventory source are
+# never templated (confirmed from source: ansible/config/manager.py's direct-config branch does a
+# bare `value = direct[config]` with no templating; only a plugin's own schema-declared `default:`
+# gets template_default()-treated). amazon.aws layers its OWN templating on top for a specific,
+# explicit allowlist of options — plugin_utils/inventory.py's
+# `AWSInventoryBase.TemplatedOptions.TEMPLATABLE_OPTIONS = (..., "region", "regions", "filters")`
+# — confirmed empirically two ways: (1) an undefined-var probe in `filters` raised
+# AnsibleUndefinedVariable with a traceback through that exact get_option()/TemplatedOptions.get()
+# code path, not a boto3/AWS-side error; (2) the real `lookup('ansible.builtin.env', ...)`
+# expressions below resolved correctly end-to-end through `ansible-inventory` (clean AuthFailure —
+# reached the API call — across multiple env-var combinations, zero template/undefined errors).
+#
+# REGION is NOT simply omitted to "let boto3 pick up the env var" — that would be actively unsafe
+# here. Per the installed plugin's own source (`_boto3_regions`/`all_clients`,
+# plugin_utils/inventory.py), an EMPTY `regions` list does not defer region selection to a single
+# boto3 client — it calls `describe_regions()` once (using AWS_REGION/AWS_DEFAULT_REGION/'us-east-1'
+# only for THAT bootstrap call) and then queries EVERY region it returns. This repo's IAM deploy
+# policy scopes `ec2:Describe*` to `aws:RequestedRegion == us-east-1`
+# (docs/reference/aws-iam/policies/secure-wazuh_deploy.json), and `strict_permissions` (403
+# handling) defaults to `true` — so an empty `regions` list would hard-fail the whole inventory
+# parse on the first non-us-east-1 region it tries. A single TEMPLATED region element avoids this:
+# exactly one region is ever queried, it is still env-driven, and 'us-east-1' is a documented
+# fallback default (matches this product's only current target), not a hardcoded override.
+#
+# ENVIRONMENT tag filter is templated the same way, keyed off WAZUH_ENV (the same env-selector
+# name used elsewhere in this repo — ansible/README.md, deploy.yml's WAZUH_ENV job var) with a
+# 'poc' fallback default (matches this product's only current target and the IAM policy's
+# Environment=poc condition). Account isolation rides the ambient AWS credentials/profile — no
+# account id is ever read, filtered on, or hardcoded here.
+#
+# Connection: SSH-over-SSM, not a direct IP. The PoC security group has zero inbound rules
+# (docs/reference/aws-iam/README.md, "Permanent networking"), so there is no network path to any
+# instance except through SSM. ansible_host is therefore the INSTANCE-ID (compose below); the
+# ProxyCommand in group_vars/all.yml tunnels every ssh/sftp/scp call through
+# `aws ssm start-session` using the exact `AWS-StartSSHSession` document the deploy policy grants
+# (secure-wazuh_deploy.json, "SsmSessionDocumentAndTeardown").
+#
+# Groups reproduce the proven contract (ansible/inventory/proxmox.yml, docs/reference/
+# inventory-and-topology.md): wazuh_servers / wazuh_agents / wazuh_agents_windows, keyed off the
+# org's mandatory Function auto-tag. This mapping is Wazuh-specific by design and is NOT
+# genericized — it is what makes this a Wazuh inventory rather than a bare EC2 lister.
+# wazuh_indexers/wazuh_dashboards are intentionally OMITTED — vestigial even in the static
+# inventories (the AIO role runs entirely off wazuh_servers; inventory-and-topology.md), and the
+# CI-generated AWS inventory in deploy.yml drops them too.
+#
+# NOTE: terraform/aws.tfvars today declares only ONE all_systems entry (tags.Function=wazuh-aio);
+# no Function=wazuh-agent host exists yet, so wazuh_agents/wazuh_agents_windows are structurally
+# EMPTY until an agent entry is added there. That is unchanged by dynamic vs. static inventory —
+# this file only reflects whatever the tfvars stand up — and is out of this file's scope.
+# =========================================================================================== #
+
+plugin: amazon.aws.aws_ec2
+
+# Single, templated region — see "REGION is NOT simply omitted" above for why an empty/omitted
+# regions: list is unsafe with this plugin+IAM combination. AWS_REGION wins if both are set
+# (matches botocore's own precedence); 'us-east-1' is the documented fallback default.
+regions:
+  - "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) | default('us-east-1', true) }}"
+
+# A Jinja error evaluating compose/groups for one odd host (e.g. a stray non-Wazuh instance that
+# happens to share Environment=poc but carries no Function tag) skips that host instead of
+# failing the whole inventory.
+strict: false
+
+filters:
+  # Templated — see "ENVIRONMENT tag filter" above. 'poc' is the documented fallback default.
+  tag:Environment: "{{ lookup('ansible.builtin.env', 'WAZUH_ENV') | default('poc', true) }}"
+  instance-state-name:
+    - running
+
+# Hostnames come from the Name tag so `--graph` reads like the static inventories do. The actual
+# SSH target is the instance-id (compose below), not this name.
+hostnames:
+  - tag:Name
+
+compose:
+  # SSH-over-SSM dials the instance by ID, never by IP — see group_vars/all.yml's ProxyCommand.
+  ansible_host: instance_id
+
+groups:
+  # `tags` (NOT `ec2_tags`) deliberately: ansible/requirements.yml pins amazon.aws to
+  # >=6.0.0,<11.0.0 because every amazon.aws >=11.0.0 declares requires_ansible >=2.17.0, and this
+  # repo hard-pins ansible-core to >=2.16,<2.17 project-wide (requirements-dev.txt,
+  # .pre-commit-config.yaml, docs/explanation/toolchain-rhel8.md — RHEL 8 platform-python 3.6
+  # SyntaxErrors under 2.17+). `ec2_tags` was only added in amazon.aws 11.2.0, so it is not
+  # available under this pin; `tags` is the plain, non-deprecated hostvar in the <11 series
+  # (verified against the installed 10.3.2's plugin source, which sets host_vars["tags"] directly
+  # with no deprecation warning). Keyed off the org's mandatory Function auto-tag.
+  wazuh_servers: "tags.Function | default('') == 'wazuh-aio'"
+  # EC2's Platform field is only ever set — to the literal 'Windows', capital W (verified against
+  # botocore's PlatformValues enum and the amazon.aws.aws_ec2 source, which snake_cases hostvar
+  # KEYS but never touches string VALUES) — for Windows instances, and absent for Linux. lower()
+  # both sides defensively so casing can never silently misclassify an agent.
+  wazuh_agents: "tags.Function | default('') == 'wazuh-agent' and (platform | default('') | lower) != 'windows'"
+  wazuh_agents_windows: "tags.Function | default('') == 'wazuh-agent' and (platform | default('') | lower) == 'windows'"
