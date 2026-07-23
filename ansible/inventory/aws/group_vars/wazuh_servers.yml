@@ -1,0 +1,24 @@
+---
+# =========================================================================================== #
+# File: 'ansible/inventory/aws/group_vars/wazuh_servers.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# wazuh_server role override for the AIO host. Connection vars come from group_vars/all.yml
+# unchanged; only the role's own config dict lives here.
+#
+# endpoint_host is set EXPLICITLY rather than left at its '' default. wazuh_server's own loader
+# derives __endpoint_host__ as `config.endpoint_host | default(ansible_host | default(
+# inventory_hostname), true)` (applications/wazuh_server/tasks/present_redhat.yml:26; the '' ->
+# ansible_host fallback is documented at applications/wazuh_server/defaults/main.yml:95) and uses
+# it for the on-target manager-API health/auth checks — `https://{{ __endpoint_host__ }}:55000/...`
+# (present_redhat.yml:940,970,999). Because aws_ec2.yml deliberately sets ansible_host to the EC2
+# instance-id (for SSH-over-SSM), the '' default would resolve __endpoint_host__ to that
+# instance-id too — not a dialable address — and the on-target health/auth checks would fail
+# against it. The AIO's own private IP is supplied here instead, straight from the dynamic
+# inventory's own hostvars, the same treatment group_vars/wazuh_agents*.yml gives manager.host.
+#
+# (The dashboard's equivalent check does not need this: __dashboard_endpoint_host__ falls back to
+# 127.0.0.1, not ansible_host, so it is unaffected either way — present_redhat.yml:33-36.)
+# =========================================================================================== #
+
+wazuh_server:
+  endpoint_host: "{{ hostvars[inventory_hostname].private_ip_address }}"

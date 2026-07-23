@@ -140,6 +140,13 @@
 !/ansible/applications/wazuh_server/vars/redhat_prod.yml
 !/ansible/applications/wazuh_server/vars/redhat_test.yml
 !/ansible/inventory/
+!/ansible/inventory/aws/
+!/ansible/inventory/aws/aws_ec2.yml
+!/ansible/inventory/aws/group_vars/
+!/ansible/inventory/aws/group_vars/all.yml
+!/ansible/inventory/aws/group_vars/wazuh_agents.yml
+!/ansible/inventory/aws/group_vars/wazuh_agents_windows.yml
+!/ansible/inventory/aws/group_vars/wazuh_servers.yml
 !/ansible/inventory/proxmox.yml
 !/ansible/playbooks/
 !/ansible/playbooks/aws_runner_env.yml

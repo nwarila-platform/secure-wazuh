@@ -1,0 +1,53 @@
+---
+# =========================================================================================== #
+# File: 'ansible/inventory/aws/group_vars/all.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Connection defaults for every host aws_ec2.yml discovers. group_vars/wazuh_agents_windows.yml
+# overrides the handful of keys that differ for the Windows endpoint (user, shell, become); every
+# other var here — including the SSM ProxyCommand below — applies to it unchanged.
+#
+# This directory lives under ansible/inventory/aws/ specifically so these vars are scoped to
+# `-i inventory/aws/aws_ec2.yml` runs only — see aws_ec2.yml's header for why (Ansible discovers
+# group_vars as siblings of the inventory SOURCE's own directory, so nesting this one level
+# beneath ansible/inventory/ keeps it from also being loaded for `-i inventory/proxmox.yml` or
+# CI's generated `_dev-build/inventory/aws.yml`).
+#
+# No AWS profile is hardcoded anywhere in this file: the `aws` CLI the ProxyCommand shells out to
+# inherits whatever ambient AWS_PROFILE / credential chain the operator's shell (or CI's OIDC
+# session) already has.
+# =========================================================================================== #
+
+ansible_connection: ssh
+
+# Director decision: the AWS target is the org's CIS/DISA RHEL 8 STIG marketplace image, whose
+# default login user is "ec2-user" — NOT "rocky" (Rocky Linux is the on-prem/Proxmox image).
+# Matches terraform/aws.tfvars's readiness_user = "ec2-user" (reconciled to this same decision).
+ansible_user: ec2-user
+
+# Matches terraform/aws.tfvars all_systems[].key_name = "secure-wazuh-poc-key". Operator-local
+# path convention — the same treatment ansible/inventory/proxmox.yml already gives its own
+# committed ansible_ssh_private_key_file.
+ansible_ssh_private_key_file: /root/.ssh/secure-wazuh-poc-key.pem
+
+# RHEL/Rocky 8 STIG images ship only platform-python; see ansible/ansible.cfg's interpreter note
+# and the same pin in lab/inventory.yml. Inert on the Windows group (no Python involved there).
+ansible_python_interpreter: /usr/libexec/platform-python
+
+# The PoC security group has zero inbound rules (docs/reference/aws-iam/README.md, "Permanent
+# networking") — there is no direct network path to any instance. Every ssh/sftp/scp call must
+# tunnel through SSM instead, dialing the instance-id (ansible_host, from aws_ec2.yml's compose)
+# rather than an IP. `host_key_checking = False` is already set project-wide in ansible/ansible.cfg
+# (these instances are destroyed and recreated every deploy cycle, so host keys never persist),
+# so it is not repeated here.
+#
+# --region is templated the SAME way aws_ec2.yml's own regions: is (AWS_REGION, then
+# AWS_DEFAULT_REGION, then a documented 'us-east-1' default) — this is a plain group_vars file, so
+# ordinary Ansible variable templating applies (unlike the inventory plugin's own YAML config
+# options, which are templated only because amazon.aws explicitly opts a handful of them in; see
+# aws_ec2.yml's header). Keeping this hardcoded to us-east-1 while the discovered region became
+# dynamic would silently break the SSM tunnel the moment a non-default region is used.
+ansible_ssh_common_args: >-
+  -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession
+  --parameters portNumber=%p --region {{ lookup('ansible.builtin.env', 'AWS_REGION') |
+  default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) | default('us-east-1',
+  true) }}"

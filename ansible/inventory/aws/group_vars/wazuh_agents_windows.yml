@@ -1,0 +1,26 @@
+---
+# =========================================================================================== #
+# File: 'ansible/inventory/aws/group_vars/wazuh_agents_windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Windows endpoints, deployed by the SAME wazuh_agent role via its native Windows entry
+# (tasks/main_windows.yml). These vars override the Linux-oriented connection settings from
+# group_vars/all.yml: Ansible-over-SSH with the OpenSSH DefaultShell set to PowerShell, and no
+# become (the Administrator SSH session already has the rights; become=sudo is Linux-only).
+# Matches lab/inventory.yml's wazuh_agents_windows block exactly. The SSM ProxyCommand from
+# group_vars/all.yml is inherited unchanged — the tunnel is OS-agnostic.
+# =========================================================================================== #
+
+ansible_connection: ssh
+ansible_shell_type: powershell
+ansible_user: Administrator
+ansible_become: false
+
+wazuh_agent:
+  # See group_vars/wazuh_agents.yml for why manager.host is derived explicitly rather than left
+  # to the role's ansible_host-based default.
+  manager:
+    host: "{{ hostvars[groups['wazuh_servers'][0]].private_ip_address }}"
+  windows:
+    # Watch the Windows hosts-file directory in real time so editing
+    # C:\Windows\System32\drivers\etc\hosts emits an immediate agent-sourced FIM alert.
+    fim_realtime_paths: ['C:\Windows\System32\drivers\etc']
