@@ -69,6 +69,7 @@
 !/docs/decision-records/repo/0001-secrets-and-tls.md
 !/docs/decision-records/repo/0002-combined-terraform-ansible-delivery.md
 !/docs/decision-records/repo/0003-deny-all-explicit-gitignore.md
+!/docs/decision-records/repo/0004-runtime-derived-account-id-for-s3-bucket.md
 !/docs/decision-records/template/
 !/docs/decision-records/template/.gitkeep
 !/docs/explanation/
