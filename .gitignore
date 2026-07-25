@@ -42,6 +42,7 @@
 # --------------------------------------------------------------------------- #
 !/.github/
 !/.github/.framework-pin
+!/.github/.aws-tf-framework-pin
 !/.github/CODEOWNERS
 !/.github/ISSUE_TEMPLATE/
 !/.github/ISSUE_TEMPLATE/bug_report.yml
