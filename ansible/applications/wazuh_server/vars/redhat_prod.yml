@@ -3,12 +3,22 @@
 # File: '{{ role_path }}/vars/redhat_prod.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 # Per-env overlay loaded by the generic role loader when os_family=redhat AND ENV=prod.
-# Replace every CHANGE_ME placeholder with the real prod-env value before running
+# Replace every remaining CHANGE_ME placeholder with the real prod-env value before running
 # `-e env=prod`.
+#
+# s3.bucket is the EXCEPTION: it is RUNTIME-SUBSTITUTED (ADR-0004), not operator-filled.
+# playbooks/site.yml derives the caller's AWS account id (amazon.aws.aws_caller_info,
+# controller-side) and injects the account-scoped `<account-id>-ansible` bucket as a fallback
+# default via the wazuh_server override dict, so this literal is never actually used. Do NOT
+# replace it with CHANGE_ME-style text or a real bucket name: it is a deliberate fail-fast
+# TRIPWIRE — if it ever reaches a real AWS call, that call fails immediately instead of
+# silently reading/writing the wrong account. (Previously this and test carried an
+# env-suffixed `CHANGE_ME-ansible-prod`/`-test` shape that contradicted int's non-suffixed
+# `<account-id>-ansible` and the IAM `*-ansible` wildcard; normalized to the one convention.)
 # =========================================================================================== #
 
 s3:
-  bucket:        'CHANGE_ME-ansible-prod'
+  bucket:        '<account-id>-ansible'
   bundle_key:    'CHANGE_ME/wazuh-offline.tar.gz'
   bundle_sha256: 'CHANGE_ME-64-character-sha256-of-the-prod-bundle'
   certs_prefix:  'CHANGE_ME/certs'
