@@ -4,6 +4,12 @@
 # --- [ Description ] ----------------------------------------------------------------------- #
 # Standalone Wazuh agent playbook. Targets Linux endpoint hosts in the `wazuh_agents` group.
 #
+# S3 BUCKET (ADR-0004): this standalone does NOT wire the account-id derive site.yml's stages
+# use, so the role's s3.bucket stays the committed overlay's literal `<account-id>-ansible`
+# fail-fast tripwire and the run fails at S3 unless given a real bucket. Either pass
+# `-e wazuh_s3_bucket=<account-id>-ansible` explicitly, or run via deploy_all.yml/site.yml,
+# which derive it automatically.
+#
 # Required Ansible vars:
 #   env (int|test|prod). AWS credentials are sourced from the runner env by
 #   aws_runner_env.yml and passed as no_log module args, not target env vars.
@@ -22,8 +28,6 @@
 - name: 'Deploy Wazuh agent'
   hosts: 'wazuh_agents'
   gather_facts: false
-  environment:
-    ENV: "{{ env }}"
   vars_files: ['aws_runner_env.yml']
   vars:
     ENV: "{{ env }}"

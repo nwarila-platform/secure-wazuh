@@ -17,6 +17,18 @@
 # session) already has.
 # =========================================================================================== #
 
+# The env selector every role loader validates and uses to pick its vars/redhat_<env>.yml
+# overlay (e.g. wazuh_server/vars/redhat_int.yml — bundle key/sha256/certs prefix). This AWS
+# inventory has exactly ONE identity: it IS the int/PoC environment (both the dynamic
+# aws_ec2.yml plugin and the static.yml E2E test fixture share this group_vars/ directory, so
+# whichever one drives a given run, the target is still the same int/PoC stack) — so env is a
+# committed inventory fact here, not a per-run flag every invocation must re-supply. Every
+# playbook consumes it identically via its own `vars: { ENV: "{{ env }}" }` (site.yml x3,
+# wazuh_server.yml, wazuh_agent.yml, wazuh_agent_windows.yml, linux_disk_manager.yml,
+# wazuh_trigger_fim.yml). An explicit `-e env=...` still overrides for a one-off run against a
+# different overlay — extra-vars outrank inventory group_vars in Ansible's precedence order.
+env: int
+
 ansible_connection: ssh
 
 # Director decision: the AWS target is the org's CIS/DISA RHEL 8 STIG marketplace image, whose
@@ -24,10 +36,10 @@ ansible_connection: ssh
 # Matches terraform/aws.tfvars's readiness_user = "ec2-user" (reconciled to this same decision).
 ansible_user: ec2-user
 
-# Matches terraform/aws.tfvars all_systems[].key_name = "secure-wazuh-poc-key". Operator-local
-# path convention — the same treatment ansible/inventory/proxmox.yml already gives its own
-# committed ansible_ssh_private_key_file.
-ansible_ssh_private_key_file: /root/.ssh/secure-wazuh-poc-key.pem
+# Matches terraform/aws.tfvars all_systems[].key_name = "secure-wazuh-poc-key". Controller-user
+# home convention — /root for the local root harness, /home/runner for the non-root GitHub runner.
+# ansible/inventory/proxmox.yml keeps its separate permanent-inventory path unchanged.
+ansible_ssh_private_key_file: ~/.ssh/secure-wazuh-poc-key.pem
 
 # RHEL/Rocky 8 STIG images ship only platform-python; see ansible/ansible.cfg's interpreter note
 # and the same pin in lab/inventory.yml. Inert on the Windows group (no Python involved there).

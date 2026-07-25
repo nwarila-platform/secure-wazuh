@@ -3,9 +3,21 @@
 # File: 'ansible/playbooks/wazuh_server.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 # Standalone wazuh_server playbook — the collapsed all-in-one stack (indexer + manager +
-# filebeat + dashboard) on one host. Same as site.yml Stage 1 without the agents.
+# filebeat + dashboard) on one host, minus the agent stages. NOT a full parity mirror of
+# site.yml Stage 1 though: Stage 1 additionally wires the ADR-0004 account-id/S3-bucket derive,
+# an explicit -e wazuh_cert_name PASSTHROUGH (this standalone has no such override wiring), and
+# a CC2 guard asserting /mnt/data is a mounted data disk before staging the offline bundle —
+# none of which this standalone carries. cert_name itself still resolves sensibly without that
+# wiring: the role's own default (defaults/main.yml, present_redhat.yml's __aio_node__) falls
+# back to the host's inventory_hostname whenever cert_name is empty/unset.
 #
 # Prerequisite: /mnt/data mounted (playbooks/linux_disk_manager.yml).
+#
+# S3 BUCKET (ADR-0004): this standalone does NOT wire the account-id derive site.yml's stages
+# use, so the role's s3.bucket stays the committed overlay's literal `<account-id>-ansible`
+# fail-fast tripwire and the run fails at S3 unless given a real bucket. Either pass
+# `-e wazuh_s3_bucket=<account-id>-ansible` explicitly, or run via deploy_all.yml/site.yml,
+# which derive it automatically.
 #
 # Required Ansible vars:
 #   env (int|test|prod). AWS credentials are sourced from the runner env by aws_runner_env.yml
@@ -22,22 +34,35 @@
   hosts: 'wazuh_servers'
   gather_facts: false
   environment:
-    ENV: "{{ env }}"
     # Route the role loader's staging dir onto the /mnt/data data disk. The shared loader
     # creates its staging dir with a bare ansible.builtin.tempfile, which honors $TMPDIR and
     # otherwise falls back to /tmp — a small STIG partition, far too small for the 1.66 GB
     # offline bundle + its extraction. /mnt/data (the provisioned Wazuh data disk) is the
     # intended, roomy home; the pre_task below guarantees the base path exists first.
+    # (No ENV key here: the loader consumes ENV as an ANSIBLE var — see vars: below — never the
+    # OS process env, so an environment:-injected ENV has zero consumers.)
     TMPDIR: '/mnt/data/.ansible/tmp'
   vars_files: ['aws_runner_env.yml']
   vars:
     ENV: "{{ env }}"
     wazuh_server:
       secrets:
-        # The ONE operator-provided secret. CI/GitOps passes it as -e wazuh_admin_password
-        # (see .github/workflows/deploy.yml); the lab default keeps a bare local run working.
-        # Replace the lab default before any run against retained data or real users.
-        admin_password: "{{ wazuh_admin_password | default('WazuhLab-Admin-2026!') }}"
+        # The ONE operator-provided secret, three-step chain (highest precedence first):
+        # explicit -e wazuh_admin_password -> the WAZUH_ADMIN_PASSWORD env var -> the lab
+        # default. CI/GitOps passes it as the WAZUH_ADMIN_PASSWORD env (sourced from the repo
+        # secret; see .github/workflows/deploy.yml) — no -e needed; -e remains available as an
+        # explicit override. lookup('env', ...) on an unset var yields '' (not undefined), which
+        # is why the inner default also needs boolean=true to catch it, same as every other
+        # env-var default in this codebase. Replace the lab default before any run against
+        # retained data or real users.
+        admin_password: "{{ wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD') | default('WazuhLab-Admin-2026!', true), true) }}"
+      # On-target reachability for the manager-API/health waits. MUST live in THIS override dict,
+      # not group_vars: a play-level `wazuh_server:` replaces a group_vars `wazuh_server:` wholesale
+      # (no deep-merge), so group_vars/aws/wazuh_servers.yml's endpoint_host would be silently
+      # dropped by this same play-vars mechanic — see site.yml's Stage 1 endpoint_host comment. On
+      # AWS the aws_ec2 `ansible_host` is the instance-id (unroutable for a socket wait) — derive
+      # the private IP; '' on Proxmox falls back to the role default (ansible_host, routable there).
+      endpoint_host: "{{ private_ip_address | default('', true) }}"
   pre_tasks:
     - name: 'PREP | Ensure Loader Staging Root Exists On The Data Disk'
       become: true

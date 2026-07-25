@@ -1,0 +1,96 @@
+---
+# =========================================================================================== #
+# File: 'ansible/playbooks/windows_ssh_bootstrap.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Bootstrap play: flip a Windows target's OpenSSH DefaultShell from cmd to PowerShell. MUST run
+# BEFORE any other play against wazuh_agents_windows; MUST stay idempotent (a refresh-replaced
+# instance re-arrives at the framework's cmd default and needs this to run again).
+#
+# SINGLE SOURCE OF TRUTH, imported by BOTH consumers that ever target wazuh_agents_windows —
+# never duplicate this play inline:
+#   - playbooks/wazuh_agent_windows.yml (the standalone Windows agent deploy)
+#   - playbooks/site.yml (Stage 3, imported immediately before that stage's own play)
+# Import it (ansible.builtin.import_playbook), never copy it — a second, un-synced copy is
+# exactly how this bug shipped once already: the standalone playbook's own bootstrap play never
+# covered site.yml's Stage 3 (the deploy_all.yml -> site.yml e2e path), so Stage 3's first file
+# push died on a cmd-ism ("Parameter format not correct") against a target still on
+# DefaultShell=cmd — the 2026-07-24 live e2e run hit exactly this.
+#
+# WHY THE FRAMEWORK LEAVES IT cmd: aws-terraform-framework's windows_ssh_user_data deliberately
+# leaves OpenSSH's DefaultShell at cmd.exe — per that framework's own locals.tf ("SSH bootstrap
+# user_data" comment): "The OpenSSH default shell is intentionally left as cmd; setting it to
+# PowerShell breaks Terraform remote-exec SCP upload when this dormant SSH bootstrap is
+# re-activated." That is a Terraform-owned concern this product does not touch.
+#
+# WHY THE PRODUCT FLIPS IT: group_vars/aws/wazuh_agents_windows.yml sets `ansible_shell_type:
+# powershell` for every REAL play against this group. A freshly-launched instance's actual
+# DefaultShell is still cmd.exe until something flips it, so that group_vars setting is a
+# mismatch until this play runs.
+#
+# WHY `ansible_shell_type: cmd` HERE, specifically: this play's OWN SSH session lands on the
+# CURRENT (not-yet-flipped) DefaultShell, i.e. cmd.exe — its raw commands must be wrapped
+# cmd-style to actually execute, so this play overrides group_vars' powershell setting for
+# itself only (play `vars:` outrank inventory group_vars). Once DefaultShell is flipped, the
+# NEXT SSH connection (whichever play imports this one runs next, powershell-shelled per
+# group_vars) picks it up automatically — DefaultShell is read per NEW session, so no sshd
+# restart is needed here. "New session" is the catch, though: OpenSSH's shell choice is bound
+# to the ControlPersist master at the moment THAT master was opened, and ControlPersist=60s
+# keeps this play's own (pre-flip, cmd-bound) master warm well past this play — the final
+# `meta: reset_connection` task below exists to discard that cached master so the next play's
+# connection is actually new, not a reused mux socket still pinned to cmd.
+#
+# WHY IT MUST STAY FIRST AND IDEMPOTENT: a refresh-replaced instance (Terraform `refresh` /
+# OS-swap) re-arrives with a fresh Windows Server boot — DefaultShell is cmd.exe again,
+# regardless of what a prior run flipped it to. This play re-detects and re-flips it on every
+# run; the query-then-conditional-add below is a no-op once already flipped, so a re-run against
+# an already-flipped instance changes nothing.
+# =========================================================================================== #
+
+- name: 'Bootstrap Windows OpenSSH DefaultShell (cmd -> PowerShell)'
+  hosts: 'wazuh_agents_windows'
+  gather_facts: false
+  become: false
+  vars:
+    ansible_shell_type: cmd
+  tasks:
+
+    - name: 'BEGIN (win) | Query Current OpenSSH DefaultShell'
+      register: __openssh_defaultshell_query__
+      changed_when: false
+      failed_when: false
+      ansible.builtin.raw: 'reg query "HKLM\SOFTWARE\OpenSSH" /v DefaultShell'
+
+    # Idempotency guard: only fires when the query above does NOT already show PowerShell as
+    # DefaultShell — covers both a never-flipped instance (cmd.exe, or the value entirely
+    # missing pre-first-boot) and a refresh-replaced instance that re-arrived at the framework's
+    # cmd default. No /f-less confirmation prompt risk: /f forces the add without one.
+    # NOTE the DOUBLED backslashes in the Jinja string literal below: unlike the raw commands
+    # above (verbatim text, no {{ }} involved), this `when:` IS a Jinja expression, and Jinja's
+    # own string-literal lexer applies Python-style escapes INSIDE '...'/"..." — a single \v
+    # would decode to a vertical-tab control character, not literal backslash+v, silently
+    # breaking this comparison (and the whole idempotency guard) forever. \\ decodes to one
+    # literal backslash, matching reg query's real output.
+    - name: 'PROCESS (win) | Flip OpenSSH DefaultShell To PowerShell'
+      when: >-
+        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' not in
+        (__openssh_defaultshell_query__.stdout | default('', true))
+      changed_when: true
+      ansible.builtin.raw: 'reg add "HKLM\SOFTWARE\OpenSSH" /v DefaultShell /t REG_SZ /d "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" /f'
+
+    # UNCONDITIONAL — no when: — for two reasons: (a) ansible-core's meta: reset_connection does
+    # not reliably honor conditionals; (b) it is harmless when nothing was flipped (one extra
+    # reconnect, ~a second) but ESSENTIAL when it was.
+    #
+    # THE MUX MECHANIC (do not remove this task as "unnecessary" without re-reading this):
+    # OpenSSH serves the shell bound to the ControlPersist master at the moment THAT master was
+    # established, not at the moment a command is sent. The query task above already opened (or
+    # reused) a master while DefaultShell was still cmd, and ControlPersist=60s keeps that
+    # cmd-bound master warm well past the end of this play. The registry flip only affects
+    # masters established AFTER it runs — the cached one is untouched by it. Without this reset,
+    # the very next play's first command (ansible_shell_type: powershell, `;`-joined per the
+    # powershell shell plugin) rides that SAME warm cmd-bound socket and dies on a cmd-ism
+    # ("Parameter format not correct" — exactly the failure a live -vvvv repro traced to this).
+    # reset_connection closes the cached master so the next connection opens a fresh one, which
+    # binds to the NOW-flipped DefaultShell as intended.
+    - name: 'END (win) | Reset The SSH Connection (apply the new DefaultShell)'
+      ansible.builtin.meta: 'reset_connection'

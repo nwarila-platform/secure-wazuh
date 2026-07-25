@@ -12,40 +12,120 @@
 #
 # Required Ansible vars:
 #   env                    - environment slug (int|test|prod); the loader picks up
-#                            wazuh_server/vars/redhat_<env>.yml (per-env S3 bucket) automatically.
+#                            wazuh_server/vars/redhat_<env>.yml (bundle key/sha256/certs prefix —
+#                            the S3 bucket itself is account-derived, NOT per-env; see the
+#                            ADR-0004 note below) automatically.
 #   AWS_ACCESS_KEY_ID      - sourced from the runner env by aws_runner_env.yml, passed directly
 #   AWS_SECRET_ACCESS_KEY    to amazon.aws.s3_object module args (never into the target shell env).
-#   AWS_DEFAULT_REGION       AWS_SESSION_TOKEN optional.
+#   AWS_REGION               preferred region var (aws_runner_env.yml reads it first); falls
+#                            back to AWS_DEFAULT_REGION if unset. AWS_SESSION_TOKEN optional.
 #
 # SECRETS: the operator provides exactly ONE password — the dashboard / OpenSearch `admin`
 # login below. Every other credential is generated fresh on every run and never persisted
 # (see the wazuh_server role, #region 01). Replace the lab admin password before real use.
+#
+# S3 BUCKET (ADR-0004): every stage's `s3.bucket` is RUNTIME-DERIVED, never committed. Each stage
+# imports playbooks/tasks/derive_aws_account_id.yml (shared, see that file), which runs a
+# controller-delegated `amazon.aws.aws_caller_info` (the run's own AWS caller identity —
+# `sts:GetCallerIdentity`, no IAM grant required, cannot be denied) and registers
+# `__aws_caller_info__`; the stage's `vars:` then reference `__aws_caller_info__.account` directly
+# to feed `<account-id>-ansible` into the role as a FALLBACK default via the same override-dict
+# channel already used for admin_password below. No intermediate set_fact hop (R3): play `vars:`
+# are evaluated lazily at first use, and `register` already produces an ordinary play-scoped var,
+# so by the time the role dereferences `s3.bucket` (after pre_tasks/tasks have run) the register is
+# already in scope. The committed overlay's literal `<account-id>-ansible` placeholder is never
+# actually used except as a fail-fast tripwire (it only survives if the derivation is skipped/
+# overridden away). An explicit `-e wazuh_s3_bucket=...` always wins (the documented cross-account
+# escape hatch; see docs/reference/s3-artifacts.md "Bucket naming").
 # =========================================================================================== #
 
 - name: 'Stage 0 - Bootstrap /opt/ansible/venv'
-  import_playbook: bootstrap.yml
+  ansible.builtin.import_playbook: bootstrap.yml
 
 - name: 'Stage 1 - Wazuh all-in-one stack (indexer + manager + filebeat + dashboard)'
   hosts: 'wazuh_servers'
   gather_facts: false
   environment:
-    ENV: "{{ env }}"
     # Route the role loader's staging dir onto the /mnt/data data disk. The shared loader
     # creates its staging dir with a bare ansible.builtin.tempfile, which honors $TMPDIR and
     # otherwise falls back to /tmp — a small STIG partition, far too small for the 1.66 GB
     # offline bundle + its extraction. /mnt/data (the provisioned Wazuh data disk) is the
     # intended, roomy home; the pre_task below guarantees the base path exists first.
+    # (No ENV key here: the loader consumes ENV as an ANSIBLE var — see vars: below — never the
+    # OS process env, so an environment:-injected ENV has zero consumers.)
     TMPDIR: '/mnt/data/.ansible/tmp'
   vars_files: ['aws_runner_env.yml']
   vars:
     ENV: "{{ env }}"
     wazuh_server:
+      s3:
+        # ADR-0004 fallback: an explicit -e wazuh_s3_bucket=... always wins; otherwise the bucket
+        # is this run's own account-scoped `<account-id>-ansible`, read directly off the
+        # __aws_caller_info__ register set by the imported AWS account-id derive pre_task below
+        # (no set_fact hop — R3; play vars: are lazily evaluated, so the register is already in
+        # scope by the time the role dereferences s3.bucket). The loader's recursive combine
+        # (wazuh_server/tasks/main.yml "Loading Overrides") merges only s3.bucket, leaving the
+        # overlay's bundle_key/bundle_sha256/certs_prefix pins untouched.
+        bucket: "{{ wazuh_s3_bucket | default(__aws_caller_info__.account ~ '-ansible', true) }}"
       secrets:
-        # The ONE operator-provided secret. CI/GitOps passes it as -e wazuh_admin_password
-        # (see .github/workflows/deploy.yml); the lab default keeps a bare local run working.
-        # Replace the lab default before any run against retained data or real users.
-        admin_password: "{{ wazuh_admin_password | default('WazuhLab-Admin-2026!') }}"
+        # The ONE operator-provided secret, three-step chain (highest precedence first):
+        # explicit -e wazuh_admin_password -> the WAZUH_ADMIN_PASSWORD env var -> the lab
+        # default. CI/GitOps passes it as the WAZUH_ADMIN_PASSWORD env (sourced from the repo
+        # secret; see .github/workflows/deploy.yml) — no -e needed; -e remains available as an
+        # explicit override. lookup('env', ...) on an unset var yields '' (not undefined), which
+        # is why the inner default also needs boolean=true to catch it, same as every other
+        # env-var default in this codebase. Replace the lab default before any run against
+        # retained data or real users.
+        admin_password: "{{ wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD') | default('WazuhLab-Admin-2026!', true), true) }}"
+      # TEMPORARY (pending Vault client integration): S3 cert pull-down is a stopgap. The end
+      # state is a Vault PKI client that issues a per-host cert on demand at deploy time — no CA
+      # key on disk, no pre-staged certs in S3. Until then the node pulls
+      # functions/wazuh/certs/<cert_name>.pem + -key.pem by name. The role itself (defaults/
+      # main.yml, present_redhat.yml's __aio_node__) already defaults cert_name to the host's
+      # OWN inventory_hostname when empty — this passthrough is an OPTIONAL override on top of
+      # that role default, not what supplies it: an unset wazuh_cert_name still resolves cleanly
+      # (the ephemeral EC2 host gets its own throwaway self-signed cert in S3, pulled by its
+      # inventory name), no -e required. Same override shape as s3.bucket above.
+      cert_name: "{{ wazuh_cert_name | default('', true) }}"
+      # On-target reachability for the manager-API/health waits. MUST live in THIS override dict,
+      # not group_vars: a play-level `wazuh_server:` replaces a group_vars `wazuh_server:` wholesale
+      # (no deep-merge), so a group_vars endpoint_host is silently dropped. On AWS the aws_ec2
+      # `ansible_host` is the instance-id (unroutable for a socket wait) — derive the private IP;
+      # '' on Proxmox falls back to the role default (ansible_host, routable there).
+      endpoint_host: "{{ private_ip_address | default('', true) }}"
   pre_tasks:
+    # ADR-0004 account-id derive, shared across all 3 stages — see playbooks/tasks/
+    # derive_aws_account_id.yml for the full rationale (why import_tasks, why run_once, why the
+    # register needs no set_fact hop).
+    - name: 'PREP | Import AWS Account ID Derive (ADR-0004)'
+      ansible.builtin.import_tasks: 'tasks/derive_aws_account_id.yml'
+
+    # BEGIN guard (CC2): the next task (PREP) is Stage 1's first mutation — it creates the
+    # loader's staging root that then receives the 1.66 GB offline bundle. Nothing upstream
+    # verifies /mnt/data is a real mounted disk; if linux_disk_manager.yml (or deploy_all.yml,
+    # which chains it) was skipped, PREP happily mkdir's onto the small STIG root partition and
+    # the bundle + all indexer/manager/SIEM data silently lands there instead of the dedicated
+    # data disk. Fail loudly here rather than converging green onto the wrong disk.
+    - name: 'BEGIN | Probe Whether /mnt/data Is A Mounted Filesystem'
+      become: true
+      ansible.builtin.command: 'mountpoint -q /mnt/data'
+      register: __mnt_data_probe__
+      changed_when: false
+      failed_when: false
+
+    - name: 'BEGIN | Assert /mnt/data Is A Mounted Data Disk'
+      ansible.builtin.assert:
+        that:
+          - "__mnt_data_probe__.rc == 0"
+        quiet: true
+        fail_msg: >-
+          /mnt/data is not a mounted filesystem (mountpoint -q rc={{ __mnt_data_probe__.rc }}).
+          Stage 1 is about to stage the 1.66 GB offline bundle under /mnt/data/.ansible/tmp —
+          without the dedicated data disk mounted here, the bundle and all indexer/manager/SIEM
+          data would silently land on the small STIG-sized root partition instead. Provision and
+          mount the data disk first — run playbooks/linux_disk_manager.yml (or
+          playbooks/deploy_all.yml, which chains it automatically) — before this playbook.
+
     - name: 'PREP | Ensure Loader Staging Root Exists On The Data Disk'
       become: true
       ansible.builtin.file:
@@ -64,13 +144,74 @@
 - name: 'Stage 2 - Wazuh agents (Linux endpoints)'
   hosts: 'wazuh_agents'
   gather_facts: false
-  environment:
-    ENV: "{{ env }}"
   vars_files: ['aws_runner_env.yml']
   vars:
     ENV: "{{ env }}"
+    wazuh_agent:
+      s3:
+        # Same ADR-0004 fallback as Stage 1 (see that stage's comment) — one shared
+        # account-scoped bucket for every role, per docs/reference/s3-artifacts.md.
+        bucket: "{{ wazuh_s3_bucket | default(__aws_caller_info__.account ~ '-ansible', true) }}"
+      # KNOWN TECH DEBT (STAGED, reconcile-me): a play-level `wazuh_agent:` REPLACES
+      # group_vars/aws/wazuh_agents.yml wholesale (no deep-merge — Ansible has no
+      # hash_behaviour=merge configured here), so that file's manager.host + fim are silently
+      # shadowed and must be repeated here; agent_ip is a task-1 gap there (never set for AWS).
+      # All trace to aws_ec2 setting ansible_host to the instance-id — the real fix is
+      # inventory/loader-level, not this repeat. Proper resolution is a follow-up GATED on that
+      # inventory/loader fix landing: either (a) redesign onto a deep-merge-safe mechanism (e.g.
+      # hash_behaviour=merge, or move these keys out of a wholesale-replaced dict), or (b) retire/
+      # rename the group_vars/aws/wazuh_agents.yml keys this play now permanently shadows. Not
+      # resolved here — do NOT retire the group_vars until the fix lands.
+      #
+      # CC3 guard: private_ip_address is an aws_ec2-only hostvar, undefined on a Proxmox agent
+      # host (proxmox.yml documents wazuh_agents as normally populated per environment).
+      # `| default('', true)` mirrors Stage 1's endpoint_host guard: this play resolves
+      # private_ip_address -> '' here (the CC3 fix) FIRST, then hands the result to the role's
+      # OWN documented fallback chain ('' -> ansible_host, then an actionable assert — see
+      # wazuh_agent/tasks/present_redhat.yml's __manager_host__/__agent_ip__ derivation).
+      # Deferring to the role here (rather than re-deriving ansible_host a second time in this
+      # playbook) keeps the fallback logic single-sourced and fails loudly via the role's own
+      # asserts instead of a raw AnsibleUndefinedVariable if private_ip_address were ever
+      # unusable.
+      manager:
+        host: "{{ hostvars[groups['wazuh_servers'][0]].private_ip_address | default('', true) }}"
+      agent_ip: "{{ private_ip_address | default('', true) }}"
+      fim:
+        realtime_paths: ['/etc']
+  pre_tasks:
+    # BEGIN guard: manager.host above bare-indexes groups['wazuh_servers'][0]. The AWS
+    # deploy-destroy loop can leave a stale running tagged instance behind, which yields 2
+    # members and would silently select whichever one Ansible lists first — possibly the STALE
+    # host. Fail loudly instead of enrolling agents against an unpredictable/wrong manager.
+    - name: 'BEGIN | Assert Exactly One Wazuh Manager Host Resolved'
+      run_once: true
+      ansible.builtin.assert:
+        that:
+          - "groups['wazuh_servers'] | length == 1"
+        quiet: true
+        fail_msg: >-
+          Expected exactly 1 host in the 'wazuh_servers' group, found
+          {{ groups['wazuh_servers'] | length }}: {{ groups['wazuh_servers'] | join(', ') }}.
+          A stale/duplicate tagged instance likely survived a previous AWS deploy-destroy cycle —
+          terminate it (or fix the aws_ec2 inventory filters) so exactly one wazuh_servers host
+          resolves before enrolling agents.
+
+    # Imported — see playbooks/tasks/derive_aws_account_id.yml for the full rationale. Repeated
+    # per-stage because each stage is a separate play against a separate host group; a
+    # register/fact from Stage 1's host is simply absent from Stage 2's (different) hosts.
+    - name: 'PREP | Import AWS Account ID Derive (ADR-0004)'
+      ansible.builtin.import_tasks: 'tasks/derive_aws_account_id.yml'
   roles:
     - role: 'wazuh_agent'
+
+# Stage 3 below connects with ansible_shell_type=powershell (group_vars/aws/
+# wazuh_agents_windows.yml's contract), but instances launch with the framework's deliberate
+# DefaultShell=cmd — this import flips it idempotently before Stage 3 ever connects for real,
+# and re-flips it after every refresh-serial OS-swap of a Windows target. Without it, Stage 3's
+# first file push dies on a cmd-ism ("Parameter format not correct") — exactly what the
+# 2026-07-24 live e2e run hit.
+- name: 'Bootstrap Windows OpenSSH DefaultShell (cmd -> PowerShell)'
+  ansible.builtin.import_playbook: 'windows_ssh_bootstrap.yml'
 
 # Windows endpoints use the SAME wazuh_agent role via its native Windows entry point
 # (tasks/main_windows.yml) — the Linux loader can't run on Windows. The MSI comes from S3 like
@@ -84,7 +225,47 @@
   vars_files: ['aws_runner_env.yml']
   vars:
     ENV: "{{ env }}"
+    wazuh_agent:
+      s3:
+        # Same ADR-0004 fallback as Stage 1/2 (see Stage 1's comment). The Windows entry point
+        # (tasks/main_windows.yml) reads this SAME `wazuh_agent` var through its own lightweight
+        # defaults<-overlay<-override merge (not the shared Linux loader), recursive-combine too.
+        bucket: "{{ wazuh_s3_bucket | default(__aws_caller_info__.account ~ '-ansible', true) }}"
+      # KNOWN TECH DEBT (STAGED, reconcile-me): same group_vars clobber as Stage 2 — see that
+      # stage's comment for the full rationale and the gated resolution path (merge-redesign vs.
+      # retiring the shadowed group_vars once the inventory/loader fix lands; not resolved here).
+      # Windows FIM key is windows.fim_realtime_paths (not fim.realtime_paths).
+      #
+      # CC3 guard: same as Stage 2 — private_ip_address is aws_ec2-only; `| default('', true)`
+      # mirrors Stage 1/2 and defers to the role's own fallback + assert chain rather than
+      # re-deriving ansible_host here too.
+      manager:
+        host: "{{ hostvars[groups['wazuh_servers'][0]].private_ip_address | default('', true) }}"
+      agent_ip: "{{ private_ip_address | default('', true) }}"
+      windows:
+        fim_realtime_paths: ['C:\Windows\System32\drivers\etc']
   tasks:
+    # BEGIN guard: same stale-instance risk as Stage 2 (see that stage's comment) — manager.host
+    # above bare-indexes groups['wazuh_servers'][0].
+    - name: 'BEGIN | Assert Exactly One Wazuh Manager Host Resolved'
+      run_once: true
+      ansible.builtin.assert:
+        that:
+          - "groups['wazuh_servers'] | length == 1"
+        quiet: true
+        fail_msg: >-
+          Expected exactly 1 host in the 'wazuh_servers' group, found
+          {{ groups['wazuh_servers'] | length }}: {{ groups['wazuh_servers'] | join(', ') }}.
+          A stale/duplicate tagged instance likely survived a previous AWS deploy-destroy cycle —
+          terminate it (or fix the aws_ec2 inventory filters) so exactly one wazuh_servers host
+          resolves before enrolling agents.
+
+    # Imported — see playbooks/tasks/derive_aws_account_id.yml for the full rationale. Repeated
+    # per-stage (see Stage 2's comment). This play is already become: false, so the shared file's
+    # own task-level become: false is belt-and-suspenders.
+    - name: 'PREP | Import AWS Account ID Derive (ADR-0004)'
+      ansible.builtin.import_tasks: 'tasks/derive_aws_account_id.yml'
+
     - name: 'Deploy Wazuh agent via native Windows entry'
       ansible.builtin.include_role:
         name: 'wazuh_agent'
