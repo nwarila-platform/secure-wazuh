@@ -23,9 +23,12 @@
 # real constraint here rather than reproducing that mismatch.
 #
 # -----------------------------------------------------------------------------
-# FIRST CUT — human review required, same as deploy.yml. Every place an operator must wire a
-# secret, an OIDC role, or a repo variable is flagged inline with `# WIRE:`. Nothing here is
-# expected to run green until those are configured.
+# AWS CONFIGURATION MODEL — org-global secrets provide AWS_ACCOUNT_ID and
+# AWS_EC2_SSH_PRIVATE_KEY; org variables provide TF_STATE_BUCKET and optional AWS_REGION
+# (defaults to us-east-1); the repo provides WAZUH_ADMIN_PASSWORD and commits the framework pins
+# (.framework-pin + .aws-tf-framework-pin, both SHAs). Role ARN, bundle bucket, stack, and owner
+# are derived at runtime.
+# Remaining operator wiring is flagged inline with `# WIRE:`.
 # -----------------------------------------------------------------------------
 
 name: e2e-full
@@ -119,31 +122,31 @@ jobs:
           persist-credentials: false
 
       # aws-terraform-framework's runner protocol (docs/reference/runner-protocol.md,
-      # "Deployment Identity Tags") — verbatim step. Exports TF_VAR_resource_metadata for every
-      # later terraform step in this job; docs/reference/aws-iam/README.md's StampRepoIdentityTags
-      # / RequestTag conditions require it on every create-call, or they deny the request.
-      - name: Capture deployment identity
+      # "Deployment Identity Tags"). Exports TF_VAR_resource_metadata for every later terraform
+      # step in this job; docs/reference/aws-iam/README.md's StampRepoIdentityTags / RequestTag
+      # conditions require it on every create-call, or they deny the request.
+      - name: Derive deployment identity + targets
         shell: bash
         env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          GH_OWNER: ${{ github.repository_owner }}
           GH_REPOSITORY: ${{ github.repository }}
           GH_REPOSITORY_ID: ${{ github.repository_id }}
           GH_RUN_ID: ${{ github.run_id }}
-          # WIRE: set as repo variables. STACK names this Terraform stack (e.g.
-          # "secure-wazuh-aws-e2e-full"); OWNER_TEAM is the owning team/contact recorded in the
-          # nwarila:operations:owner tag.
-          STACK: ${{ vars.TERRAFORM_STACK }}
-          OWNER_TEAM: ${{ vars.OWNER_TEAM }}
         run: |
+          set -euo pipefail
+          stack="${GH_REPOSITORY##*/}"          # repo name, e.g. secure-wazuh
+          owner="${GH_OWNER}"                    # org, e.g. nwarila-platform
           commit_sha="$(git rev-parse HEAD)"
-          printf 'TF_VAR_resource_metadata=%s\n' "$(jq -cn \
-            --arg repository "$GH_REPOSITORY" \
-            --arg repository_id "$GH_REPOSITORY_ID" \
-            --arg stack "$STACK" \
-            --arg owner "$OWNER_TEAM" \
-            --arg commit_sha "$commit_sha" \
-            --arg run_id "$GH_RUN_ID" \
-            '{repository: $repository, repository_id: $repository_id, stack: $stack,
-              owner: $owner, commit_sha: $commit_sha, run_id: $run_id}')" >> "$GITHUB_ENV"
+          {
+            echo "DEPLOY_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/github_${owner}_${stack}"
+            echo "BUNDLE_BUCKET=${AWS_ACCOUNT_ID}-ansible"
+            printf 'TF_VAR_resource_metadata=%s\n' "$(jq -cn \
+              --arg repository "$GH_REPOSITORY" --arg repository_id "$GH_REPOSITORY_ID" \
+              --arg stack "$stack" --arg owner "$owner" \
+              --arg commit_sha "$commit_sha" --arg run_id "$GH_RUN_ID" \
+              '{repository:$repository,repository_id:$repository_id,stack:$stack,owner:$owner,commit_sha:$commit_sha,run_id:$run_id}')"
+          } >> "$GITHUB_ENV"
 
       - name: Resolve ansible-framework pin
         id: pin
@@ -158,17 +161,21 @@ jobs:
           persist-credentials: false
           # ansible-framework is public — the default GITHUB_TOKEN reads it; no PAT needed.
 
+      - name: Resolve aws-terraform-framework pin
+        id: tfpin
+        run: echo "sha=$(tr -d ' \n\r' < .github/.aws-tf-framework-pin)" >> "$GITHUB_OUTPUT"
+
       - name: Checkout aws-terraform-framework (pinned)
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.AWS_TF_FRAMEWORK_REPO }}
-          # WIRE: pin the Terraform framework to a release tag/SHA via a repo variable. Reuses
-          # the SAME variable deploy.yml's AWS job already reads (vars.AWS_TF_FRAMEWORK_REF)
-          # rather than redefining it, so both workflows always track the same framework version.
-          ref: ${{ vars.AWS_TF_FRAMEWORK_REF }}
+          # Version-locked in .github/.aws-tf-framework-pin — a committed SHA (currently v1.1.0),
+          # reviewable in the diff and reproducible, exactly mirroring .framework-pin for the
+          # ansible framework. deploy.yml's AWS job reads the same file, so both track one SHA.
+          ref: ${{ steps.tfpin.outputs.sha }}
           path: .frameworks/aws-tf
           persist-credentials: false
-          token: ${{ secrets.FRAMEWORK_REPO_TOKEN }}
+          # aws-terraform-framework is public — the default GITHUB_TOKEN reads it; no PAT needed.
 
       # -----------------------------------------------------------------------
       # AWS auth via OIDC — no long-lived credentials in the repo
@@ -183,14 +190,11 @@ jobs:
         # to additionally allow `repo:nwarila-platform/secure-wazuh:pull_request`.
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
-          # WIRE: create an IAM role trusting this repo's OIDC subject and store its ARN as a
-          # secret — reuses the SAME role deploy.yml's AWS job assumes (secrets.AWS_DEPLOY_ROLE_ARN)
-          # rather than a second one; this workflow needs no privileges beyond that role's
-          # existing EC2/EBS/VPC + S3 + Terraform-state scope (an instance replace from
-          # refresh_serial is still just a terminate + create, both already covered by the
-          # existing tagged-resource statements — see docs/reference/aws-iam/README.md).
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          # WIRE: the role ARN is derived from the org-global AWS_ACCOUNT_ID and the
+          # github_<owner>_<repo> naming convention. Its trust must cover this repo's OIDC
+          # subjects and its policy the existing EC2/EBS/VPC + S3 + Terraform-state scope.
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
         # configure-aws-credentials exports AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY /
         # _SESSION_TOKEN / AWS_REGION into the runner env for every later step — read by both
         # plain `terraform` invocations below and, via aws_runner_env.yml, by Ansible.
@@ -204,13 +208,16 @@ jobs:
           terraform_version: "1.15.1"
           terraform_wrapper: false
 
-      - name: Terraform init (e2e-full — own state key, distinct from the routine deploy job's)
+      # Shares the routine deploy job's secure-wazuh/aws.tfstate. The shared
+      # secure-wazuh-aws-poc concurrency group serializes both workflows so they never touch
+      # the singleton PoC state at the same time.
+      - name: Terraform init (e2e-full — shared routine deploy aws.tfstate)
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=secure-wazuh/e2e-full.tfstate" \
-            -backend-config="region=${{ vars.TF_STATE_REGION }}"
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=secure-wazuh/aws.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
 
       # Terraform needs no SSH key here (all systems readiness_gate=false, SSM-only); only Ansible
       # reads this key. If a system ever sets readiness_gate=true, Terraform's SSH readiness will
@@ -219,8 +226,8 @@ jobs:
       - name: Write target SSH key
         run: |
           set -euo pipefail
-          # WIRE: reuses deploy.yml's AWS job secret (secrets.AWS_EC2_SSH_PRIVATE_KEY) — the
-          # private half of terraform/aws.tfvars' key_name = "secure-wazuh-poc-key".
+          # WIRE: the org-global AWS_EC2_SSH_PRIVATE_KEY secret is the private half of
+          # terraform/aws.tfvars' key_name = "secure-wazuh-poc-key".
           install -d -m 0700 "$HOME/.ssh"
           install -m 0600 /dev/stdin "$HOME/.ssh/secure-wazuh-poc-key.pem" <<< "${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}"
 
@@ -280,10 +287,10 @@ jobs:
           # step, and aws_runner_env.yml prefers it over this — see deploy.yml's AWS job's
           # identical comment on its own equivalent line for the full rationale (kept as a
           # fallback, not redundant by accident).
-          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           # The ONE operator secret, as a plain env var — zero -e (site.yml's admin_password is a
           # three-step chain: -e wins if ever supplied, then this env var, then the lab default).
-          # WIRE: confirm this secret name; reuses deploy.yml's WAZUH_ADMIN_PASSWORD secret.
+          # WIRE: WAZUH_ADMIN_PASSWORD remains the one repo-scoped operator secret.
           WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
           # Read by wazuh_trigger_fim.yml's ledger-driven validate play (gated so a local run
           # without this var stays byte-identical) — it writes the machine-readable proof JSON
@@ -337,7 +344,7 @@ jobs:
         working-directory: _dev-build
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
-          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
           # Same path as phase 1 (see that step's comment) — this run overwrites it with the
           # cumulative (4-entry) state; phase 1's own snapshot already survives at

@@ -270,7 +270,11 @@ jobs:
 
     env:
       # The ephemeral PoC tracks the `test` environment overlay; bundle bucket
-      # is the SAME `<account-id>-ansible` bucket as proxmox int (not env-suffixed).
+      # is derived as `<AWS_ACCOUNT_ID>-ansible` (not env-suffixed).
+      # WIRE: org-global secrets provide AWS_ACCOUNT_ID and AWS_EC2_SSH_PRIVATE_KEY; org
+      # variables provide TF_STATE_BUCKET and optional AWS_REGION (defaults to us-east-1).
+      # The repo provides WAZUH_ADMIN_PASSWORD and commits the framework pins (.framework-pin +
+      # .aws-tf-framework-pin, both SHAs); role ARN, bundle bucket, stack, and owner are derived.
       WAZUH_ENV: test
       TF_DIR: .frameworks/aws-tf/terraform
 
@@ -281,32 +285,32 @@ jobs:
           persist-credentials: false
 
       # aws-terraform-framework's runner protocol (docs/reference/runner-protocol.md,
-      # "Deployment Identity Tags") — verbatim step. Exports TF_VAR_resource_metadata for every
-      # later terraform step in this job; docs/reference/aws-iam/README.md's StampRepoIdentityTags
-      # / RequestTag conditions require it on every create-call, or they deny the request. The
-      # proxmox job has no AWS identity to capture, so this step is AWS-job-only.
-      - name: Capture deployment identity
+      # "Deployment Identity Tags"). Exports TF_VAR_resource_metadata for every later terraform
+      # step in this job; docs/reference/aws-iam/README.md's StampRepoIdentityTags / RequestTag
+      # conditions require it on every create-call, or they deny the request. The proxmox job
+      # has no AWS deployment identity or targets to derive, so this step is AWS-job-only.
+      - name: Derive deployment identity + targets
         shell: bash
         env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          GH_OWNER: ${{ github.repository_owner }}
           GH_REPOSITORY: ${{ github.repository }}
           GH_REPOSITORY_ID: ${{ github.repository_id }}
           GH_RUN_ID: ${{ github.run_id }}
-          # WIRE: set as repo variables. STACK names this Terraform stack (e.g.
-          # "secure-wazuh-aws-poc"); OWNER_TEAM is the owning team/contact recorded in the
-          # nwarila:operations:owner tag.
-          STACK: ${{ vars.TERRAFORM_STACK }}
-          OWNER_TEAM: ${{ vars.OWNER_TEAM }}
         run: |
+          set -euo pipefail
+          stack="${GH_REPOSITORY##*/}"          # repo name, e.g. secure-wazuh
+          owner="${GH_OWNER}"                    # org, e.g. nwarila-platform
           commit_sha="$(git rev-parse HEAD)"
-          printf 'TF_VAR_resource_metadata=%s\n' "$(jq -cn \
-            --arg repository "$GH_REPOSITORY" \
-            --arg repository_id "$GH_REPOSITORY_ID" \
-            --arg stack "$STACK" \
-            --arg owner "$OWNER_TEAM" \
-            --arg commit_sha "$commit_sha" \
-            --arg run_id "$GH_RUN_ID" \
-            '{repository: $repository, repository_id: $repository_id, stack: $stack,
-              owner: $owner, commit_sha: $commit_sha, run_id: $run_id}')" >> "$GITHUB_ENV"
+          {
+            echo "DEPLOY_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/github_${owner}_${stack}"
+            echo "BUNDLE_BUCKET=${AWS_ACCOUNT_ID}-ansible"
+            printf 'TF_VAR_resource_metadata=%s\n' "$(jq -cn \
+              --arg repository "$GH_REPOSITORY" --arg repository_id "$GH_REPOSITORY_ID" \
+              --arg stack "$stack" --arg owner "$owner" \
+              --arg commit_sha "$commit_sha" --arg run_id "$GH_RUN_ID" \
+              '{repository:$repository,repository_id:$repository_id,stack:$stack,owner:$owner,commit_sha:$commit_sha,run_id:$run_id}')"
+          } >> "$GITHUB_ENV"
 
       - name: Resolve ansible-framework pin
         id: pin
@@ -321,15 +325,20 @@ jobs:
           persist-credentials: false
           # ansible-framework is public — the default GITHUB_TOKEN reads it; no PAT needed.
 
+      - name: Resolve aws-terraform-framework pin
+        id: tfpin
+        run: echo "sha=$(tr -d ' \n\r' < .github/.aws-tf-framework-pin)" >> "$GITHUB_OUTPUT"
+
       - name: Checkout aws-terraform-framework (pinned)
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.AWS_TF_FRAMEWORK_REPO }}
-          # WIRE: pin the Terraform framework to a release tag/SHA via a repo variable.
-          ref: ${{ vars.AWS_TF_FRAMEWORK_REF }}
+          # Version-locked in .github/.aws-tf-framework-pin — a committed SHA (currently v1.1.0),
+          # mirroring .framework-pin; e2e-full.yml reads the same file. Not a repo variable.
+          ref: ${{ steps.tfpin.outputs.sha }}
           path: .frameworks/aws-tf
           persist-credentials: false
-          token: ${{ secrets.FRAMEWORK_REPO_TOKEN }}
+          # aws-terraform-framework is public — the default GITHUB_TOKEN reads it; no PAT needed.
 
       # -----------------------------------------------------------------------
       # AWS auth via OIDC — no long-lived credentials in the repo
@@ -338,11 +347,11 @@ jobs:
         # WIRE: verify/re-pin this SHA at wire-up time.
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
-          # WIRE: create an IAM role trusting this repo's OIDC subject and store its
-          # ARN as a secret. Scope it to EC2/EBS/VPC for the framework + read on the
-          # offline-bundle bucket + read/write on the Terraform state bucket.
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          # WIRE: the role ARN is derived from the org-global AWS_ACCOUNT_ID and the
+          # github_<owner>_<repo> naming convention. Its trust must cover this repo's OIDC
+          # subject; scope it to the existing EC2/EBS/VPC + S3 + Terraform-state access.
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
         # configure-aws-credentials exports AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY /
         # _SESSION_TOKEN / AWS_REGION into the runner env for every later step, which
         # is exactly what aws_runner_env.yml reads for the offline-bundle download.
@@ -362,9 +371,9 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
             -backend-config="key=secure-wazuh/aws.tfstate" \
-            -backend-config="region=${{ vars.TF_STATE_REGION }}"
+            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
 
       - name: Terraform apply (aws)
         working-directory: ${{ env.TF_DIR }}
@@ -409,7 +418,8 @@ jobs:
       - name: Generate ephemeral inventory from Terraform outputs
         working-directory: ${{ env.TF_DIR }}
         env:
-          # WIRE: SSH key matching the EC2 key pair used in terraform/aws.tfvars.
+          # WIRE: the org-global AWS_EC2_SSH_PRIVATE_KEY secret matches the EC2 key pair used
+          # in terraform/aws.tfvars.
           EC2_SSH_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
@@ -451,7 +461,7 @@ jobs:
           # now prefers AWS_REGION over this — so this explicit alias is redundant today. Kept
           # deliberately as a fallback in case a future change to the OIDC action or step
           # ordering ever stops exporting AWS_REGION here.
-          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
