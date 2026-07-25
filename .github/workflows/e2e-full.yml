@@ -2,11 +2,13 @@
 # =============================================================================
 # E2E-Full Workflow — two-phase AWS deploy / OS-swap / destroy test for secure-wazuh
 # =============================================================================
-# Manual, expensive, destructive-cycle proof of the AIO's OS-swap ("replace-OS-only") lever —
-# NOT part of the routine per-commit deploy.yml loop. Stands up the full 3-system AWS PoC (AIO +
+# Expensive, destructive-cycle proof of the AIO's OS-swap ("replace-OS-only") lever — fires once
+# per merge request that touches `ansible/**`, `terraform/**`, or a framework pin (plus the
+# `rerun-poc` label and `workflow_dispatch`; see the trigger block below). NOT part of the routine
+# per-commit `deploy.yml` loop. Stands up the full 3-system AWS PoC (AIO +
 # Linux agent + Windows agent), proves 2 fresh agent-sourced FIM events (phase 1), force-replaces
 # ONLY the AIO's OS via `terraform apply -var refresh_serial=1` (its data disk survives,
-# re-attached to the new instance), redeploys, then proves the Director's "all 4" — the 2
+# re-attached to the new instance), redeploys, then completes the cumulative 4/4 proof — the 2
 # pre-swap survivors AND 2 new events, cumulative by construction (see wazuh_trigger_fim.yml's
 # ledger header) — before ALWAYS tearing everything down.
 #
@@ -238,9 +240,7 @@ jobs:
           terraform init \
             -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/aws.tfstate" \
-            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}" \
-            -backend-config="encrypt=true" \
-            -backend-config="use_lockfile=true"
+            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
 
       # Terraform needs no SSH key here (all systems readiness_gate=false, SSM-only); only Ansible
       # reads this key. If a system ever sets readiness_gate=true, Terraform's SSH readiness will
@@ -579,7 +579,10 @@ jobs:
         if: ${{ failure() }}
         working-directory: ${{ env.TF_DIR }}
         continue-on-error: true
-        run: terraform state pull > "${{ github.workspace }}/e2e-full-failure-state.json"
+        run: |
+          snap="${{ github.workspace }}/e2e-full-failure-state.json"
+          terraform state pull > "$snap"
+          sed -i 's/\b[0-9]\{12\}\b/<acct>/g' "$snap"
 
       - name: On failure, upload the state snapshot as an artifact
         if: ${{ failure() }}

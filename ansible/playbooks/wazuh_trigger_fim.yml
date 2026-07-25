@@ -9,7 +9,7 @@
 # the manager's alerts.json (agent 000) and only exercises the indexing pipeline, not the agent
 # path.
 #
-# TWO-PHASE e2e USAGE (playbooks/e2e_full.yml, the Director's "all 4" proof):
+# TWO-PHASE e2e USAGE (playbooks/e2e_full.yml, the cumulative 4/4 proof):
 #   Phase 1 — run once right after `terraform apply` stands the environment up. This file's
 #     trigger plays write ONE marker on the Linux agent and ONE on the Windows agent (2 fresh
 #     events); the ledger play below records both; the validate play proves both.

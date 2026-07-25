@@ -52,7 +52,7 @@ Linux-only loader. **Do not edit `tasks/main.yml` per role.**
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Read from the runner env by `aws_runner_env.yml` and passed to `amazon.aws.s3_object` as module args. |
 | `AWS_DEFAULT_REGION` | Region for the S3 download (unless the overlay sets `s3.region`). |
 | `AWS_SESSION_TOKEN` | Optional (STS). |
-| `wazuh_admin_password` | Optional override for the one operator password (CI passes it; a lab default applies otherwise). |
+| `wazuh_admin_password` | Required one operator password; CI supplies it through `WAZUH_ADMIN_PASSWORD`. |
 
 Credentials are **never exported into the target shell** — the roles pass them as `no_log`
 module args so sudo/audit/Wazuh logs never capture them. See

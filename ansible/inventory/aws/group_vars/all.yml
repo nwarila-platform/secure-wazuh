@@ -31,7 +31,7 @@ env: int
 
 ansible_connection: ssh
 
-# Director decision: the AWS target is the org's CIS/DISA RHEL 8 STIG marketplace image, whose
+# The AWS target is the org's CIS/DISA RHEL 8 STIG marketplace image, whose
 # default login user is "ec2-user" — NOT "rocky" (Rocky Linux is the on-prem/Proxmox image).
 # Matches terraform/aws.tfvars's readiness_user = "ec2-user" (reconciled to this same decision).
 ansible_user: ec2-user

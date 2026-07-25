@@ -15,7 +15,7 @@
 # whole block is scoped to state=present and is a deliberate no-op otherwise (a bare
 # `-e state=clean` run must not be blocked on inputs it never reads).
 #
-# WHY THIS EXISTS (CC5): present_redhat.yml carried ONE of these checks (admin_password
+# WHY THIS EXISTS: present_redhat.yml carried ONE of these checks (admin_password
 # non-empty) as an inline BEGIN guard; the other three were not validated ANYWHERE -- each
 # fails only deep into the run (a bare Jinja/Ansible Undefined error mid-END-stage, or a
 # completely SILENT empty keystore password) after the indexer has already been configured,
@@ -117,7 +117,7 @@
     # unguarded (config.endpoint_host default '' -> ansible_host -> inventory_hostname) and
     # feeds the result straight into `wait_for host: ... port: 55000 timeout: 120` -- an
     # instance-id is not a resolvable hostname, so that wait_for hangs for the full 120s before
-    # failing (CC3). Replicating the exact fallback chain here catches it at loader INIT instead.
+    # failing. Replicating the exact fallback chain here catches it at loader INIT instead.
     - name: 'BEGIN | Assert endpoint_host Does Not Resolve To An AWS Instance ID'
       vars:
         __endpoint_host__: "{{ config.endpoint_host | default(ansible_host | default(inventory_hostname), true) }}"

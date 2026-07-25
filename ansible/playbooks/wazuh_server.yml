@@ -6,7 +6,7 @@
 # filebeat + dashboard) on one host, minus the agent stages. NOT a full parity mirror of
 # site.yml Stage 1 though: Stage 1 additionally wires the ADR-0004 account-id/S3-bucket derive,
 # an explicit -e wazuh_cert_name PASSTHROUGH (this standalone has no such override wiring), and
-# a CC2 guard asserting /mnt/data is a mounted data disk before staging the offline bundle —
+# a guard asserting /mnt/data is a mounted data disk before staging the offline bundle —
 # none of which this standalone carries. cert_name itself still resolves sensibly without that
 # wiring: the role's own default (defaults/main.yml, present_redhat.yml's __aio_node__) falls
 # back to the host's inventory_hostname whenever cert_name is empty/unset.
@@ -47,15 +47,12 @@
     ENV: "{{ env }}"
     wazuh_server:
       secrets:
-        # The ONE operator-provided secret, three-step chain (highest precedence first):
-        # explicit -e wazuh_admin_password -> the WAZUH_ADMIN_PASSWORD env var -> the lab
-        # default. CI/GitOps passes it as the WAZUH_ADMIN_PASSWORD env (sourced from the repo
-        # secret; see .github/workflows/deploy.yml) — no -e needed; -e remains available as an
-        # explicit override. lookup('env', ...) on an unset var yields '' (not undefined), which
-        # is why the inner default also needs boolean=true to catch it, same as every other
-        # env-var default in this codebase. Replace the lab default before any run against
-        # retained data or real users.
-        admin_password: "{{ wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD') | default('WazuhLab-Admin-2026!', true), true) }}"
+        # The ONE operator-provided secret, two-step chain (highest precedence first):
+        # explicit -e wazuh_admin_password -> the WAZUH_ADMIN_PASSWORD env var. CI/GitOps passes
+        # it as the WAZUH_ADMIN_PASSWORD env (sourced from the repo secret; see
+        # .github/workflows/deploy.yml) — no -e needed; -e remains available as an explicit
+        # override. If both are unset or empty, the role's validate.yml hard-fails before mutation.
+        admin_password: "{{ wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD'), true) }}"
       # On-target reachability for the manager-API/health waits. MUST live in THIS override dict,
       # not group_vars: a play-level `wazuh_server:` replaces a group_vars `wazuh_server:` wholesale
       # (no deep-merge), so group_vars/aws/wazuh_servers.yml's endpoint_host would be silently

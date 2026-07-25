@@ -6,8 +6,9 @@
 # `sts:GetCallerIdentity` (amazon.aws.aws_caller_info) — no IAM grant required and the call cannot
 # be denied, unlike `.account_alias` (needs iam:ListAccountAliases, which IS deniable). Registers
 # `__aws_caller_info__`; consumers read `__aws_caller_info__.account` directly as an ordinary,
-# lazily-evaluated play var — no set_fact hop (R3; see site.yml's ADR-0004 header comment and each
-# stage's s3.bucket comment for the full rationale).
+# lazily-evaluated play var — no set_fact hop (repo convention: no `set_fact` for derived data —
+# play `vars:` are evaluated lazily at first use). See site.yml's ADR-0004 header comment and each
+# stage's s3.bucket comment for the full rationale.
 #
 # Imported (ansible.builtin.import_tasks, NOT include_tasks) once per stage in site.yml (Stage 1
 # pre_tasks, Stage 2 pre_tasks, Stage 3 tasks) rather than the identical block being written 3x

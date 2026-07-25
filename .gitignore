@@ -140,7 +140,6 @@
 !/ansible/applications/wazuh_server/tasks/validate.yml
 !/ansible/applications/wazuh_server/templates/
 !/ansible/applications/wazuh_server/templates/.gitkeep
-!/ansible/applications/wazuh_server/templates/auth-force.xml.j2
 !/ansible/applications/wazuh_server/templates/filebeat.yml.j2
 !/ansible/applications/wazuh_server/templates/internal_users.yml.j2
 !/ansible/applications/wazuh_server/templates/opensearch.yml.j2

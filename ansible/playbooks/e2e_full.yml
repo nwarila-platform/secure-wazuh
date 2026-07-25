@@ -9,11 +9,11 @@
 #
 # ZERO -e: every input this needs is now a committed inventory/role fact (env, wazuh_disk_platform,
 # wazuh_disks, wazuh_cert_name's role-side default, the aws_ec2.yml `state` fix, ...) — the LAST
-# living exception is the operator secret, and even that has a committed lab fallback; CI supplies
-# the real one via the WAZUH_ADMIN_PASSWORD environment variable (no -e needed there either; see
+# living exception is the operator secret; CI supplies it via the WAZUH_ADMIN_PASSWORD environment
+# variable (no -e needed there either; see
 # site.yml's admin_password chain).
 #
-# TWO-PHASE e2e USAGE (the Director's "all 4" proof — see wazuh_trigger_fim.yml's header for the
+# TWO-PHASE e2e USAGE (the cumulative 4/4 proof — see wazuh_trigger_fim.yml's header for the
 # full ledger rationale):
 #   Phase 1 — run once right after `terraform apply` stands the 3-system environment up (AIO +
 #     Linux agent + Windows agent). Deploys everything, then fires + proves 2 fresh FIM events

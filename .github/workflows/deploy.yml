@@ -140,9 +140,7 @@ jobs:
           terraform init \
             -backend-config="bucket=${{ secrets.AWS_ACCOUNT_ID }}-terraform" \
             -backend-config="key=${{ github.repository_owner }}/${{ github.event.repository.name }}/proxmox.tfstate" \
-            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}" \
-            -backend-config="encrypt=true" \
-            -backend-config="use_lockfile=true"
+            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
 
       - name: Terraform apply (proxmox, in-place — NO destroy)
         working-directory: .frameworks/proxmox-tf/terraform
@@ -226,11 +224,11 @@ jobs:
           WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
+          : "${WAZUH_ADMIN_PASSWORD:?repo secret WAZUH_ADMIN_PASSWORD is not set}"
           # STIG hosts mount /tmp,/home,/var/tmp noexec; ansible.cfg stages under /opt.
           sudo install -d -m 0770 -o "$(id -u)" -g "$(id -g)" /opt/wazuh-deploy/.tmp || true
           ansible-playbook -i inventory/proxmox.yml playbooks/deploy_all.yml \
-            -e "env=${WAZUH_ENV}" \
-            -e "wazuh_admin_password=${WAZUH_ADMIN_PASSWORD}"
+            -e "env=${WAZUH_ENV}"
 
       - name: Guard — /mnt/data is a real mountpoint
         working-directory: _dev-build
@@ -379,9 +377,7 @@ jobs:
           terraform init \
             -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/aws.tfstate" \
-            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}" \
-            -backend-config="encrypt=true" \
-            -backend-config="use_lockfile=true"
+            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
 
       - name: Terraform apply (aws)
         working-directory: ${{ env.TF_DIR }}
@@ -473,9 +469,9 @@ jobs:
           WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
+          : "${WAZUH_ADMIN_PASSWORD:?repo secret WAZUH_ADMIN_PASSWORD is not set}"
           ansible-playbook -i inventory/aws.yml playbooks/deploy_all.yml \
-            -e "env=${WAZUH_ENV}" \
-            -e "wazuh_admin_password=${WAZUH_ADMIN_PASSWORD}"
+            -e "env=${WAZUH_ENV}"
 
       - name: Guard — /mnt/data is a real mountpoint
         working-directory: _dev-build
@@ -499,12 +495,8 @@ jobs:
       #   (c) headline FIM-EVENT proof: modify a monitored file, assert a rule 550
       #       alert is indexed in wazuh-alerts-*
       #
-      # STOPGAP: this is a minimal, positive-only gate. The rigorous proof
-      # (_handoff/REARCH-PLAN.md §6) additionally requires: watch a DIRECTORY (not a
-      # bare file) armed with realtime="yes" whodata="no"; let the post-restart
-      # baseline scan SETTLE before the delta; query with the dashboard-READ
-      # credential (not admin); and carry a NEGATIVE control. Wire that proof
-      # playbook in here once it exists.
+      # This committed proof still uses the admin credential rather than a dashboard-READ
+      # credential, and it has no negative control.
       # -----------------------------------------------------------------------
       - name: E2E proof (health + dashboard + FIM rule 550)
         working-directory: _dev-build
@@ -514,7 +506,7 @@ jobs:
         run: |
           set -euo pipefail
           # Generated at runtime so the admin password stays a no_log lookup and the
-          # search body is templated cleanly. Replace with the committed §6 proof.
+          # search body is templated cleanly.
           cat > playbooks/_ci_e2e_proof.yml <<'YAML'
           ---
           - name: 'secure-wazuh CI E2E proof (stopgap)'

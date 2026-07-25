@@ -51,7 +51,7 @@
       failed_when: not (__venv_python__.stat.exists | default(false))
 
     # admin_password non-empty/length/complexity is now validated at loader INIT — see
-    # tasks/validate.yml (CC5) — before this file even starts, so it is not re-asserted here.
+    # tasks/validate.yml — before this file even starts, so it is not re-asserted here.
 
     # Record the intended dashboard service state for the play-end restart handler. The dedicated
     # gate is preserved pending its separate behavioral follow-up; handlers can read the loader's
@@ -277,8 +277,8 @@
               {{ __cert_files__ | map('regex_replace', '^', config.s3.certs_prefix ~ '/') | join(', ') }}.
               Cert object names derive from cert_name (default: inventory_hostname) — an
               inventory rename (e.g. short name to FQDN) changes them. Either upload PEMs
-              under the new name or set wazuh_server.cert_name to the name the PEMs were
-              generated with. Also confirm AWS credentials/region in the runner env.
+              under the new name or set wazuh_server.cert_name to the name used to generate the
+              PEMs. Also confirm AWS credentials/region in the runner env.
 
     # Trust-on-first-use: the SHA256 in defaults is the operator's PR-reviewed known-good
     # hash. Mismatch = S3 bundle was tampered with → abort install.
@@ -906,7 +906,7 @@
       no_log: true
       vars:
         __mgr_idx_user__: "{{ config.manager.keystore_indexer_user }}"
-        # No `| default('')` — tasks/validate.yml (CC5) already asserts keystore_indexer_user
+        # No `| default('')` — tasks/validate.yml already asserts keystore_indexer_user
         # resolves to a real __wazuh_pw__ entry, so a bare lookup either succeeds or fails loudly
         # instead of silently writing an EMPTY keystore password.
         __mgr_idx_pwd__: "{{ __wazuh_pw__[config.manager.keystore_indexer_user] }}"
