@@ -188,6 +188,14 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
         run: |
           python -m pip install --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}"
+          # boto3/botocore: required by amazon.aws modules that run CONTROLLER-side on THIS
+          # runner — amazon.aws.aws_caller_info (ADR-0004's runtime account-id derivation, both
+          # jobs, delegate_to: localhost under ansible_playbook_python) and the Windows-agent
+          # MSI fetch's delegate_to: localhost amazon.aws.s3_object (same interpreter). This was
+          # a pre-existing gap: nothing installed boto3/botocore for the runner itself before.
+          # Target-side boto3 (RHEL dnf side_deps + the /opt/ansible/venv bootstrap.yml builds)
+          # is a separate, already-covered concern.
+          python -m pip install --no-cache-dir boto3 botocore
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
       - name: Write target SSH key
@@ -199,7 +207,7 @@ jobs:
           install -d -m 0700 /root/.ssh
           install -m 0600 /dev/stdin /root/.ssh/id_rsa_wazuh <<< "${{ secrets.WAZUH_SSH_PRIVATE_KEY }}"
 
-      - name: Run site.yml (all-in-one stack)
+      - name: Run deploy_all.yml (disk provisioning + all-in-one stack)
         working-directory: _dev-build
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
@@ -218,9 +226,29 @@ jobs:
           set -euo pipefail
           # STIG hosts mount /tmp,/home,/var/tmp noexec; ansible.cfg stages under /opt.
           sudo install -d -m 0770 -o "$(id -u)" -g "$(id -g)" /opt/wazuh-deploy/.tmp || true
-          ansible-playbook -i inventory/proxmox.yml playbooks/site.yml \
+          ansible-playbook -i inventory/proxmox.yml playbooks/deploy_all.yml \
             -e "env=${WAZUH_ENV}" \
             -e "wazuh_admin_password=${WAZUH_ADMIN_PASSWORD}"
+
+      - name: Guard — /mnt/data is a real mountpoint
+        working-directory: _dev-build
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
+        run: |
+          set -euo pipefail
+          # Defense-in-depth, read-only post-flight check — intentionally redundant with two
+          # in-playbook guards that now catch an unmounted /mnt/data FIRST, inside the
+          # ansible-playbook run itself: linux_disk_manager's own mount task
+          # (`ansible.posix.mount: state: mounted` fails loudly if the mount never takes) and
+          # site.yml's 'BEGIN | Assert /mnt/data Is A Mounted Data Disk' (Stage 1, before PREP
+          # stages the 1.66GB offline bundle). linux_disk_manager's present_redhat.yml
+          # deliberately does NO defensive validation of its own — its header names that
+          # "CI/CD's responsibility" — so this step IS that responsibility, by design, not an
+          # accidental leftover. Keep it even though the in-playbook guards now fire first; it
+          # is the one signal standing between a silently-bypassed/weakened upstream guard and
+          # SIEM data landing on the STIG-sized root disk.
+          ansible wazuh_servers -i inventory/proxmox.yml \
+            -m ansible.builtin.command -a 'mountpoint -q /mnt/data'
 
   # ===========================================================================
   # AWS — EPHEMERAL proof-of-concept, deploy -> test -> ALWAYS destroy
@@ -229,6 +257,12 @@ jobs:
     name: AWS (ephemeral, deploy-test-destroy)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
+    # The AWS PoC is a singleton (same aws.tfvars tags), so serialize with e2e-full.yml
+    # regardless of ref.
+    concurrency:
+      group: secure-wazuh-aws-poc
+      cancel-in-progress: false
 
     permissions:
       contents: read
@@ -245,6 +279,34 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+
+      # aws-terraform-framework's runner protocol (docs/reference/runner-protocol.md,
+      # "Deployment Identity Tags") — verbatim step. Exports TF_VAR_resource_metadata for every
+      # later terraform step in this job; docs/reference/aws-iam/README.md's StampRepoIdentityTags
+      # / RequestTag conditions require it on every create-call, or they deny the request. The
+      # proxmox job has no AWS identity to capture, so this step is AWS-job-only.
+      - name: Capture deployment identity
+        shell: bash
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_REPOSITORY_ID: ${{ github.repository_id }}
+          GH_RUN_ID: ${{ github.run_id }}
+          # WIRE: set as repo variables. STACK names this Terraform stack (e.g.
+          # "secure-wazuh-aws-poc"); OWNER_TEAM is the owning team/contact recorded in the
+          # nwarila:operations:owner tag.
+          STACK: ${{ vars.TERRAFORM_STACK }}
+          OWNER_TEAM: ${{ vars.OWNER_TEAM }}
+        run: |
+          commit_sha="$(git rev-parse HEAD)"
+          printf 'TF_VAR_resource_metadata=%s\n' "$(jq -cn \
+            --arg repository "$GH_REPOSITORY" \
+            --arg repository_id "$GH_REPOSITORY_ID" \
+            --arg stack "$STACK" \
+            --arg owner "$OWNER_TEAM" \
+            --arg commit_sha "$commit_sha" \
+            --arg run_id "$GH_RUN_ID" \
+            '{repository: $repository, repository_id: $repository_id, stack: $stack,
+              owner: $owner, commit_sha: $commit_sha, run_id: $run_id}')" >> "$GITHUB_ENV"
 
       - name: Resolve ansible-framework pin
         id: pin
@@ -291,7 +353,9 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
         with:
-          terraform_version: "1.15.3"
+          # aws-terraform-framework pins `required_version = "= 1.15.1"` EXACTLY
+          # (terraform/versions.tf) — must match that pin, not just satisfy a range.
+          terraform_version: "1.15.1"
           terraform_wrapper: false
 
       - name: Terraform init (aws)
@@ -332,6 +396,14 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
         run: |
           python -m pip install --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}"
+          # boto3/botocore: required by amazon.aws modules that run CONTROLLER-side on THIS
+          # runner — amazon.aws.aws_caller_info (ADR-0004's runtime account-id derivation, both
+          # jobs, delegate_to: localhost under ansible_playbook_python) and the Windows-agent
+          # MSI fetch's delegate_to: localhost amazon.aws.s3_object (same interpreter). This was
+          # a pre-existing gap: nothing installed boto3/botocore for the runner itself before.
+          # Target-side boto3 (RHEL dnf side_deps + the /opt/ansible/venv bootstrap.yml builds)
+          # is a separate, already-covered concern.
+          python -m pip install --no-cache-dir boto3 botocore
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
       - name: Generate ephemeral inventory from Terraform outputs
@@ -368,19 +440,39 @@ jobs:
           PY
           cat "${GITHUB_WORKSPACE}/_dev-build/inventory/aws.yml"
 
-      - name: Run site.yml (all-in-one stack)
+      - name: Run deploy_all.yml (disk provisioning + all-in-one stack)
         working-directory: _dev-build
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
           # AWS_* for the offline bundle come from the OIDC step above (runner env).
           # Same discipline as proxmox: no_log module args, never target shell env.
+          # Belt-and-suspenders: the "Configure AWS credentials (OIDC)" step above already
+          # exports AWS_REGION into the runner env for every later step, and aws_runner_env.yml
+          # now prefers AWS_REGION over this — so this explicit alias is redundant today. Kept
+          # deliberately as a fallback in case a future change to the OIDC action or step
+          # ordering ever stops exporting AWS_REGION here.
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
           WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
-          ansible-playbook -i inventory/aws.yml playbooks/site.yml \
+          ansible-playbook -i inventory/aws.yml playbooks/deploy_all.yml \
             -e "env=${WAZUH_ENV}" \
             -e "wazuh_admin_password=${WAZUH_ADMIN_PASSWORD}"
+
+      - name: Guard — /mnt/data is a real mountpoint
+        working-directory: _dev-build
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
+        run: |
+          set -euo pipefail
+          # Same defense-in-depth guard as the Proxmox job (see that job's comment) —
+          # deliberately redundant with the in-playbook guards (linux_disk_manager's own mount
+          # task + site.yml's BEGIN mountpoint assert), which now catch this FIRST.
+          # linux_disk_manager explicitly defers its own defensive validation to CI/CD (see its
+          # present_redhat.yml header); this target is also a FRESH unformatted EBS volume every
+          # run, so keep this independent check rather than treating it as dead weight.
+          ansible wazuh_servers -i inventory/aws.yml \
+            -m ansible.builtin.command -a 'mountpoint -q /mnt/data'
 
       # -----------------------------------------------------------------------
       # TEST — the success gate. All three checks must pass.

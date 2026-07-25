@@ -4,11 +4,23 @@
 # --- [ Description ] ----------------------------------------------------------------------- #
 # Controller-side AWS credential bridge. Source short-lived AWS credentials into the runner
 # environment before invoking ansible-playbook. These values become Ansible variables consumed
-# by the current role-specific no_log amazon.aws.s3_object tasks; they are not exported to
-# target shells.
+# by the role-specific no_log amazon.aws.s3_object tasks AND by playbooks/tasks/
+# derive_aws_account_id.yml's controller-delegated amazon.aws.aws_caller_info call (imported 3x
+# from site.yml); they are not exported to target shells.
+#
+# CONTRACT: an unset source env var resolves to an empty string '' — never `omit`, never
+# undefined. This holds for every line below, including AWS_DEFAULT_REGION's AWS_REGION-
+# preferring fallback (still empty if both region vars are unset). Consumers absorb that
+# empty string themselves at the point of use — the no_log amazon.aws.s3_object tasks and
+# derive_aws_account_id.yml's aws_caller_info call both apply `| default(omit, true)` there.
+# Do NOT centralize that omit-conversion into this file:
+# outside a module-argument context, Ansible's `omit` marker renders as a non-empty
+# placeholder string, so a bare `default(omit, true)` here would hand every consumer a truthy
+# placeholder instead of '' — silently defeating any downstream fallback (e.g. a role's
+# config.s3.region default) that only triggers on empty/undefined.
 # =========================================================================================== #
 
 AWS_ACCESS_KEY_ID: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
 AWS_SECRET_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
 AWS_SESSION_TOKEN: "{{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') }}"
-AWS_DEFAULT_REGION: "{{ lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION') }}"
+AWS_DEFAULT_REGION: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) }}"
