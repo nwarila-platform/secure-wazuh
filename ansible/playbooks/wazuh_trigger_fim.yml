@@ -76,12 +76,18 @@
     # __fim_path__ is recorded alongside the marker (not re-derived later) so the ledger play
     # below — a SEPARATE play against a SEPARATE host group — can read both straight off
     # hostvars without duplicating this play's directory convention.
-    - name: 'TRIGGER | Compute A Unique Marker And Its Full Monitored Path For This Run'
-      vars:
-        __marker__: "fim-proof-{{ inventory_hostname }}-{{ 9999999999 | random }}"
+    - name: 'TRIGGER | Compute A Unique Marker For This Run (draw the random ONCE)'
+      # `| random` RE-EVALUATES on every reference, so the random must be drawn once into a
+      # concrete fact here and the path DERIVED from that fact (next task). Referencing a single
+      # `{{ ... | random }}` vars entry twice yields two different numbers — the ledger records
+      # one, the file on disk gets the other, and the FIM proof never matches (Windows failed
+      # exactly this way; Linux passed only when the two draws happened to line up).
       ansible.builtin.set_fact:
-        __fim_marker__: "{{ __marker__ }}"
-        __fim_path__:   "{{ fim_demo_dir }}/{{ __marker__ }}.txt"
+        __fim_marker__: "fim-proof-{{ inventory_hostname }}-{{ 9999999999 | random }}"
+
+    - name: 'TRIGGER | Derive The Monitored Path From The Fixed Marker'
+      ansible.builtin.set_fact:
+        __fim_path__: "{{ fim_demo_dir }}/{{ __fim_marker__ }}.txt"
 
     # THE ARMING RACE, PROCESS-AWARE: syscheck only starts REALTIME monitoring after its
     # initial baseline scan completes. Verified against the wazuh/wazuh v4.14.5 source
@@ -171,12 +177,15 @@
 
     # Same rationale as the Linux play's marker+path task: both facts land on hostvars here so
     # the ledger play can read them without re-deriving the Windows path convention.
-    - name: 'TRIGGER (win) | Compute A Unique Marker And Its Full Monitored Path For This Run'
-      vars:
-        __marker__: "fim-proof-{{ inventory_hostname }}-{{ 9999999999 | random }}"
+    - name: 'TRIGGER (win) | Compute A Unique Marker For This Run (draw the random ONCE)'
+      # Same re-evaluation trap as the Linux play above: draw the random once into a concrete
+      # fact, then derive the path from it, so the ledger marker and the on-disk filename match.
       ansible.builtin.set_fact:
-        __fim_marker__: "{{ __marker__ }}"
-        __fim_path__:   "{{ fim_demo_dir_windows }}\\{{ __marker__ }}.txt"
+        __fim_marker__: "fim-proof-{{ inventory_hostname }}-{{ 9999999999 | random }}"
+
+    - name: 'TRIGGER (win) | Derive The Monitored Path From The Fixed Marker'
+      ansible.builtin.set_fact:
+        __fim_path__: "{{ fim_demo_dir_windows }}\\{{ __fim_marker__ }}.txt"
 
     # THE ARMING RACE, PROCESS-AWARE (see the Linux play's identical task for the full
     # baseline-scan-then-realtime-thread source citation). The historical Windows double-arming
