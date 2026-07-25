@@ -52,6 +52,7 @@
 !/.github/workflows/
 !/.github/workflows/ci.yml
 !/.github/workflows/deploy.yml
+!/.github/workflows/e2e-full.yml
 !/.github/workflows/release-please.yml
 !/.github/workflows/security.yaml
 
@@ -83,7 +84,15 @@
 !/docs/how-to/provide-aws-credentials-safely.md
 !/docs/reference/
 !/docs/reference/.gitkeep
+!/docs/reference/aws-iam/
+!/docs/reference/aws-iam/README.md
+!/docs/reference/aws-iam/policies/
+!/docs/reference/aws-iam/policies/secure-wazuh-poc-role-s3.json
+!/docs/reference/aws-iam/policies/secure-wazuh_deploy.json
+!/docs/reference/aws-iam/roles/
+!/docs/reference/aws-iam/roles/secure-wazuh-poc-role.trust.json
 !/docs/reference/inventory-and-topology.md
+!/docs/reference/poc-evidence.md
 !/docs/reference/s3-artifacts.md
 !/docs/tutorials/
 !/docs/tutorials/.gitkeep
@@ -126,8 +135,10 @@
 !/ansible/applications/wazuh_server/tasks/clean_redhat.yml
 !/ansible/applications/wazuh_server/tasks/main.yml
 !/ansible/applications/wazuh_server/tasks/present_redhat.yml
+!/ansible/applications/wazuh_server/tasks/validate.yml
 !/ansible/applications/wazuh_server/templates/
 !/ansible/applications/wazuh_server/templates/.gitkeep
+!/ansible/applications/wazuh_server/templates/auth-force.xml.j2
 !/ansible/applications/wazuh_server/templates/filebeat.yml.j2
 !/ansible/applications/wazuh_server/templates/internal_users.yml.j2
 !/ansible/applications/wazuh_server/templates/opensearch.yml.j2
@@ -153,14 +164,18 @@
 !/ansible/playbooks/aws_runner_env.yml
 !/ansible/playbooks/bootstrap.yml
 !/ansible/playbooks/deploy_all.yml
+!/ansible/playbooks/e2e_full.yml
 !/ansible/playbooks/linux_disk_manager.yml
 !/ansible/playbooks/site.yml
+!/ansible/playbooks/tasks/
+!/ansible/playbooks/tasks/derive_aws_account_id.yml
 !/ansible/playbooks/wazuh_agent.yml
 !/ansible/playbooks/wazuh_agent_windows.yml
 !/ansible/playbooks/wazuh_pipeline_smoke.yml
 !/ansible/playbooks/wazuh_server.yml
 !/ansible/playbooks/wazuh_trigger_fim.yml
 !/ansible/playbooks/wazuh_trigger_fim_windows.yml
+!/ansible/playbooks/windows_ssh_bootstrap.yml
 !/ansible/requirements.yml
 
 # --------------------------------------------------------------------------- #
