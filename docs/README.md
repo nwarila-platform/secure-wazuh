@@ -29,6 +29,7 @@ _None yet — the end-to-end first deploy currently lives in [How-to → Deploy 
 
 ## Explanation
 
+- [Agent reconnect](explanation/agent-reconnect.md) — how agents survive a manager OS replacement unattended, and why the force-replacement shortcut was rejected.
 - [Architecture](explanation/architecture.md) — what the stack deploys and why the central roles collapsed into one all-in-one role.
 - [Composition model](explanation/composition-model.md) — how the framework loader and shared roles are composed in at run time from the pinned `ansible-framework`.
 - [RHEL 8 toolchain](explanation/toolchain-rhel8.md) — why ansible-core is pinned to 2.16 and the bootstrap venv is not the default interpreter.

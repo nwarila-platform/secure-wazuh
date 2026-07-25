@@ -76,6 +76,7 @@
 !/docs/decision-records/template/.gitkeep
 !/docs/explanation/
 !/docs/explanation/.gitkeep
+!/docs/explanation/agent-reconnect.md
 !/docs/explanation/architecture.md
 !/docs/explanation/composition-model.md
 !/docs/explanation/toolchain-rhel8.md

@@ -39,11 +39,16 @@
 # `meta: reset_connection` task below exists to discard that cached master so the next play's
 # connection is actually new, not a reused mux socket still pinned to cmd.
 #
-# WHY IT MUST STAY FIRST AND IDEMPOTENT: a refresh-replaced instance (Terraform `refresh` /
-# OS-swap) re-arrives with a fresh Windows Server boot — DefaultShell is cmd.exe again,
-# regardless of what a prior run flipped it to. This play re-detects and re-flips it on every
-# run; the query-then-conditional-add below is a no-op once already flipped, so a re-run against
-# an already-flipped instance changes nothing.
+# WHY IT MUST STAY FIRST AND RE-ENTRANT: this play runs again on every deploy, and the two cases
+# it must survive are opposites.
+#   - A NEWLY LAUNCHED instance arrives on the framework's cmd default and needs the flip.
+#   - An ALREADY-FLIPPED instance needs the flip skipped. In this product that is the common case,
+#     not the rare one: only the manager carries `refresh = true`, so the OS-swap replaces the AIO
+#     while both agents keep running — a Windows agent therefore reaches the post-swap redeploy
+#     still serving PowerShell from the first deploy.
+# The second case cannot be detected through this play's own cmd-wrapped session (see the flip
+# task), so the probe and the flip are both best-effort and the post-reset assert at the end is
+# the gate that actually decides whether this play succeeded.
 # =========================================================================================== #
 
 - name: 'Bootstrap Windows OpenSSH DefaultShell (cmd -> PowerShell)'
@@ -70,11 +75,20 @@
     # would decode to a vertical-tab control character, not literal backslash+v, silently
     # breaking this comparison (and the whole idempotency guard) forever. \\ decodes to one
     # literal backslash, matching reg query's real output.
+    #
+    # `failed_when: false`, because against an ALREADY-flipped host NEITHER raw command here can
+    # succeed. The play pins ansible_shell_type to cmd for the pre-flip session, so ansible wraps
+    # every command as `chcp.com 65001 >nul 2>&1 && ...`, which a PowerShell DefaultShell rejects
+    # outright ("The token '&&' is not a valid statement separator"). That parse error leaves the
+    # query's stdout EMPTY, so the guard above cannot see the powershell.exe that is already there
+    # and fires regardless — and the flip then hits the same parse error. Both outcomes are
+    # harmless and expected; the post-reset assert below is what actually decides.
     - name: 'PROCESS (win) | Flip OpenSSH DefaultShell To PowerShell'
       when: >-
         'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' not in
         (__openssh_defaultshell_query__.stdout | default('', true))
       changed_when: true
+      failed_when: false
       ansible.builtin.raw: 'reg add "HKLM\SOFTWARE\OpenSSH" /v DefaultShell /t REG_SZ /d "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" /f'
 
     # UNCONDITIONAL — no when: — for two reasons: (a) ansible-core's meta: reset_connection does
@@ -94,3 +108,19 @@
     # binds to the NOW-flipped DefaultShell as intended.
     - name: 'END (win) | Reset The SSH Connection (apply the new DefaultShell)'
       ansible.builtin.meta: 'reset_connection'
+
+    # THE REAL GATE. Everything above is best-effort precisely because a re-entrant run cannot
+    # talk to an already-flipped host through the cmd wrapper. This task runs over the FRESH
+    # post-reset session with the powershell shell type the rest of the deploy uses, so it is the
+    # first command in this play that is guaranteed to be wrapped correctly for whatever shell is
+    # actually serving. If the flip genuinely did not take, this fails loudly here rather than
+    # letting the next play die on an unexplained cmd-ism.
+    - name: 'END (win) | Verify DefaultShell Now Serves PowerShell'
+      vars:
+        ansible_shell_type: 'powershell'
+      register: __openssh_defaultshell_verify__
+      changed_when: false
+      failed_when: >-
+        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' not in
+        (__openssh_defaultshell_verify__.stdout | default('', true))
+      ansible.builtin.raw: 'reg query "HKLM\SOFTWARE\OpenSSH" /v DefaultShell'
