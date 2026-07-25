@@ -174,6 +174,9 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
    `.terraform/`, `*.tfstate`), caches, `.env`, or credential material.
 5. **`.gitignore` not edited outside intent.** The `.gitignore` is orchestrated as an
    allowlist; edits MUST add specific paths, not weaken the deny-all rule.
+6. **Allowlist entries name tracked paths.** `make allowlist-check` MUST reject a file
+   allowlist entry that does not resolve in Git's tracked set, while directory entries remain
+   valid when their directory exists.
 
 ## Consequences
 

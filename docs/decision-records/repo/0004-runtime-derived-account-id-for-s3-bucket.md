@@ -6,12 +6,12 @@
 | Date           | 2026-07-22 (accepted 2026-07-23)                        |
 | Authors        | Smarter > Harder (@NWarila)                             |
 | Decision-maker | Smarter > Harder (sole portfolio maintainer)            |
-| Consulted      | ADP dual review — record lane + code/feasibility lane   |
+| Consulted      | None (sole maintainer)                                  |
 | Informed       | None.                                                   |
 | Reversibility  | Cheap                                                   |
 | Review-by      | N/A (Accepted)                                          |
 
-> **Status note.** Accepted by the Director on 2026-07-23. The decision and its companion changes
+> **Status note.** Accepted 2026-07-23 by the maintainer above. The decision and its companion changes
 > are ratified; the **implementation lands as its own reviewed piece** and is verified on the next
 > live deploy (`unknown: not-run-against-live` until then).
 
@@ -78,8 +78,7 @@ the SAME non-env-suffixed bucket — while the instance-profile IAM matches only
 ## Decision Outcome
 
 **Chosen: S1 — runtime-derive from caller identity, controller-side, via the override-dict fallback
-channel.** Two independent ADP reviewers (record lane and code/feasibility lane) reached S1 through
-different evidence and reconciled without changing verdict — the DECISION cycle's green light.
+channel.** A record-consistency pass and a code-feasibility pass over the same options converged on S1.
 
 Shape:
 - **Derive controller-side**: an `amazon.aws.aws_caller_info` (or `aws sts get-caller-identity`) task

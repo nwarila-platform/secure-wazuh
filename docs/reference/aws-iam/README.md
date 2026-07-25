@@ -63,7 +63,7 @@ credentials while the CI OIDC path is unwired. Detach it once CI OIDC is live.
     (us-east-1) + `Authorize/Revoke/Modify/Delete` SG rules (us-east-1) + create-time `CreateTags` on
     SG / SG-rule resources — so the `aws-terraform-framework` can create each system's OWN
     system-specific SG (e.g. the AIO's inbound Wazuh mesh 1514/1515 from the deploy subnet).
-    **Deliberately region-scoped, NOT rule-content- or `ResourceTag`-locked** (Director: every system
+    **Deliberately region-scoped, NOT rule-content- or `ResourceTag`-locked** (rationale: every system
     carries comprehensive per-system inbound/outbound rules; and a just-created SG-rule resource has no
     tag to match at authorize time, so `ResourceTag` scoping 403s). A conscious loosening of the
     exact-spec posture, for the SG surface only, bounded to us-east-1.
@@ -97,7 +97,8 @@ credentials while the CI OIDC path is unwired. Detach it once CI OIDC is live.
 
 ## Permanent networking (provisioned in AWS, left standing — not IAM)
 
-A single **public subnet** the deployments land in (Director: "everyone deploys into"): auto-assign
+A single **public subnet** the deployments land in (one shared deploy subnet for all systems):
+auto-assign
 public IP + a **no-inbound security group** (`secure-wazuh-poc-sg`, zero ingress, all egress) so the
 SSM path works over the internet gateway with **no open ports** and no NAT/endpoint cost. Plus the
 `secure-wazuh-poc-key` key pair (private key stays local; never committed). Named resources:

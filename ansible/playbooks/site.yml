@@ -30,8 +30,9 @@
 # `sts:GetCallerIdentity`, no IAM grant required, cannot be denied) and registers
 # `__aws_caller_info__`; the stage's `vars:` then reference `__aws_caller_info__.account` directly
 # to feed `<account-id>-ansible` into the role as a FALLBACK default via the same override-dict
-# channel already used for admin_password below. No intermediate set_fact hop (R3): play `vars:`
-# are evaluated lazily at first use, and `register` already produces an ordinary play-scoped var,
+# channel already used for admin_password below. No intermediate set_fact hop (repo convention:
+# no `set_fact` for derived data — play `vars:` are evaluated lazily at first use), and `register`
+# already produces an ordinary play-scoped var,
 # so by the time the role dereferences `s3.bucket` (after pre_tasks/tasks have run) the register is
 # already in scope. The committed overlay's literal `<account-id>-ansible` placeholder is never
 # actually used except as a fail-fast tripwire (it only survives if the derivation is skipped/
@@ -62,21 +63,19 @@
         # ADR-0004 fallback: an explicit -e wazuh_s3_bucket=... always wins; otherwise the bucket
         # is this run's own account-scoped `<account-id>-ansible`, read directly off the
         # __aws_caller_info__ register set by the imported AWS account-id derive pre_task below
-        # (no set_fact hop — R3; play vars: are lazily evaluated, so the register is already in
-        # scope by the time the role dereferences s3.bucket). The loader's recursive combine
+        # (repo convention: no `set_fact` for derived data — play `vars:` are evaluated lazily at
+        # first use). The register is already in scope by the time the role dereferences s3.bucket.
+        # The loader's recursive combine
         # (wazuh_server/tasks/main.yml "Loading Overrides") merges only s3.bucket, leaving the
         # overlay's bundle_key/bundle_sha256/certs_prefix pins untouched.
         bucket: "{{ wazuh_s3_bucket | default(__aws_caller_info__.account ~ '-ansible', true) }}"
       secrets:
-        # The ONE operator-provided secret, three-step chain (highest precedence first):
-        # explicit -e wazuh_admin_password -> the WAZUH_ADMIN_PASSWORD env var -> the lab
-        # default. CI/GitOps passes it as the WAZUH_ADMIN_PASSWORD env (sourced from the repo
-        # secret; see .github/workflows/deploy.yml) — no -e needed; -e remains available as an
-        # explicit override. lookup('env', ...) on an unset var yields '' (not undefined), which
-        # is why the inner default also needs boolean=true to catch it, same as every other
-        # env-var default in this codebase. Replace the lab default before any run against
-        # retained data or real users.
-        admin_password: "{{ wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD') | default('REDACTED-LAB-DEFAULT', true), true) }}"
+        # The ONE operator-provided secret, two-step chain (highest precedence first):
+        # explicit -e wazuh_admin_password -> the WAZUH_ADMIN_PASSWORD env var. CI/GitOps passes
+        # it as the WAZUH_ADMIN_PASSWORD env (sourced from the repo secret; see
+        # .github/workflows/deploy.yml) — no -e needed; -e remains available as an explicit
+        # override. If both are unset or empty, the role's validate.yml hard-fails before mutation.
+        admin_password: "{{ wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD'), true) }}"
       # TEMPORARY (pending Vault client integration): S3 cert pull-down is a stopgap. The end
       # state is a Vault PKI client that issues a per-host cert on demand at deploy time — no CA
       # key on disk, no pre-staged certs in S3. Until then the node pulls
@@ -100,7 +99,7 @@
     - name: 'PREP | Import AWS Account ID Derive (ADR-0004)'
       ansible.builtin.import_tasks: 'tasks/derive_aws_account_id.yml'
 
-    # BEGIN guard (CC2): the next task (PREP) is Stage 1's first mutation — it creates the
+    # BEGIN guard: the next task (PREP) is Stage 1's first mutation — it creates the
     # loader's staging root that then receives the 1.66 GB offline bundle. Nothing upstream
     # verifies /mnt/data is a real mounted disk; if linux_disk_manager.yml (or deploy_all.yml,
     # which chains it) was skipped, PREP happily mkdir's onto the small STIG root partition and
@@ -163,10 +162,10 @@
       # rename the group_vars/aws/wazuh_agents.yml keys this play now permanently shadows. Not
       # resolved here — do NOT retire the group_vars until the fix lands.
       #
-      # CC3 guard: private_ip_address is an aws_ec2-only hostvar, undefined on a Proxmox agent
+      # Guard: private_ip_address is an aws_ec2-only hostvar, undefined on a Proxmox agent
       # host (proxmox.yml documents wazuh_agents as normally populated per environment).
       # `| default('', true)` mirrors Stage 1's endpoint_host guard: this play resolves
-      # private_ip_address -> '' here (the CC3 fix) FIRST, then hands the result to the role's
+      # private_ip_address -> '' here FIRST, then hands the result to the role's
       # OWN documented fallback chain ('' -> ansible_host, then an actionable assert — see
       # wazuh_agent/tasks/present_redhat.yml's __manager_host__/__agent_ip__ derivation).
       # Deferring to the role here (rather than re-deriving ansible_host a second time in this
@@ -236,7 +235,7 @@
       # retiring the shadowed group_vars once the inventory/loader fix lands; not resolved here).
       # Windows FIM key is windows.fim_realtime_paths (not fim.realtime_paths).
       #
-      # CC3 guard: same as Stage 2 — private_ip_address is aws_ec2-only; `| default('', true)`
+      # Guard: same as Stage 2 — private_ip_address is aws_ec2-only; `| default('', true)`
       # mirrors Stage 1/2 and defers to the role's own fallback + assert chain rather than
       # re-deriving ansible_host here too.
       manager:

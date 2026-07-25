@@ -1,9 +1,13 @@
 # AWS ephemeral PoC inputs for secure-wazuh (consumed by aws-terraform-framework).
 #
 # This target is the throwaway proof-of-concept half of the repo, driven two ways:
-#   - deploy.yml (every commit to main): deploy -> smoke-test -> DESTROY, nothing persists.
-#   - e2e-full.yml (manual workflow_dispatch): deploy -> prove (phase 1) -> OS-swap the AIO
-#     (terraform apply -var refresh_serial=1) -> prove again, cumulatively (phase 2) -> DESTROY.
+#   - deploy.yml (push to main touching ansible/**, terraform/**, or .github/.framework-pin; plus
+#     workflow_dispatch): deploy -> smoke-test -> DESTROY, nothing persists (~$1 per run).
+#   - e2e-full.yml (MR opened/reopened/draft-to-ready or `rerun-poc` labeled, with changes touching
+#     ansible/**, terraform/**, .github/.framework-pin, or the workflow itself; plus
+#     workflow_dispatch): deploy -> prove (phase 1) -> OS-swap the AIO
+#     (terraform apply -var refresh_serial=1) -> prove again, cumulatively (phase 2) -> DESTROY
+#     (~$1 per run).
 # The permanent live instance is the Proxmox target (see proxmox.tfvars) — unrelated to this file.
 #
 # NO secrets, and NO AWS account id, live in this file (the account-id ban is absolute — see
@@ -42,7 +46,9 @@ all_systems = [
     hostname          = "secure-wazuh-poc"
     availability_zone = "us-east-1a"
 
-    subnet_id            = "subnet-0e1c8aae192deff26" # private subnet in us-east-1a
+    # public subnet secure-wazuh-public-use1a (IGW-routed, auto-assign public IP — see
+    # docs/reference/aws-iam/README.md "Permanent networking")
+    subnet_id            = "subnet-0e1c8aae192deff26"
     key_name             = "secure-wazuh-poc-key"     # must match a readiness_private_key_paths key
     iam_instance_profile = "secure-wazuh-poc-profile"
     # aws/ebs = the AWS-managed default EBS key (satisfies encrypted-at-rest for STIG/FIPS). A

@@ -69,6 +69,13 @@ allowlist-check:
 	else \
 	  printf 'allowlist-check: OK — every deliverable file is explicitly allowlisted\n'; \
 	fi
+	@orphans=$$(grep '^!/' .gitignore | sed 's|^!/||; s|/\*\*$$||' | while read -r p; do \
+	  case "$$p" in \
+	    */) [ -d "$${p%/}" ] || echo "$$p" ;; \
+	    *)  git ls-files --error-unmatch "$$p" >/dev/null 2>&1 || echo "$$p" ;; \
+	  esac; done); \
+	if [ -n "$$orphans" ]; then printf 'ERROR: .gitignore allowlists paths not in the tracked set:\n'; \
+	  printf '%s\n' "$$orphans" | sed 's|^|  !/|'; exit 1; fi
 
 # Diátaxis layout gate: every Markdown file must live in a quadrant subtree, ADRs under
 # decision-records/{org,template,repo}/, and docs/README.md is the only doc-root Markdown file.
