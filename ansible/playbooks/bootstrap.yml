@@ -39,13 +39,13 @@
           - '!min'
           - 'distribution'
 
-    - name: 'INIT | Assert OS Is RHEL 8'
+    - name: 'INIT | Assert OS Is RHEL/Rocky 8'
       ansible.builtin.assert:
         that:
           - (ansible_facts.os_family | string) == 'RedHat'
           - (ansible_facts.distribution_major_version | int) == 8
         fail_msg: >-
-          The bootstrap playbook targets RHEL 8 only. Detected:
+          The bootstrap playbook targets RedHat-family 8 (RHEL/Rocky 8). Detected:
           {{ ansible_facts.distribution | default('?') }}
           {{ ansible_facts.distribution_version | default('?') }}
         quiet: true
@@ -97,7 +97,7 @@
 
     #endregion --- [ Main: Prerequisite Packages ] ------------------------------------------ #
 
-    #region ------ [ Main: Venv ] ----------------------------------------------------------- #
+    #region ------ [ Main: Venv + fapolicyd Trust ] ----------------------------------------- #
 
     - name: 'MAIN | Ensure /opt/ansible Exists With SELinux Contexts'
       ansible.builtin.file:
@@ -111,20 +111,27 @@
         setype:  'usr_t'
         seuser:  'system_u'
 
-    # check_mode + lineinfile that would APPEND the expected version line returns
-    # "line added" when the line is missing OR has drifted to a different value — both
-    # cases mean the venv was built against a different python3.12 patch release and
-    # should be rebuilt. Same pattern for the --system-site-packages flag probe below.
+    # check_mode + search_string/state:absent reports the documented, structural `found`
+    # count — 0 means the exact expected line is not in the file, whether it's simply
+    # MISSING or PRESENT with a drifted value (an exact search_string never matches a
+    # differently-valued line, so drift also reads found:0). Same idiom the fapolicyd trust
+    # probe below in this file uses, and wazuh_server uses 4x — a proven, repo-wide pattern.
+    # Deliberately NOT `line:` + state:present (the prior implementation): that variant
+    # carries no `found` key at all and only signals via the free-text `.msg` ("line added")
+    # — an internal, UNDOCUMENTED message (lineinfile's RETURN contract is the empty stub
+    # `r'''#'''`) assembled ad hoc across 8 branches purely for human display. A future
+    # ansible-core reword of that string would silently disable drift detection with no
+    # failure (verified against the installed 2.16.19). Same pattern for the
+    # --system-site-packages flag probe below.
     - name: 'MAIN | Probe Existing Venv Python Version Line'
       changed_when: false
       check_mode: true
       failed_when: false
       register: '__venv_version_probe__'
       ansible.builtin.lineinfile:
-        path:   '/opt/ansible/venv/pyvenv.cfg'
-        line:   "version = {{ __python312_version__.stdout.split()[1] }}"
-        state:  'present'
-        create: false
+        path:          '/opt/ansible/venv/pyvenv.cfg'
+        search_string: "version = {{ __python312_version__.stdout.split()[1] }}"
+        state:         'absent'
 
     - name: 'MAIN | Probe Existing Venv --system-site-packages Flag'
       changed_when: false
@@ -132,13 +139,14 @@
       failed_when: false
       register: '__venv_site_packages_probe__'
       ansible.builtin.lineinfile:
-        path: '/opt/ansible/venv/pyvenv.cfg'
-        line: 'include-system-site-packages = true'
+        path:          '/opt/ansible/venv/pyvenv.cfg'
+        search_string: 'include-system-site-packages = true'
+        state:         'absent'
 
     - name: 'MAIN | Remove Drifted Venv (Wrong Python Or Missing system-site-packages)'
       when: >-
-        ('line added' in (__venv_version_probe__.msg | default('')))
-        or ('line added' in (__venv_site_packages_probe__.msg | default('')))
+        (__venv_version_probe__.found | default(0) | int) == 0
+        or (__venv_site_packages_probe__.found | default(0) | int) == 0
       ansible.builtin.file:
         path:  '/opt/ansible/venv'
         state: 'absent'
@@ -146,51 +154,24 @@
     - name: 'MAIN | Create Venv (--system-site-packages, owned by root)'
       ansible.builtin.command:
         cmd:     '/usr/bin/python3.12 -m venv --system-site-packages /opt/ansible/venv'
-        creates: '/opt/ansible/venv/bin/python'
-
-    # pip / setuptools / wheel / packaging are bumped to latest first so the boto3 install
-    # below uses a modern resolver. boto3 / botocore are the actual reason this venv exists —
-    # the current amazon.aws collection's boto3 floor is too new for RHEL 8 platform-python.
-    # `state: latest` is intentional: bootstrap is the foundation that downstream roles
-    # consume, and we want a fresh boto3 every time a host is bootstrapped. Pin in this
-    # task when a future regression in boto3 requires a known-good version.
-    - name: 'MAIN | Install Python Packages In Venv'  # noqa: package-latest
-      ansible.builtin.pip:
-        name:
-          - 'pip'
-          - 'setuptools'
-          - 'wheel'
-          - 'packaging'
-          - 'boto3'
-          - 'botocore'
-        virtualenv: '/opt/ansible/venv'
-        state:      'latest'
-
-    - name: 'MAIN | Ensure Venv Interpreters Are Executable'
-      loop:
-        - '/opt/ansible/venv/bin/python'
-        - '/opt/ansible/venv/bin/python3'
-        - '/opt/ansible/venv/bin/pip'
-        - '/opt/ansible/venv/bin/pip3'
-      loop_control:
-        loop_var: '__venv_file__'
-      ansible.builtin.file:
-        path: "{{ __venv_file__ }}"
-        mode: '0755'
-
-    #endregion --- [ Main: Venv ] ----------------------------------------------------------- #
-
-    #region ------ [ Main: fapolicyd Trust ] ------------------------------------------------ #
+        creates: '/opt/ansible/venv/bin/pip'
 
     # fapolicyd is part of the STIG baseline but this bootstrap also runs on dev hosts that
     # may not have it. Gate the entire trust block on fapolicyd-cli being present so a dev
-    # host silently skips it.
+    # host silently skips it. Detected here (rather than at the end of the file) because the
+    # pre-install trust block immediately below needs it.
     - name: 'MAIN | Detect fapolicyd Presence'
       register: '__fapolicyd_cli__'
       ansible.builtin.stat:
         path: '/usr/sbin/fapolicyd-cli'
 
-    - name: 'MAIN | Trust /opt/ansible/venv In fapolicyd'
+    # Two-phase, trust-before-use — mirrors the JDK/JNA precedent in wazuh_server's
+    # present_redhat.yml ("trust the tree FIRST, the next step execs from it"), the reverse
+    # of what this task did before. Phase 1 trusts the FRESH venv (python3.12 -m venv's own
+    # ensurepip output) before the pip tasks below invoke the venv's own bin/pip — without
+    # this, that invocation execs a brand-new, not-yet-trusted binary and fapolicyd DENIES it
+    # on a STIG host.
+    - name: 'MAIN | Trust /opt/ansible/venv In fapolicyd (Pre-Install)'
       when: __fapolicyd_cli__.stat.exists | default(false)
       block:
 
@@ -204,18 +185,93 @@
             search_string: '/opt/ansible/venv'
             state:         'absent'
 
-        - name: 'MAIN | Add /opt/ansible/venv To fapolicyd.trust'
+        - name: 'MAIN | Add /opt/ansible/venv To fapolicyd.trust (Pre-Install)'
           when: (__fapd_venv_probe__.found | default(0) | int) == 0
-          register: '__fapd_add__'
-          changed_when: __fapd_add__.rc == 0
-          failed_when: __fapd_add__.rc not in [0, 1]
+          register: '__fapd_add_pre__'
+          changed_when: __fapd_add_pre__.rc == 0
+          failed_when: __fapd_add_pre__.rc not in [0, 1]
           ansible.builtin.command:
             argv: ['fapolicyd-cli', '--file', 'add', '/opt/ansible/venv']
 
-        - name: 'MAIN | Refresh fapolicyd DB Inline (Trust Must Take Effect Now)'  # noqa: no-handler
-          when: __fapd_add__ is changed
+        - name: 'MAIN | Refresh fapolicyd DB Inline (Pre-Install Trust Must Take Effect Now)'  # noqa: no-handler
+          when: __fapd_add_pre__ is changed
           changed_when: false
           ansible.builtin.command:
             argv: ['fapolicyd-cli', '--update']
 
-    #endregion --- [ Main: fapolicyd Trust ] ------------------------------------------------ #
+    # pip / setuptools / wheel / packaging are bumped to latest FIRST, in their own task, so
+    # the boto3/botocore install below — a separate, later pip invocation — runs under a
+    # modern resolver.
+    - name: 'MAIN | Upgrade Pip Tooling In Venv (Modern Resolver)'  # noqa: package-latest
+      register: '__venv_pip_tooling__'
+      ansible.builtin.pip:
+        name:
+          - 'pip'
+          - 'setuptools'
+          - 'wheel'
+          - 'packaging'
+        virtualenv: '/opt/ansible/venv'
+        state:      'latest'
+
+    # boto3 / botocore are the actual reason this venv exists — the current amazon.aws
+    # collection's boto3 floor is too new for RHEL 8 platform-python (see docs/explanation/
+    # toolchain-rhel8.md). Pinned to a floor/ceiling range instead of `state: latest`: this is
+    # a reproducible hardened build, and `latest` would pull an unpinned version from public
+    # PyPI on every redeploy. The floor (1.34.0) matches the amazon.aws collection's own
+    # documented minimum — its packaged requirements.txt (`botocore>=1.34.0` / `boto3>=1.34.0`)
+    # and README ("Version 10.0.0 of this collection supports boto3 >= 1.34.0 and botocore >=
+    # 1.34.0"), confirmed against the installed 10.3.2. NOT ansible/requirements.yml: that file
+    # only pins the collection's own version range (amazon.aws >=6.0.0,<11.0.0) and documents no
+    # boto3/botocore floor itself. The ceiling guards against an unreviewed future major bump.
+    # Raise the ceiling deliberately once a newer major is vetted.
+    - name: 'MAIN | Install boto3/botocore In Venv (Pinned Floor/Ceiling)'
+      register: '__venv_boto3__'
+      ansible.builtin.pip:
+        name:
+          - 'boto3>=1.34.0,<2.0.0'
+          - 'botocore>=1.34.0,<2.0.0'
+        virtualenv: '/opt/ansible/venv'
+        state:      'present'
+
+    - name: 'MAIN | Ensure Venv Interpreters Are Executable'
+      loop:
+        - '/opt/ansible/venv/bin/python'
+        - '/opt/ansible/venv/bin/python3'
+        - '/opt/ansible/venv/bin/pip'
+        - '/opt/ansible/venv/bin/pip3'
+      loop_control:
+        loop_var: '__venv_file__'
+      ansible.builtin.file:
+        path: "{{ __venv_file__ }}"
+        mode: '0755'
+
+    # Phase 2: pip self-upgrading (state:latest above), or boto3/botocore being installed for
+    # the first time or upgraded after a deliberate pin-range bump, REWRITES files the
+    # pre-install trust already covered — the venv's own bin/pip launcher is the common case.
+    # fapolicyd's trust DB is hash-based, so a rewritten file's OLD entry no longer matches its
+    # new bytes; but the broad path-prefix probe used pre-install would still report found>0
+    # (SOME line for this path exists) even though the CURRENT bytes are untrusted, so
+    # re-running that probe here would wrongly skip re-adding the changed files forever after
+    # the first add. Gate on pip's OWN changed result instead — the reliable signal that the
+    # tree's content just changed — never on the probe. fapolicyd-cli --file add safely no-ops
+    # (rc 0/1) on a file whose hash is already current.
+    - name: 'MAIN | Re-Trust /opt/ansible/venv In fapolicyd (Post-Install)'
+      when: >-
+        (__fapolicyd_cli__.stat.exists | default(false))
+        and (__venv_pip_tooling__ is changed or __venv_boto3__ is changed)
+      block:
+
+        - name: 'MAIN | Re-Add /opt/ansible/venv To fapolicyd.trust (Post-Install)'
+          register: '__fapd_add_post__'
+          changed_when: __fapd_add_post__.rc == 0
+          failed_when: __fapd_add_post__.rc not in [0, 1]
+          ansible.builtin.command:
+            argv: ['fapolicyd-cli', '--file', 'add', '/opt/ansible/venv']
+
+        - name: 'MAIN | Refresh fapolicyd DB Inline (Post-Install Trust Must Take Effect Now)'  # noqa: no-handler
+          when: __fapd_add_post__ is changed
+          changed_when: false
+          ansible.builtin.command:
+            argv: ['fapolicyd-cli', '--update']
+
+    #endregion --- [ Main: Venv + fapolicyd Trust ] ----------------------------------------- #

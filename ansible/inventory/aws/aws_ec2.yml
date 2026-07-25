@@ -108,6 +108,16 @@ hostnames:
 compose:
   # SSH-over-SSM dials the instance by ID, never by IP — see group_vars/all.yml's ProxyCommand.
   ansible_host: instance_id
+  # The plugin snake-cases describe-instances straight into hostvars, so every host also gets a
+  # bare `state` hostvar — the INSTANCE-STATE dict (e.g. {code: 16, name: running}), NOT an
+  # ansible role-state string. Every framework role loader reads `state | default('present')`
+  # (linux_disk_manager tasks/main.yml) to select present/absent/clean, and that dict silently
+  # beats the default — hence the `-e state=present` stopgap this fixes at the source. This
+  # inventory's standing intent IS present (teardown here is terraform-destroy, never
+  # ansible-absent), so pin a literal string 'present' (nested quotes: compose values are Jinja
+  # expressions, not auto-quoted strings). An operator `-e state=absent` still overrides —
+  # extra-vars outrank inventory hostvars in Ansible's precedence order.
+  state: "'present'"
 
 groups:
   # `tags` (NOT `ec2_tags`) deliberately: ansible/requirements.yml pins amazon.aws to
