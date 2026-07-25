@@ -81,6 +81,14 @@ credentials while the CI OIDC path is unwired. Detach it once CI OIDC is live.
     `StampRepoIdentityTags` path — impossible under v4; (2) the previously-403ing OS-swap apply
     (a `refresh_serial` bump alongside a non-refresh sibling) re-ran with ZERO tag errors, and
     the sibling's root-volume tags converged.
+- **`github_nwarila-platform_secure-wazuh.json`** — the CI role's S3 duty: read/write of this repo's
+  Terraform state and its lock file under `<account-id>-terraform/<owner>/<repo>/`, plus read-only
+  access to the Wazuh artifacts in `<account-id>-ansible`. Both targets keep their own state object
+  (`aws.tfstate`, `proxmox.tfstate`), so the state statements are scoped to `*.tfstate` beneath that
+  one repo prefix rather than to a single file. Two `Deny` statements require every state upload to
+  carry `x-amz-server-side-encryption: AES256` — bucket-default encryption does **not** satisfy them,
+  because the condition tests the request header, so the workflows pass `encrypt=true` to
+  `terraform init`. Deleting a state object is denied outright; only the lock file may be removed.
 - **`secure-wazuh-poc-role-s3.json`** — the instance profile's S3 artifact read (folder-scoped, read-only).
 
 ## Roles (`roles/`)

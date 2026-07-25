@@ -138,9 +138,11 @@ jobs:
           AWS_DEFAULT_REGION: ${{ vars.AWS_S3_BUNDLE_REGION }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=secure-wazuh/proxmox.tfstate" \
-            -backend-config="region=${{ vars.TF_STATE_REGION }}"
+            -backend-config="bucket=${{ secrets.AWS_ACCOUNT_ID }}-terraform" \
+            -backend-config="key=${{ github.repository_owner }}/${{ github.event.repository.name }}/proxmox.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
 
       - name: Terraform apply (proxmox, in-place — NO destroy)
         working-directory: .frameworks/proxmox-tf/terraform
@@ -305,6 +307,10 @@ jobs:
           {
             echo "DEPLOY_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/github_${owner}_${stack}"
             echo "BUNDLE_BUCKET=${AWS_ACCOUNT_ID}-ansible"
+            echo "TF_STATE_BUCKET=${AWS_ACCOUNT_ID}-terraform"
+            # Org state-key convention is <owner>/<repo>/<target>.tfstate — derived, so it always
+            # matches the bucket layout (and the IAM policy scoped to that prefix) with no input.
+            echo "TF_STATE_KEY_PREFIX=${owner}/${stack}"
             printf 'TF_VAR_resource_metadata=%s\n' "$(jq -cn \
               --arg repository "$GH_REPOSITORY" --arg repository_id "$GH_REPOSITORY_ID" \
               --arg stack "$stack" --arg owner "$owner" \
@@ -371,9 +377,11 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=secure-wazuh/aws.tfstate" \
-            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/aws.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
 
       - name: Terraform apply (aws)
         working-directory: ${{ env.TF_DIR }}

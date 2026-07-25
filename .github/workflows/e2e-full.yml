@@ -141,12 +141,33 @@ jobs:
           {
             echo "DEPLOY_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/github_${owner}_${stack}"
             echo "BUNDLE_BUCKET=${AWS_ACCOUNT_ID}-ansible"
+            echo "TF_STATE_BUCKET=${AWS_ACCOUNT_ID}-terraform"
+            # Org state-key convention is <owner>/<repo>/<target>.tfstate — derived, so it always
+            # matches the bucket layout (and the IAM policy scoped to that prefix) with no input.
+            echo "TF_STATE_KEY_PREFIX=${owner}/${stack}"
             printf 'TF_VAR_resource_metadata=%s\n' "$(jq -cn \
               --arg repository "$GH_REPOSITORY" --arg repository_id "$GH_REPOSITORY_ID" \
               --arg stack "$stack" --arg owner "$owner" \
               --arg commit_sha "$commit_sha" --arg run_id "$GH_RUN_ID" \
               '{repository:$repository,repository_id:$repository_id,stack:$stack,owner:$owner,commit_sha:$commit_sha,run_id:$run_id}')"
           } >> "$GITHUB_ENV"
+
+      # EPHEMERAL-TARGET CREDENTIAL POLICY: this AWS PoC is created and destroyed inside this one
+      # run, so its Wazuh admin password is minted here, masked, and dies with the environment —
+      # there is no standing secret to store, rotate, or leak. Exported ONCE so both phases (the
+      # initial deploy and the post-OS-swap redeploy) configure the SAME credential; site.yml reads
+      # it from the environment, so this stays zero--e. The PERMANENT Proxmox target deliberately
+      # keeps a real managed secret instead — a live instance's password cannot be rotated on every
+      # deploy.
+      - name: Mint the ephemeral Wazuh admin password
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Character-class coverage (upper/lower/digit/symbol) is explicit rather than left to
+          # chance in the random segment, so the value always satisfies the stack's password policy.
+          pw="Wz9-$(openssl rand -hex 16)-Aa!"
+          echo "::add-mask::${pw}"
+          echo "WAZUH_ADMIN_PASSWORD=${pw}" >> "$GITHUB_ENV"
 
       - name: Resolve ansible-framework pin
         id: pin
@@ -215,9 +236,11 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=secure-wazuh/aws.tfstate" \
-            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/aws.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
 
       # Terraform needs no SSH key here (all systems readiness_gate=false, SSM-only); only Ansible
       # reads this key. If a system ever sets readiness_gate=true, Terraform's SSH readiness will
@@ -288,10 +311,10 @@ jobs:
           # identical comment on its own equivalent line for the full rationale (kept as a
           # fallback, not redundant by accident).
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-          # The ONE operator secret, as a plain env var — zero -e (site.yml's admin_password is a
-          # three-step chain: -e wins if ever supplied, then this env var, then the lab default).
-          # WIRE: WAZUH_ADMIN_PASSWORD remains the one repo-scoped operator secret.
-          WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
+          # WAZUH_ADMIN_PASSWORD is deliberately NOT bound here: the ephemeral password minted
+          # above already reaches every later step through $GITHUB_ENV, and an explicit env: entry
+          # would OVERRIDE it (with an empty string when no such secret exists). site.yml's chain
+          # reads it straight from the environment — still zero -e.
           # Read by wazuh_trigger_fim.yml's ledger-driven validate play (gated so a local run
           # without this var stays byte-identical) — it writes the machine-readable proof JSON
           # here, controller-side, for "Render PoC evidence" below to consume.
@@ -345,7 +368,6 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-          WAZUH_ADMIN_PASSWORD: ${{ secrets.WAZUH_ADMIN_PASSWORD }}
           # Same path as phase 1 (see that step's comment) — this run overwrites it with the
           # cumulative (4-entry) state; phase 1's own snapshot already survives at
           # poc-proof-phase1.json.
