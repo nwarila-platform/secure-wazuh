@@ -394,6 +394,26 @@ jobs:
             exit 1
           fi
 
+      # The swap gave the AIO a brand-new root disk, so its SSM agent is installed and started from
+      # scratch by user_data all over again — the pre-phase-1 wait says nothing about this instance.
+      # Phase 2 reaches the manager only over SSM, so without this the redeploy races the boot and
+      # dies with the misleading "Connection closed by UNKNOWN port 65535". The two agents are
+      # untouched by the swap (refresh = false) and stay registered throughout, so this still waits
+      # for 3 — a count that also proves the swap did not disturb them.
+      - name: Wait for the swapped AIO to re-register with SSM
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 45); do
+            online="$(aws ssm describe-instance-information \
+              --filters "Key=tag:Environment,Values=poc" \
+              --query 'length(InstanceInformationList[?PingStatus==`Online`])' --output text)"
+            echo "SSM Online: ${online}/3"
+            [ "${online}" = "3" ] && exit 0
+            sleep 20
+          done
+          echo "::error::Only ${online:-0}/3 systems registered with SSM within 15 minutes of the OS-swap" >&2
+          exit 1
+
       - name: "PHASE 2: redeploy the swapped AIO, then trigger/prove ALL 4 cumulative events"
         working-directory: _dev-build
         env:
