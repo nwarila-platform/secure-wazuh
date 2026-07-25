@@ -1,25 +1,34 @@
 # AWS ephemeral PoC inputs for secure-wazuh (consumed by aws-terraform-framework).
 #
-# This target is the throwaway proof-of-concept half of the repo: every commit to main runs
-# deploy -> smoke-test -> DESTROY, so nothing here is meant to persist. The permanent live
-# instance is the Proxmox target (see proxmox.tfvars).
+# This target is the throwaway proof-of-concept half of the repo, driven two ways:
+#   - deploy.yml (every commit to main): deploy -> smoke-test -> DESTROY, nothing persists.
+#   - e2e-full.yml (manual workflow_dispatch): deploy -> prove (phase 1) -> OS-swap the AIO
+#     (terraform apply -var refresh_serial=1) -> prove again, cumulatively (phase 2) -> DESTROY.
+# The permanent live instance is the Proxmox target (see proxmox.tfvars) — unrelated to this file.
 #
-# NO secrets live in this file. AWS credentials reach the runner through GitHub OIDC
-# (assume-role) and are never committed. Values marked REPLACE_ME are account/VPC-specific
-# identifiers an operator must fill before the first apply.
+# NO secrets, and NO AWS account id, live in this file (the account-id ban is absolute — see
+# ADR-0004). AWS credentials reach the runner through GitHub OIDC (assume-role) and are never
+# committed. Every value below is real, committed bootstrap data — this file carries no
+# REPLACE_ME placeholders; it is consumed directly by both workflows above.
 #
-# Note on operator access: this framework references pre-provisioned security groups by ID;
-# it does NOT build a security group from a CIDR. The operator-CIDR restriction is therefore
-# expressed on the security group referenced under network_interfaces below (see the REQUIRED
-# comment there), which is the required-to-fill gate for reaching this box.
+# Security groups, TWO mechanisms, both in play:
+#   - STANDING, pre-provisioned, referenced by ID: sg-06a3a06bcc4413c10 is the zero-inbound
+#     SSM-only group every system's ENI carries (docs/reference/aws-iam/README.md, "Permanent
+#     networking") — the framework does NOT build this one from a CIDR, it only references it.
+#   - MANAGED, framework-CREATED per system: managed_security_groups below, e.g. the AIO's own
+#     inbound Wazuh mesh (1514/1515) from the deploy subnet. See that block's own comment for why
+#     this is per-system, not a shared cross-system rule.
 
 environment = "poc"
 
 # Readiness gate: path (on the Terraform runner) to the OpenSSH private key matching
-# all_systems[*].key_name. Leave {} for plan-only / CI-lint; a real deploy-test-destroy apply
-# must supply the path so the gate can SSH in before Ansible configures the stack.
+# all_systems[*].key_name. All 3 systems below keep readiness_gate = false (SSM-only reachability
+# — the standing SG has zero inbound, so the gate's direct-SSH precheck cannot reach any of them
+# regardless), so this path is not exercised by either workflow today; it is still supplied as
+# real bootstrap data (the runner-local convention ansible/inventory/aws/group_vars/all.yml
+# already assumes for its own ansible_ssh_private_key_file) rather than left as a placeholder.
 readiness_private_key_paths = {
-  "secure-wazuh-poc-key" = "/secure/path/REPLACE_ME-secure-wazuh-poc-key.pem"
+  "secure-wazuh-poc-key" = "/root/.ssh/secure-wazuh-poc-key.pem"
 }
 
 # STIG-hardened RHEL/Rocky 8 images commonly mount /tmp, /var/tmp, and /dev/shm noexec, which
@@ -33,62 +42,229 @@ all_systems = [
     hostname          = "secure-wazuh-poc"
     availability_zone = "us-east-1a"
 
-    # REQUIRED - account/VPC specific. Fill before apply.
-    subnet_id            = "subnet-REPLACE_ME"    # private subnet in us-east-1a
-    key_name             = "secure-wazuh-poc-key" # must match a readiness_private_key_paths key
-    iam_instance_profile = "REPLACE_ME-wazuh-poc-profile"
+    subnet_id            = "subnet-0e1c8aae192deff26" # private subnet in us-east-1a
+    key_name             = "secure-wazuh-poc-key"     # must match a readiness_private_key_paths key
+    iam_instance_profile = "secure-wazuh-poc-profile"
     # aws/ebs = the AWS-managed default EBS key (satisfies encrypted-at-rest for STIG/FIPS). A
     # customer-managed CMK is an optional hardening upgrade (key control/rotation/audit), not required.
     aws_kms_alias = "aws/ebs" # AWS-managed default EBS key alias (no "alias/" prefix)
 
-    # CIS/DISA RHEL 8 Benchmark STIG marketplace AMI (Red Hat, DISA-STIG-hardened). Marketplace AMI
-    # IDs are region-specific and require accepting the product subscription once per account; supply
-    # the target-region product AMI ID. Default login user on the image is "ec2-user". (Rocky 8 is the
-    # free on-prem/Proxmox image; AWS deploys the RHEL 8 DISA STIG marketplace image.)
-    ami            = "ami-REPLACE_ME" # CIS/DISA RHEL 8 STIG marketplace AMI ID for us-east-1a
+    # CIS/DISA RHEL 8 Benchmark STIG marketplace AMI (Red Hat, DISA-STIG-hardened), us-east-1.
+    # Default login user on the image is "ec2-user". (Rocky 8 is the free on-prem/Proxmox image;
+    # AWS deploys the RHEL 8 DISA STIG marketplace image.)
+    ami            = "ami-0ca8a2e788e4c5869"
     readiness_user = "ec2-user"
+    readiness_gate = false # SSM-only reachability; see the file header
+
+    # SSM-over-SSH only; IMDSv2 already required module-wide (deploy policy + ADR repo/0001).
+    imds_hop_limit = 1
+    set_state      = null
 
     # 4 vCPU / 16 GB - clears the AIO floor (>=4 vCPU / 8 GB) with headroom for the OpenSearch
     # JVM heap. Mirrors the permanent Proxmox box (4 cores / 8 GB) with slack for indexing bursts.
     instance_type = "m6i.xlarge"
 
-    # OS root. Every EBS volume is encrypted by the framework with the CMK from aws_kms_alias.
-    root_block_device = {
-      volume_type = "gp3"
-      volume_size = "50"
-    }
-
-    # Dedicated data volume for /mnt/data (Wazuh indexer + alert storage). Ephemeral sizing;
-    # the permanent Proxmox box carries 256 GB. The framework assigns the device name
-    # (first extra volume -> /dev/sdd, surfaced as /dev/nvme1n1 on Nitro); the Ansible layer
-    # resolves that device and mounts it at /mnt/data.
-    ebs_block_devices = [
-      {
-        volume_type = "gp3"
-        volume_size = "100"
-      }
-    ]
+    # e2e-full.yml's OS-swap lever: `terraform apply -var refresh_serial=1` force-replaces every
+    # refresh=true instance — a fresh root volume from `ami` above, new instance-id, but its data
+    # volume (ebs_block_devices below) is UNAFFECTED and gets re-attached to the new instance
+    # (Terraform replaces the aws_instance resource, not the separate aws_ebs_volume). This is
+    # the "replace-OS-only" proof: the AIO's indexer data (and this playbook's FIM ledger, see
+    # wazuh_trigger_fim.yml) survives even though the OS underneath it does not. The two agents
+    # below stay refresh = false so the swap never touches them — only the AIO's OS is under test.
+    refresh = true
 
     tags = {
       Function = "wazuh-aio"
       Backup   = false # ephemeral PoC - destroyed every cycle, nothing to back up
     }
 
-    network_interfaces = [
-      {
-        private_ip = "10.0.10.10" # REPLACE_ME if it collides in your subnet
+    # OS root. Every EBS volume is encrypted by the framework with the CMK from aws_kms_alias.
+    root_block_device = {
+      delete_on_termination = true
+      iops                  = null
+      tags                  = {}
+      throughput            = null
+      volume_type           = "gp3"
+      volume_size           = "50"
+    }
 
-        # REQUIRED - operator access gate. This security group is where the operator CIDR is
-        # enforced: it MUST restrict inbound to the operator's own public CIDR only (TCP 443
-        # dashboard, TCP 22 SSH/readiness) and MUST NOT allow 0.0.0.0/0. The framework does not
-        # synthesize a security group from a CIDR - reference a pre-provisioned SG ID here.
-        security_groups = ["sg-REPLACE_ME"]
+    # Dedicated data volume for /mnt/data (Wazuh indexer + alert storage, and the FIM ledger —
+    # see wazuh_trigger_fim.yml). Ephemeral sizing; the permanent Proxmox box carries 256 GB. The
+    # framework assigns this volume's device name positionally (first extra volume -> /dev/sdd)
+    # — but consumers must NEVER use positional names (Nitro can re-enumerate NVMe devices across
+    # reboots, and this volume is explicitly re-attached across an OS-swap replacement too).
+    # Identification instead goes tags.Function -> volume-id -> /dev/disk/by-id NVMe-serial:
+    # linux_disk_manager's AWS resolver (ansible-framework, tasks/resolve_aws.yml) reads the
+    # Function tag below at apply time and derives the by-id path itself; no /dev/nvmeXnY or
+    # /dev/sdX name is ever consulted.
+    ebs_block_devices = [
+      {
+        volume_type  = "gp3"
+        volume_size  = "100"
+        iops         = null
+        throughput   = null
+        snapshot_id  = null
+        skip_destroy = false # ephemeral PoC - destroy-always must be able to remove this volume
+        tags = {
+          Function = "wazuh-data"
+        }
       }
     ]
+
+    network_interfaces = [
+      {
+        private_ip = "10.1.10.20"
+
+        # The standing zero-inbound SSM-only group (every system's baseline) PLUS this system's
+        # OWN managed inbound mesh (defined in managed_security_groups below, referenced here by
+        # its map key rather than a literal sg- id).
+        security_groups = ["sg-06a3a06bcc4413c10", "secure-wazuh-poc-aio"]
+        description     = null
+        interface_type  = null
+        tags            = {}
+      }
+    ]
+
+    # The subnet auto-assigns public IPs; this framework's own EIP path is not used here (the
+    # standing SG has zero inbound regardless, so a public IP carries no exposure of its own —
+    # SSM is the only reachability path either way).
+    associate_public_ip = false
+  },
+  {
+    # Linux endpoint agent: enrolls against the AIO above, proves the agent-sourced FIM path
+    # (wazuh_trigger_fim.yml) distinctly from the manager's own local agent 000.
+    region            = "us_east_1"
+    hostname          = "secure-wazuh-poc-agent-linux"
+    availability_zone = "us-east-1a"
+
+    subnet_id            = "subnet-0e1c8aae192deff26"
+    key_name             = "secure-wazuh-poc-key"
+    iam_instance_profile = "secure-wazuh-poc-profile"
+    aws_kms_alias        = "aws/ebs"
+    ami                  = "ami-0ca8a2e788e4c5869" # same RHEL 8 STIG AMI as the AIO
+    readiness_user       = "ec2-user"
+    readiness_gate       = false
+    imds_hop_limit       = 1
+    set_state            = null
+    instance_type        = "t3.medium"
+    refresh              = false # agents stay untouched by the AIO's OS-swap lever
+
+    tags = {
+      Function = "wazuh-agent"
+      Backup   = false
+    }
+
+    root_block_device = {
+      delete_on_termination = true
+      iops                  = null
+      tags                  = {}
+      throughput            = null
+      volume_type           = "gp3"
+      volume_size           = "50"
+    }
+
+    ebs_block_devices = [] # no dedicated data volume — agents are stateless
+
+    network_interfaces = [
+      {
+        private_ip      = "10.1.10.21"
+        security_groups = ["sg-06a3a06bcc4413c10"] # standing zero-inbound SSM-only group only
+        description     = null
+        interface_type  = null
+        tags            = {}
+      }
+    ]
+
+    associate_public_ip = false
+  },
+  {
+    # Windows endpoint agent: same role as the Linux agent above, native win_* enrollment path
+    # (wazuh_agent role's main_windows entry).
+    region            = "us_east_1"
+    hostname          = "secure-wazuh-poc-agent-win"
+    availability_zone = "us-east-1a"
+
+    subnet_id            = "subnet-0e1c8aae192deff26"
+    key_name             = "secure-wazuh-poc-key" # same EC2 launch key pair as the Linux systems
+    iam_instance_profile = "secure-wazuh-poc-profile"
+    aws_kms_alias        = "aws/ebs"
+    # Windows Server 2025 STIG-Core marketplace AMI (DISA-STIG-hardened), us-east-1.
+    ami            = "ami-003a141a4ebc8189d"
+    readiness_user = "Administrator"
+    readiness_gate = false
+    imds_hop_limit = 1
+    set_state      = null
+    instance_type  = "t3.medium"
+    refresh        = false # agents stay untouched by the AIO's OS-swap lever
+
+    tags = {
+      Function = "wazuh-agent" # SAME Function as the Linux agent; aws_ec2.yml's group split is
+      # by the AWS-native `platform` field (Windows vs absent), not a second Function value.
+      Backup = false
+    }
+
+    root_block_device = {
+      delete_on_termination = true
+      iops                  = null
+      tags                  = {}
+      throughput            = null
+      volume_type           = "gp3"
+      volume_size           = "50"
+    }
+
+    ebs_block_devices = []
+
+    network_interfaces = [
+      {
+        private_ip      = "10.1.10.22"
+        security_groups = ["sg-06a3a06bcc4413c10"]
+        description     = null
+        interface_type  = null
+        tags            = {}
+      }
+    ]
+
+    associate_public_ip = false
   }
 ]
 
-# An ephemeral single-box PoC needs no managed database and no load balancer. Keeping these
-# lists empty is how this framework expresses "no RDS" and "no ALB/NLB".
+# Per-system security groups, framework-managed (NOT the standing SG above, which stays
+# zero-inbound/SSM-only and is only ever referenced, never built, from a CIDR). Each SYSTEM owns
+# its OWN inbound/outbound firewall here — a shared cross-system rule is deliberately NOT this
+# framework's role (docs/reference/aws-iam/README.md, "Permanent networking").
+managed_security_groups = {
+  "secure-wazuh-poc-aio" = {
+    region      = "us_east_1"
+    vpc_id      = "vpc-03c38504869c1c9bb"
+    description = "Wazuh AIO (manager+dashboard+indexer) system-specific inbound firewall."
+
+    ingress = [
+      {
+        description                  = "Wazuh manager: agent events (1514) + enrollment (1515) from the deploy subnet"
+        ip_protocol                  = "tcp"
+        from_port                    = 1514
+        to_port                      = 1515
+        cidr_ipv4                    = "10.1.10.0/24"
+        cidr_ipv6                    = null
+        prefix_list_id               = null
+        referenced_security_group_id = null
+      }
+    ]
+
+    # Egress-all is already supplied by the standing SG (sg-06a3a06bcc4413c10) attached to every
+    # ENI alongside this one. Comprehensive per-system egress (deny-by-default, only what the AIO
+    # actually needs — S3, SSM, DNS, etc.) is a deliberate follow-up, not modeled here yet.
+    egress = []
+
+    tags = {
+      Environment = "poc"
+      System      = "wazuh"
+      Role        = "wazuh-aio"
+    }
+  }
+}
+
+# An ephemeral single-box-plus-agents PoC needs no managed database and no load balancer. Keeping
+# these lists empty is how this framework expresses "no RDS" and "no ALB/NLB".
 all_databases      = []
 all_load_balancers = []
