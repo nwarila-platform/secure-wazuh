@@ -302,6 +302,37 @@ jobs:
           python -m pip install --no-cache-dir boto3 botocore
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
+      # The AWS systems take NO inbound SSH (see docs/reference/aws-iam/README.md's zero-ingress
+      # note): inventory/aws/group_vars/all.yml tunnels every connection through
+      # `aws ssm start-session --document-name AWS-StartSSHSession`, and that ProxyCommand shells
+      # out to the Session Manager plugin — a separate binary the AWS CLI does NOT bundle and
+      # ubuntu-latest does not ship. Without it every host is UNREACHABLE with the misleading
+      # "Connection closed by UNKNOWN port 65535".
+      - name: Install the SSM Session Manager plugin (SSH transport for the zero-ingress hosts)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/session-manager-plugin.deb \
+            "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb"
+          sudo dpkg -i /tmp/session-manager-plugin.deb
+          session-manager-plugin --version
+
+      # `terraform apply` returns when the API says the instances exist, NOT when their SSM agents
+      # have registered — and SSM is the only way in. Ansible would otherwise race a host that is
+      # still booting (Windows is the slow one). Poll until all three systems report Online.
+      - name: Wait for all three systems to register with SSM
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 45); do
+            online="$(aws ssm describe-instance-information \
+              --filters "Key=tag:Environment,Values=poc" \
+              --query 'length(InstanceInformationList[?PingStatus==`Online`])' --output text)"
+            echo "SSM Online: ${online}/3"
+            [ "${online}" = "3" ] && exit 0
+            sleep 20
+          done
+          echo "::error::Only ${online:-0}/3 systems registered with SSM within 15 minutes" >&2
+          exit 1
+
       - name: "PHASE 1: deploy_all.yml, then trigger/prove 2 fresh FIM events"
         working-directory: _dev-build
         env:

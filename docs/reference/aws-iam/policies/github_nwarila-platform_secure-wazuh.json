@@ -21,6 +21,12 @@
       "Resource": "arn:aws:s3:::*-terraform/nwarila-platform/secure-wazuh/*.tfstate.tflock"
     },
     {
+      "Sid": "ListStateBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::*-terraform"
+    },
+    {
       "Sid": "DenyDeleteStateFile",
       "Effect": "Deny",
       "Action": "s3:DeleteObject",
