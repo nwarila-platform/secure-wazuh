@@ -88,6 +88,7 @@
 !/docs/reference/aws-iam/
 !/docs/reference/aws-iam/README.md
 !/docs/reference/aws-iam/policies/
+!/docs/reference/aws-iam/policies/github_nwarila-platform_secure-wazuh.json
 !/docs/reference/aws-iam/policies/secure-wazuh-poc-role-s3.json
 !/docs/reference/aws-iam/policies/secure-wazuh_deploy.json
 !/docs/reference/aws-iam/roles/
