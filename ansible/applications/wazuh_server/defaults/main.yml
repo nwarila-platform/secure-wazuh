@@ -64,11 +64,11 @@ wazuh_server_defaults:
   # post = created AFTER RPM install (service accounts now exist); re-chowns the bind targets.
   directories:
     pre:
-      - { path: '/mnt/data/wazuh',              owner: 'root', group: 'root', mode: '0750' }
-      - { path: '/mnt/data/wazuh/indexer/data', owner: 'root', group: 'root', mode: '0750' }
-      - { path: '/mnt/data/wazuh/indexer/logs', owner: 'root', group: 'root', mode: '0750' }
-      - { path: '/var/lib/wazuh-indexer',       owner: 'root', group: 'root', mode: '0750' }
-      - { path: '/var/log/wazuh-indexer',       owner: 'root', group: 'root', mode: '0750' }
+      - { path: '/mnt/data/wazuh',              mode: '0750' }
+      - { path: '/mnt/data/wazuh/indexer/data', mode: '0750' }
+      - { path: '/mnt/data/wazuh/indexer/logs', mode: '0750' }
+      - { path: '/var/lib/wazuh-indexer',       mode: '0750' }
+      - { path: '/var/log/wazuh-indexer',       mode: '0750' }
     post:
       - { path: '/var/lib/wazuh-indexer',           owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }
       - { path: '/var/log/wazuh-indexer',           owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }

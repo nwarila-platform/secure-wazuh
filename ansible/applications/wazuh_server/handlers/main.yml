@@ -62,8 +62,8 @@
 
 # Notified when the dashboard's TLS material, opensearch_dashboards.yml, keystore password, or
 # wazuh.yml changes. Gated on __wazuh_dashboard_start__ (set in present_redhat.yml BEGIN from
-# config.dashboard.service_state) — that dedicated fact is used instead of the loader's merged
-# config because the loader's always-block wipes it before a play-end flush (finding F58).
+# config.dashboard.service_state). The dedicated gate is preserved pending its separate behavioral
+# follow-up; handlers can read wazuh_server_running live at flush time.
 - name: 'Restart wazuh-dashboard'
   listen: 'wazuh-dashboard-config-changed'
   when: __wazuh_dashboard_start__ | default(true)
