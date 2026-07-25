@@ -6,6 +6,7 @@
 
 [![CI](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/ci.yml/badge.svg)](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/ci.yml)
 [![Security](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/security.yaml/badge.svg)](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/security.yaml)
+[![e2e-full](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/e2e-full.yml/badge.svg)](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/e2e-full.yml)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://pre-commit.com/)
 [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg)](https://www.conventionalcommits.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -20,6 +21,7 @@
 - [Getting Started](#getting-started)
 - [Project Structure](#project-structure)
 - [Deployment — the GitOps loop](#deployment--the-gitops-loop)
+- [Proof of Concept — live evidence](#proof-of-concept--live-evidence)
 - [Developer Workflow](#developer-workflow)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
@@ -128,6 +130,20 @@ Rationale and the full pattern: [ADR&nbsp;0002](docs/decision-records/repo/0002-
 > **Status.** [`deploy.yml`](.github/workflows/deploy.yml) is a reviewed **first cut** — the job
 > graph, guardrails, and framework pinning are in place, but the per-environment secret/OIDC
 > wiring (marked with `# WIRE:` in the workflow) must be completed before it runs green end to end.
+
+## Proof of Concept — live evidence
+
+Every merge request self-proves against real AWS: [`e2e-full.yml`](.github/workflows/e2e-full.yml)
+deploys the full 3-system PoC (AIO + a Linux agent + a Windows agent), fires a real File Integrity
+Monitoring event on **both** endpoint platforms, force-replaces the AIO's OS drive mid-run
+(`terraform apply -var refresh_serial=1`) to prove agents reconnect and indexer data survives a
+manager rebuild, validates all four cumulative events, then **always** destroys the environment —
+a disposable, genuinely-exercised deploy rather than a mocked test. It fires once per MR (open,
+reopen, or draft→ready-for-review); apply the `rerun-poc` label for an on-demand re-run. Cost is
+roughly $1 per run and $0 standing. Results land straight in the MR as
+[`docs/reference/poc-evidence.md`](docs/reference/poc-evidence.md); full logs are in the
+[`e2e-full`](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/e2e-full.yml)
+Actions workflow.
 
 ## Developer Workflow
 
