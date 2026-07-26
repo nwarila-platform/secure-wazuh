@@ -19,9 +19,10 @@ The endpoint `wazuh_agent` role is separate and does not consume the central bun
 
 | Variable | Type | Description |
 |---|---|---|
-| `ENV` | str | Environment selector (`int`/`test`/`prod`); selects the `vars/redhat_<env>.yml` overlay. |
+| `ENV` | str | Environment selector (`dev`/`test`/`prod`); selects the `vars/redhat_<env>.yml` overlay. |
 | `state` | str | `present` (default) or `clean`. Top-level per the loader contract (only `ENV`/`state` stay top-level). |
 | `wazuh_server.secrets.admin_password` | str | The ONE operator-provided password (dashboard/OpenSearch `admin`). Everything else is generated or derived and rotated every run. |
+| `wazuh_server.s3.bucket` | str | Artifact bucket supplied by the deployment. Empty values and the committed `<account-id>` tripwire fail during role validation. |
 
 Everything else lives in `defaults/main.yml` (S3 coordinates, ports, FIM realtime dirs, bind
 mounts, service state). User overrides go in the `wazuh_server:` extra-var dict.
@@ -51,7 +52,7 @@ tracked in [ADR-0001](../../../docs/decision-records/repo/0001-secrets-and-tls.m
   roles:
     - role: 'wazuh_server'
       vars:
-        ENV: 'int'
+        ENV: 'dev'
         state: 'present'
         wazuh_server:
           secrets:

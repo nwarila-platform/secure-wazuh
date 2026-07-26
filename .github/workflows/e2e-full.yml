@@ -16,8 +16,8 @@
 # header):
 #   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 # ZERO -e: the whole AWS target is two files — that playbook plus inventory/aws/aws_ec2.yml — and
-# every product deployment input is a literal in one of them. The effective Wazuh admin credential
-# is minted by the playbook's own Step 0, while the workflow-created environment value is only the
+# product inputs come from those files plus the controller environment. The effective Wazuh admin
+# credential is minted by the playbook's own Stage 1, while the workflow-created value is only the
 # lower-precedence backstop described below; neither is passed as an extra var.
 #
 # Mirrors .github/workflows/deploy.yml's AWS job conventions throughout (SHA-pinned actions,
@@ -31,8 +31,8 @@
 # AWS_EC2_SSH_PRIVATE_KEY. TF_STATE_BUCKET is derived as <AWS_ACCOUNT_ID>-terraform; the optional
 # AWS_REGION org variable defaults to us-east-1. The repo commits both framework pins. This
 # workflow also exports a masked, run-scoped WAZUH_ADMIN_PASSWORD backstop, but the playbook's
-# Step 0 mints the effective credential in each phase and outranks that fallback. Role ARN,
-# bundle bucket, state bucket, stack, and owner are derived at runtime.
+# Stage 1 mints the effective credential in each phase and outranks that fallback. Role ARN,
+# artifact bucket, state bucket, stack, and owner are derived at runtime.
 # -----------------------------------------------------------------------------
 
 name: e2e-full
@@ -120,6 +120,13 @@ jobs:
       contents: write
       id-token: write # required for AWS OIDC federation (no long-lived keys)
 
+    env:
+      # Controller paths must be writable by the hosted runner. Target remote_tmp remains the
+      # STIG-compatible /opt path from the composed ansible.cfg.
+      ANSIBLE_LOCAL_TEMP: ${{ github.workspace }}/.ansible/tmp
+      ANSIBLE_CACHE_PLUGIN_CONNECTION: ${{ github.workspace }}/.ansible/facts
+      ANSIBLE_SSH_CONTROL_PATH_DIR: ${{ github.workspace }}/.ansible/cp
+
     steps:
       # -----------------------------------------------------------------------
       # Source checkout + pinned framework checkouts
@@ -148,7 +155,7 @@ jobs:
           commit_sha="$(git rev-parse HEAD)"
           {
             echo "DEPLOY_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/github_${owner}_${stack}"
-            echo "BUNDLE_BUCKET=${AWS_ACCOUNT_ID}-ansible"
+            echo "ANSIBLE_S3_BUCKET=${AWS_ACCOUNT_ID}-ansible"
             echo "TF_STATE_BUCKET=${AWS_ACCOUNT_ID}-terraform"
             # Org state-key convention is <owner>/<repo>/<target>.tfstate — derived, so it always
             # matches the bucket layout (and the IAM policy scoped to that prefix) with no input.
@@ -162,7 +169,7 @@ jobs:
 
       # EPHEMERAL-TARGET CREDENTIAL POLICY: this AWS PoC is created and destroyed inside this one
       # run, so no standing Wazuh admin secret is stored, rotated, or leaked anywhere. The value
-      # exported here is a masked, run-scoped BACKSTOP only: deploy-aws-poc.yml's Step 0 mints its
+      # exported here is a masked, run-scoped BACKSTOP only: deploy-aws-poc.yml's Stage 1 mints its
       # own password per ansible-playbook process and wins the role's precedence chain
       # (`wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD'), true)`), so this
       # env var is the lower-precedence fallback that keeps the chain non-empty rather than the
@@ -316,9 +323,9 @@ jobs:
         run: |
           python -m pip install --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}"
           # boto3/botocore: required by amazon.aws modules that run CONTROLLER-side on THIS
-          # runner (ADR-0004's account-id derivation, the Windows-agent MSI fetch, and
-          # linux_disk_manager's AWS function-tag resolver — all delegate_to: localhost under
-          # ansible_playbook_python). Same requirement as deploy.yml's AWS job.
+          # runner (the Windows-agent MSI fetch and linux_disk_manager's AWS function-tag
+          # resolver — both delegate_to: localhost under ansible_playbook_python). Same
+          # requirement as deploy.yml's AWS job.
           python -m pip install --no-cache-dir boto3 botocore
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
@@ -338,7 +345,7 @@ jobs:
 
       # `terraform apply` returns when the API says the instances exist, not when their SSM agents
       # have registered. The exact Terraform-emitted set proves that each intended host is Online;
-      # no unrelated or expired Environment=poc record can substitute for one.
+      # no unrelated or expired managed-instance record can substitute for one.
       - name: Wait for the three Terraform instances to register with SSM
         run: |
           set -euo pipefail
@@ -378,18 +385,18 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
           # Belt-and-suspenders: the OIDC step above already exports AWS_REGION for every later
-          # step, and deploy-aws-poc.yml's per-play AWS_DEFAULT_REGION bridge prefers AWS_REGION
+          # step, and deploy-aws-poc.yml's run-input AWS_DEFAULT_REGION bridge prefers AWS_REGION
           # over this — see deploy.yml's AWS job's identical comment on its own equivalent line
           # for the full rationale (kept as a fallback, not redundant by accident).
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           # WAZUH_ADMIN_PASSWORD is deliberately NOT bound here: the ephemeral password minted
           # above already reaches every later step through $GITHUB_ENV, and an explicit env: entry
           # would OVERRIDE it (with an empty string when no such secret exists) — it is the
-          # fallback leg of Stage 1's admin_password chain, which Step 0's freshly minted value
+          # fallback leg of Stage 1's admin_password chain, which Stage 1's freshly minted value
           # outranks. Still zero -e either way.
-          # Read by deploy-aws-poc.yml's ledger-driven validate play (gated so a local run
-          # without this var stays byte-identical) — it writes the machine-readable proof JSON
-          # here, controller-side, for "Render PoC evidence" below to consume.
+          # Read by deploy-aws-poc.yml's fim_prove role entry point (gated so a local run without
+          # this var writes no evidence) — it writes the machine-readable proof JSON here,
+          # controller-side, for "Render PoC evidence" below to consume.
           POC_EVIDENCE_JSON: ${{ github.workspace }}/poc-proof.json
         run: |
           set -euo pipefail

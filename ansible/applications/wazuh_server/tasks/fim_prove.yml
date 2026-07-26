@@ -1,0 +1,213 @@
+---
+# =========================================================================================== #
+# File: '{{ role_path }}/tasks/fim_prove.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Product-owned alternate entry point that independently proves every cumulative FIM ledger
+# entry reached wazuh-alerts-* as an endpoint-agent event, then optionally writes workflow
+# evidence on the controller. It bypasses the generic loader.
+# =========================================================================================== #
+
+- name: 'FIM proof | Prove Every Cumulative Ledger Entry'
+  vars:
+    __ledger_path__: "{{ wazuh_server_defaults.poc_fim_proof.ledger_path }}"
+  block:
+
+    - name: 'PROVE | Slurp The Cumulative Ledger'
+      become: true
+      ansible.builtin.slurp:
+        src: "{{ __ledger_path__ }}"
+      register: __ledger_raw__
+
+    - name: 'PROVE | Parse Every Ledger Line Into A List Of Entries'
+      vars:
+        __lines__: "{{ (__ledger_raw__.content | b64decode).split('\n') | select() | list }}"
+      ansible.builtin.set_fact:
+        __ledger_entries__: "{{ __lines__ | map('from_json') | list }}"
+
+    - name: 'PROVE | Assert Every Ledger Entry Carries Its Trigger Timestamp'
+      loop: "{{ __ledger_entries__ }}"
+      loop_control:
+        loop_var: 'entry'
+        label: "{{ entry.agent | default('unknown') }} / {{ entry.marker | default('unknown') }}"
+      ansible.builtin.assert:
+        that:
+          - entry.triggered_at is defined
+          - (entry.triggered_at | default('', true) | string | trim | length) > 0
+        quiet: true
+        fail_msg: >-
+          Ledger entry {{ entry | to_json }} has no non-empty triggered_at timestamp. Refusing to
+          search without a per-entry freshness boundary because an alert from an earlier run could
+          otherwise satisfy this proof.
+
+    # Facts persist per-host for the rest of the RUN — same rationale as the ledger entry point's
+    # reset above (and linux_disk_manager's resolve_aws.yml precedent): without an explicit reset,
+    # a second inclusion of this entry point in the same run would carry the first inclusion's
+    # missing-entries list into the second inclusion's assert. The failure direction is safe
+    # (false-failure, never a false-pass) and today's two e2e phases are separate
+    # ansible-playbook processes, so this is consistency-hardening, not a live bug.
+    - name: 'PROVE | Reset The Missing-Entries Accumulator For This Run'
+      ansible.builtin.set_fact:
+        __missing_entries__: []
+
+    # Loop with a readable label (agent/platform/marker) so a failed run's output already names
+    # which entries are being checked, before the final assert below even runs.
+    # ignore_errors: a retry-exhausted item must NOT halt proof processing — every remaining entry
+    # still needs its own full retry cycle, and the NEXT task turns per-entry results into one
+    # clear, complete "which entries are missing" report rather than stopping at the first miss.
+    #
+    # retries/delay = a 10-minute ceiling (60 x 10s), not a 2-minute one (24 x 5s): a fresh
+    # Windows agent's INITIAL FIM sync backlog can legitimately delay a realtime event's delivery
+    # several minutes past trigger time, even though the arming wait in the trigger task file
+    # already confirmed realtime was armed before the marker was written. The role injects the
+    # realtime directories into the MSI's stock ossec.conf, so the fresh agent's baseline
+    # also includes the DEFAULT Windows monitored set (System32 sets + full registry hives — huge
+    # on WS2025 STIG); that baseline sync floods the agent->manager channel at exactly the moment
+    # we trigger, and the realtime marker event queues BEHIND it, arriving late rather than lost.
+    # Linux avoids this because its /etc baseline is small. Raising the ceiling costs nothing on
+    # the common path — a proven entry still returns on its first poll; it only gives a delayed
+    # Windows event enough time to drain from the initial synchronization queue.
+    - name: 'PROVE | Wait For The Agent-Sourced FIM Alert Of Each Ledger Entry In wazuh-alerts-*'
+      become: true
+      loop: "{{ __ledger_entries__ }}"
+      loop_control:
+        loop_var: 'entry'
+        label: "{{ entry.agent }} ({{ entry.platform }}) / {{ entry.marker }}"
+      register: '__fim_search__'
+      ignore_errors: true
+      retries: 60
+      delay: 10
+      until: >-
+        (__fim_search__.json.hits.total.value | default(0) | int) > 0
+      vars:
+        # Linux: syscheck.path is a keyword field, so an exact `term` match against the full
+        # recorded path is unambiguous. Windows: syscheck may normalize the path's case/drive
+        # letter/separators, so match via `wildcard` on the marker alone inside this entry's
+        # timestamp range; freshness does not depend on global random-suffix uniqueness.
+        __path_clause__: >-
+          {{ {'term': {'syscheck.path': entry.path}} if entry.platform == 'linux'
+          else {'wildcard': {'syscheck.path': '*' ~ entry.marker ~ '*'}} }}
+      ansible.builtin.uri:
+        # Query the indexer over loopback: this task file runs ON the indexer host and the node
+        # cert's SANs are 127.0.0.1/localhost/<node-name>. `ansible_host` here is the EC2
+        # instance-id (SSH-over-SSM dials by id), so an https://<ansible_host>:9200 URL is not
+        # dialable, let alone verifiable under validate_certs.
+        url: "https://127.0.0.1:9200/wazuh-alerts-*/_search"
+        method: 'POST'
+        client_cert: '/etc/wazuh-indexer/certs/admin.pem'
+        client_key: '/etc/wazuh-indexer/certs/admin-key.pem'
+        ca_path: '/etc/wazuh-indexer/certs/root-ca.pem'
+        validate_certs: true
+        body_format: 'json'
+        body:
+          size: 1
+          sort: [{ '@timestamp': 'desc' }]
+          query:
+            bool:
+              must:
+                - "{{ __path_clause__ }}"
+                - { term: { 'agent.name': "{{ entry.agent }}" } }
+              filter:
+                - range:
+                    '@timestamp':
+                      gte: "{{ entry.triggered_at }}"
+              # Gate on the endpoint agent id so this can never pass on a manager-local (000)
+              # event — the whole point is to prove the ENDPOINT reported it.
+              must_not:
+                - { term: { 'agent.id': '000' } }
+
+    - name: 'PROVE | Determine Which Ledger Entries Are Still Missing Their Alert'
+      loop: "{{ __fim_search__.results }}"
+      loop_control:
+        loop_var: 'result'
+        label: "{{ result.entry.agent }} / {{ result.entry.marker }}"
+      when: (result.json.hits.total.value | default(0) | int) == 0
+      ansible.builtin.set_fact:
+        __missing_entries__: "{{ __missing_entries__ + [result.entry] }}"
+
+    - name: 'PROVE | Assert EVERY Ledger Entry Has A Proven Agent-Sourced FIM Alert'
+      ansible.builtin.assert:
+        that:
+          - (__missing_entries__ | length) == 0
+        quiet: true
+        fail_msg: >-
+          {{ __missing_entries__ | length }} of {{ __ledger_entries__ | length }}
+          cumulative ledger entries have NO agent-sourced FIM alert in wazuh-alerts-* yet:
+          {% for m in __missing_entries__ %}{{ m.agent }} ({{ m.platform }})
+          marker={{ m.marker }}{% if not loop.last %}, {% endif %}{% endfor %}. The ledger is
+          append-only for this environment's lifetime (/mnt/data survives an AIO OS-swap) — a
+          marker whose alert never indexed keeps failing every later validation run until the
+          environment is destroyed; that is correct for an ephemeral e2e env (torn down every
+          cycle), not a bug to route around. Check that each listed agent is enrolled/Active on
+          the manager, its ossec.conf has a <directories realtime="yes"> block covering its demo
+          path, and filebeat is shipping to the indexer.
+        success_msg: >-
+          PROVEN: all {{ __ledger_entries__ | length }} cumulative ledger entries have an
+          agent-sourced FIM alert in wazuh-alerts-* (agent.id != 000) —
+          {{ __ledger_entries__ | selectattr('platform', 'equalto', 'linux') | list | length }}
+          linux + {{ __ledger_entries__ | selectattr('platform', 'equalto', 'windows') | list
+          | length }} windows. Visible in the dashboard under Threat Hunting / FIM.
+
+    # PoC EVIDENCE: a machine-readable summary of the proof this entry point just completed,
+    # available
+    # for an invoking workflow to render into docs/reference/poc-evidence.md and publish with the
+    # proof run. Gated on POC_EVIDENCE_JSON being set at all — the documented invocation
+    # above does not set that env var and never reaches this block, so its behavior stays
+    # byte-identical to before this feature existed: nothing extra written, nothing extra
+    # changed. Reached only after the assert above, so every entry here is already PROVEN true —
+    # this block has nothing to decide, only to record.
+    - name: 'PROVE (poc-evidence) | Build And Write The Machine-Readable Proof Summary'
+      when: (lookup('env', 'POC_EVIDENCE_JSON') | length) > 0
+      block:
+
+        # Facts persist per-host for the rest of the run — same reset rationale as the ledger
+        # and missing-entries accumulators above.
+        - name: 'PROVE (poc-evidence) | Reset The Evidence-Entries Accumulator For This Run'
+          ansible.builtin.set_fact:
+            __poc_evidence_entries__: []
+
+        # One evidence entry per ledger entry, combining what the ledger already recorded
+        # (agent/platform/marker) with what its OWN query hit proved (rule id, agent id, the
+        # index it landed in) — __fim_search__.results[N].entry is the SAME ledger entry
+        # __fim_search__.results[N].json is that entry's own query response from the task above.
+        - name: 'PROVE (poc-evidence) | Accumulate One Evidence Entry Per Proven Ledger Entry'
+          loop: "{{ __fim_search__.results }}"
+          loop_control:
+            loop_var: 'result'
+            label: "{{ result.entry.agent }} / {{ result.entry.marker }}"
+          vars:
+            __hit__: "{{ result.json.hits.hits[0]._source }}"
+            __entry__:
+              agent: "{{ result.entry.agent }}"
+              platform: "{{ result.entry.platform }}"
+              marker: "{{ result.entry.marker }}"
+              proven: true
+              rule_id: "{{ __hit__.rule.id }}"
+              agent_id: "{{ __hit__.agent.id }}"
+              index: "{{ result.json.hits.hits[0]._index }}"
+          ansible.builtin.set_fact:
+            __poc_evidence_entries__: "{{ __poc_evidence_entries__ + [__entry__] }}"
+
+        # Lands on the CONTROLLER workspace, not the AIO this task file otherwise targets —
+        # delegate_to/become mirror wazuh_agent present_windows.yml's controller-delegated S3
+        # fetch, the controller-delegation convention used throughout this codebase. No secrets
+        # in content: agent names, platform, marker text, and Wazuh rule/agent ids are all
+        # non-sensitive PoC metadata.
+        # NOTE: totals.* render as JSON STRINGS ("2", not 2) — Ansible's non-native-Jinja
+        # templating stringifies numeric leaves nested inside a `vars:`-built dict literal like
+        # this one. Harmless for every consumer here (jq -r and bash string interpolation read
+        # "2" and 2 identically); not worth fighting for a purely cosmetic JSON-type nit.
+        - name: 'PROVE (poc-evidence) | Write The Proof JSON To The Controller'
+          delegate_to: 'localhost'
+          become: false
+          vars:
+            __poc_evidence__:
+              generated_by: 'deploy-aws-poc.yml'
+              entries: "{{ __poc_evidence_entries__ }}"
+              totals:
+                proven: "{{ __poc_evidence_entries__ | length }}"
+                linux: "{{ __poc_evidence_entries__ | selectattr('platform', 'equalto', 'linux') | list | length }}"
+                windows: "{{ __poc_evidence_entries__ | selectattr('platform', 'equalto', 'windows') | list | length }}"
+          ansible.builtin.copy:
+            dest: "{{ lookup('env', 'POC_EVIDENCE_JSON') }}"
+            content: "{{ __poc_evidence__ | to_nice_json }}"
+            mode: '0644'

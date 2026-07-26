@@ -2,12 +2,11 @@
 # =========================================================================================== #
 # File: 'ansible/inventory/aws/aws_ec2.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
-# Generic, env-driven dynamic inventory for any nwarila-platform AWS Wazuh deployment. Discovers
-# running EC2 instances by the org's mandatory auto-tags via the amazon.aws.aws_ec2 plugin, so the
-# deploy -> test -> destroy loop always reflects whatever stack currently exists instead of a
-# hand-maintained, staleness-prone host list. Region and account/creds come from the standard AWS
-# environment (below); only the Function auto-tag -> group mapping is Wazuh-product-specific and
-# intentionally NOT genericized (see groups:).
+# Run-scoped dynamic inventory for the nwarila-platform AWS Wazuh deployment. Discovers running
+# EC2 instances carrying this workflow run's mandatory provenance tag via amazon.aws.aws_ec2, so a
+# stale or concurrent deployment can never satisfy this run's host groups. Region, run identity,
+# and account/creds come from the standard controller environment (below); only the Function
+# auto-tag -> group mapping is Wazuh-product-specific and intentionally NOT genericized (groups:).
 #
 # THE ONLY AWS INVENTORY. Both workflows and local operators pass
 # `-i inventory/aws/aws_ec2.yml`, so automation and manual runs share this committed,
@@ -57,11 +56,15 @@
 # exactly one region is ever queried, it is still env-driven, and 'us-east-1' is a documented
 # fallback default (matches this product's only current target), not a hardcoded override.
 #
-# ENVIRONMENT tag filter is templated the same way, keyed off WAZUH_ENV (the same env-selector
-# name used elsewhere in this repo — ansible/README.md, deploy.yml's WAZUH_ENV job var) with a
-# 'poc' fallback default (matches this product's only current target and the IAM policy's
-# Environment=poc condition). Account isolation rides the ambient AWS credentials/profile — no
-# account id is ever read, filtered on, or hardcoded here.
+# RUN ID is GitHub's default GITHUB_RUN_ID environment variable. Both workflows stamp that exact
+# value into every framework-created resource through TF_VAR_resource_metadata before Terraform
+# runs, then this filter selects only instances from the same workflow run. There is deliberately
+# no empty fallback: the playbook's Step 0 localhost-inclusive assertion rejects an empty run id
+# and any incomplete/unmatched topology instead of allowing every target play to skip green.
+# For a local run, docs/how-to/deploy-the-stack.md shows how to use the commit-sha tag to resolve
+# exactly one active deployment's run-id and export it as GITHUB_RUN_ID before invoking Ansible.
+# Account isolation rides the ambient AWS credentials/profile — no account id is ever read,
+# filtered on, or hardcoded here.
 #
 # Connection: SSH-over-SSM, not a direct IP. The PoC security group has zero inbound rules
 # (docs/reference/aws-iam/README.md, "Permanent networking"), so there is no network path to any
@@ -92,14 +95,13 @@ plugin: amazon.aws.aws_ec2
 regions:
   - "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) | default('us-east-1', true) }}"
 
-# A Jinja error evaluating compose/groups for one odd host (e.g. a stray non-Wazuh instance that
-# happens to share Environment=poc but carries no Function tag) skips that host instead of
-# failing the whole inventory.
+# A Jinja error evaluating compose/groups for one malformed matching host skips that host instead
+# of failing the whole inventory. Step 0 then rejects the resulting incomplete topology.
 strict: false
 
 filters:
-  # Templated — see "ENVIRONMENT tag filter" above. 'poc' is the documented fallback default.
-  tag:Environment: "{{ lookup('ansible.builtin.env', 'WAZUH_ENV') | default('poc', true) }}"
+  # Quoted because the tag key contains colons. Templated — see "RUN ID" above.
+  "tag:nwarila:provenance:run-id": "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}"
   instance-state-name:
     - running
 
@@ -116,8 +118,8 @@ hostnames:
 #      swaps in _fail_lookup — a `lookup('ansible.builtin.env', ...)` entry RAISES. Combined with
 #      `strict: false` above (which is there deliberately, to skip stray non-Wazuh instances) that
 #      error is SWALLOWED and the variable is silently never set: no warning, no failure, just a
-#      host missing its tunnel or its interpreter. That is why the AWS credential bridge lives in
-#      playbooks/deploy-aws-poc.yml's play vars and why --region below reads placement, not env.
+#      host missing its tunnel or its interpreter. That is why Step 0 propagates controller
+#      environment values as facts and why --region below reads placement, not an env lookup.
 #      Every expression here is TOTAL by construction (literals, plus `platform`/`placement` behind
 #      `default()`), so the silent-skip path cannot fire; keep it that way.
 #   2. `platform | default('')` IS MANDATORY in every platform-conditional entry. EC2 sets the
@@ -129,13 +131,12 @@ hostnames:
 # ALSO handed to that play's `delegate_to: localhost` tasks (VariableManager builds the delegated
 # stack from the play, so play vars are in it and inventory host vars are not — verified on the
 # pinned core: a play-var ansible_python_interpreter overrode a delegated task's interpreter, the
-# same value as an inventory host var did not). FIVE of deploy-aws-poc.yml's eleven plays delegate
-# to the controller: the data-disk play (linux_disk_manager's ec2_vol_info Function-tag resolver),
-# Stage 1, Stage 2 and Stage 3 (the ADR-0004 STS derive in each, plus Stage 3's Windows MSI fetch),
-# and the cumulative-proof play (the POC_EVIDENCE_JSON evidence writer). From a play var these
-# would try to reach the CONTROLLER as ec2-user through an SSM tunnel targeting "localhost" as an
-# instance-id. Inventory host vars are never copied into a delegated task's variable stack, so they
-# stay on the EC2 hosts where they belong.
+# same value as an inventory host var did not). Controller delegation is used by
+# linux_disk_manager's ec2_vol_info Function-tag resolver, the Windows agent's MSI fetch, and the
+# cumulative-proof evidence writer. From a play var, connection identity would try to reach the
+# CONTROLLER as ec2-user through an SSM tunnel targeting "localhost" as an instance-id. Inventory
+# host vars are never copied into a delegated task's connection-variable stack, so they stay on
+# the EC2 hosts where they belong.
 compose:
   # SSH-over-SSM dials the instance by ID, never by IP — ansible_ssh_common_args below is the
   # tunnel that makes an instance-id dialable.
@@ -180,10 +181,10 @@ compose:
   # is the Windows endpoint's SSH login. NOTE the outer parentheses: `|` binds tighter than `==`,
   # so without them Jinja parses this as `platform == ('windows' | ternary(...))`.
   ansible_user: "((platform | default('') | lower) == 'windows') | ternary('Administrator', 'ec2-user')"
-  # Load-bearing: Stage 3 and the Windows FIM trigger play in deploy-aws-poc.yml declare no shell
-  # type of their own and depend on this. The Windows OpenSSH bootstrap play deliberately overrides
-  # it to `cmd` for itself (play vars, precedence 12) and its final verify task back to powershell
-  # (task vars, 17) — both still outrank this (inventory host vars, 8).
+  # Load-bearing: Stage 3's Windows FIM trigger task file declares no shell type and depends on
+  # this. The Windows OpenSSH bootstrap temporarily overrides it to `cmd` with block vars, and its
+  # final verification uses task vars to switch back to powershell; both outrank inventory
+  # host vars.
   ansible_shell_type: "((platform | default('') | lower) == 'windows') | ternary('powershell', 'sh')"
 
   # The PoC security group has zero inbound rules (docs/reference/aws-iam/README.md, "Permanent

@@ -5,17 +5,14 @@
 # Per-env overlay loaded by the generic role loader when os_family=redhat AND ENV=test.
 # Replace every remaining CHANGE_ME placeholder with the real test-env value before anything
 # selects this overlay. Nothing does today: the repo's only playbook
-# (playbooks/deploy-aws-poc.yml) declares `ENV: 'int'` literally in every play that runs a
-# loader and takes no --extra-vars, so `redhat_int.yml` is the only overlay currently reachable.
+# (playbooks/deploy-aws-poc.yml) propagates `ENV: 'dev'` to every host and takes no
+# --extra-vars, so `redhat_dev.yml` is the only overlay currently reachable.
 #
-# s3.bucket is the EXCEPTION: it is RUNTIME-SUBSTITUTED (ADR-0004), not operator-filled.
-# playbooks/deploy-aws-poc.yml derives the caller's AWS account id (amazon.aws.aws_caller_info,
-# controller-side) and injects the account-scoped `<account-id>-ansible` bucket as a fallback
-# default via the wazuh_server override dict, so this literal is never actually used. Do NOT
-# replace it with CHANGE_ME-style text or a real bucket name: it is a deliberate fail-fast
-# TRIPWIRE — if it ever reaches a real AWS call, that call fails immediately instead of
-# silently reading/writing the wrong account. (Previously this and prod carried an
-# env-suffixed `CHANGE_ME-ansible-test`/`-prod` shape that contradicted int's non-suffixed
+# s3.bucket is the EXCEPTION: the role override reads the controller's required
+# ANSIBLE_S3_BUCKET export (ADR-0004), so this literal is never actually used. Do NOT replace it
+# with CHANGE_ME-style text or a real bucket name: it is a deliberate fail-fast TRIPWIRE that
+# role validation rejects before any download. (Previously this and prod carried an env-suffixed
+# `CHANGE_ME-ansible-test`/`-prod` shape that contradicted dev's non-suffixed
 # `<account-id>-ansible` and the IAM `*-ansible` wildcard; normalized to the one convention.)
 # =========================================================================================== #
 

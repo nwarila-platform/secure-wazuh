@@ -1,0 +1,100 @@
+---
+# =========================================================================================== #
+# File: '{{ role_path }}/tasks/fim_ledger.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Product-owned alternate entry point that appends this run's agent FIM markers to the
+# cumulative, data-disk-backed proof ledger. It bypasses the generic loader and performs only
+# ledger bookkeeping; the platform trigger entry points must run first.
+# =========================================================================================== #
+
+- name: 'FIM ledger | Append This Run To The Cumulative Data-Disk Ledger'
+  vars:
+    __ledger_path__: "{{ wazuh_server_defaults.poc_fim_proof.ledger_path }}"
+  block:
+
+    # Facts persist per-host for the rest of the RUN, not just this task file — without an
+    # explicit reset, a second inclusion of this entry point in the same overall run (there isn't
+    # one today, but the loop below is the same accumulate-via-loop pattern used elsewhere in this
+    # codebase, e.g. linux_disk_manager's resolve_aws.yml) would accumulate onto a leftover list.
+    - name: 'LEDGER | Reset The Entries Accumulator For This Run'
+      ansible.builtin.set_fact:
+        __ledger_entries__: []
+
+    # Every host across BOTH agent groups that actually triggered this run (an empty group is a
+    # no-op here, same as everywhere else in this codebase) — filtered to those carrying
+    # __fim_marker__, so a topology missing one platform entirely never breaks this loop.
+    - name: 'LEDGER | Assert Every Triggered Agent Published Complete Ledger Facts'
+      loop: "{{ (groups['wazuh_agents'] | default([])) + (groups['wazuh_agents_windows'] | default([])) }}"
+      loop_control:
+        loop_var: 'agent_host'
+        label: "{{ agent_host }}"
+      when: hostvars[agent_host].__fim_marker__ is defined
+      ansible.builtin.assert:
+        that:
+          - hostvars[agent_host].__fim_path__ is defined
+          - hostvars[agent_host].__fim_triggered_at__ is defined
+          - (hostvars[agent_host].__fim_triggered_at__ | default('', true) | string | trim | length) > 0
+        quiet: true
+        fail_msg: >-
+          Triggered agent '{{ agent_host }}' did not publish both __fim_path__ and a non-empty
+          __fim_triggered_at__ UTC timestamp. The trigger entry point must capture the timestamp
+          before writing the marker so proof queries can reject alerts from earlier runs.
+
+    - name: 'LEDGER | Accumulate One Entry Per Triggered Agent (Linux + Windows)'
+      loop: "{{ (groups['wazuh_agents'] | default([])) + (groups['wazuh_agents_windows'] | default([])) }}"
+      loop_control:
+        loop_var: 'agent_host'
+        label: "{{ agent_host }}"
+      when: hostvars[agent_host].__fim_marker__ is defined
+      vars:
+        __entry__:
+          agent: "{{ agent_host }}"
+          platform: "{{ 'windows' if (agent_host in (groups['wazuh_agents_windows'] | default([]))) else 'linux' }}"
+          marker: "{{ hostvars[agent_host].__fim_marker__ }}"
+          path: "{{ hostvars[agent_host].__fim_path__ }}"
+          triggered_at: "{{ hostvars[agent_host].__fim_triggered_at__ }}"
+      ansible.builtin.set_fact:
+        __ledger_entries__: "{{ __ledger_entries__ + [__entry__] }}"
+
+    # The marker filter above intentionally tolerates an empty platform group, but a non-empty
+    # group producing no markers means its trigger entry point did not run. Catch that here before
+    # a zero-entry append turns into a confusing missing/empty-ledger failure in the proof stage.
+    - name: 'LEDGER | Assert Every Non-Empty Agent Group Produced A Marker'
+      ansible.builtin.assert:
+        that:
+          - >-
+            (groups['wazuh_agents'] | default([]) | length) == 0
+            or (__ledger_entries__ | selectattr('platform', 'equalto', 'linux') | list | length) > 0
+          - >-
+            (groups['wazuh_agents_windows'] | default([]) | length) == 0
+            or (__ledger_entries__ | selectattr('platform', 'equalto', 'windows') | list | length) > 0
+        quiet: true
+        fail_msg: >-
+          At least one non-empty agent group produced no FIM marker. Linux hosts:
+          {{ groups['wazuh_agents'] | default([]) }}; Windows hosts:
+          {{ groups['wazuh_agents_windows'] | default([]) }}; accumulated markers:
+          {{ __ledger_entries__ | map(attribute='marker') | list }}. Run both platform FIM trigger
+          entry points before appending the ledger.
+
+    # One line per entry, appended (never rewritten) to the DATA-disk ledger — see the file
+    # section rationale above for why /mnt/data specifically. lineinfile will not duplicate a
+    # byte-identical line, but proof freshness never relies on marker uniqueness or line identity:
+    # each query is bounded by the trigger timestamp carried in its own ledger entry.
+    - name: 'LEDGER | Append One JSON Line Per Triggered Marker To The Cumulative Ledger'
+      become: true
+      loop: "{{ __ledger_entries__ }}"
+      loop_control:
+        label: "{{ item.agent }} / {{ item.marker }}"
+      ansible.builtin.lineinfile:
+        path: "{{ __ledger_path__ }}"
+        create: true
+        owner: 'root'
+        group: 'root'
+        mode: '0600'
+        line: "{{ item | to_json }}"
+
+    - name: 'LEDGER | Report The Additions From This Run'
+      ansible.builtin.debug:
+        msg: >-
+          Appended {{ __ledger_entries__ | length }} entries to {{ __ledger_path__ }}:
+          {{ __ledger_entries__ | map(attribute='marker') | list }}

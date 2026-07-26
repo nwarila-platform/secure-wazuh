@@ -2,7 +2,7 @@
 
 | Field          | Value                                                   |
 | -------------- | ------------------------------------------------------- |
-| Status         | Accepted                                                |
+| Status         | Accepted (amended 2026-07-26)                           |
 | Date           | 2026-07-22 (accepted 2026-07-23)                        |
 | Authors        | Smarter > Harder (@NWarila)                             |
 | Decision-maker | Smarter > Harder (sole portfolio maintainer)            |
@@ -11,9 +11,33 @@
 | Reversibility  | Cheap                                                   |
 | Review-by      | N/A (Accepted)                                          |
 
-> **Status note.** Accepted 2026-07-23 by the maintainer above. The decision and its companion changes
-> are ratified; the **implementation lands as its own reviewed piece** and is verified on the next
-> live deploy (`unknown: not-run-against-live` until then).
+> **Status note.** Accepted 2026-07-23. The 2026-07-26 amendment below replaces the
+> caller-identity delivery mechanism while preserving the decision's security boundary.
+
+## Amendment — 2026-07-26: consume the workflow's existing bucket export
+
+The security decision is unchanged: no real account id or account-shaped bucket value is
+committed, and the tracked `<account-id>` value remains an invalid tripwire. The delivery
+mechanism is amended:
+
+- Both GitHub workflows already receive the org-global `AWS_ACCOUNT_ID` input and derive the
+  artifact bucket alongside their other run targets. They now export that existing value as
+  `ANSIBLE_S3_BUCKET`.
+- Local operators make one equivalent non-secret export naming the artifact bucket before
+  running the unchanged zero-`--extra-vars` playbook command.
+- The `wazuh_server` and normal mixed-platform `wazuh_agent` role override sites both read
+  `lookup('ansible.builtin.env', 'ANSIBLE_S3_BUCKET')`.
+- The controller-side `amazon.aws.aws_caller_info` tasks and the runtime STS identity dependency
+  are removed. There is no fallback: role validation rejects an empty bucket and the committed
+  tripwire before artifact download.
+
+This reuses a value the workflows already computed instead of asking STS to rediscover it during
+Ansible execution. It also makes cross-account artifact access explicit: the supplied bucket may
+intentionally differ from the credential-owning account. Redaction remains mandatory because the
+bucket is still account-shaped.
+
+The remainder of this ADR records the original caller-identity design and its rationale. Where it
+describes caller-identity derivation as the active mechanism, this amendment governs.
 
 ## TL;DR
 
@@ -35,11 +59,11 @@ mechanism is uniform across the Proxmox and AWS targets, and no role loader chan
 ## Context and Problem Statement
 
 `s3.bucket` is pinned per environment in each role overlay
-([`wazuh_server/vars/redhat_int.yml:14`](../../../ansible/applications/wazuh_server/vars/redhat_int.yml),
+([`wazuh_server/vars/redhat_dev.yml`](../../../ansible/applications/wazuh_server/vars/redhat_dev.yml),
 agent equivalents) as `<account-id>-ansible`. The account id is treated as don't-commit-sensitive
 (ADR-0003's deny-all; `provide-aws-credentials-safely.md` records a real key leak that drove the
 policy). The committed record explicitly states the id "is never committed to this repo"
-(`redhat_int.yml` header) and the IAM policies wildcard it (`*-ansible`, `arn:aws:iam::*:role/*wazuh*`).
+(`redhat_dev.yml` header) and the IAM policies wildcard it (`*-ansible`, `arn:aws:iam::*:role/*wazuh*`).
 
 The gap: **no automated substitution exists.** CI passes only `-e env=... -e wazuh_admin_password=...`
 ([`deploy.yml`](../../../.github/workflows/deploy.yml)); the documented mechanism is manual
@@ -122,7 +146,7 @@ bucket convention; matches the deliberately account-agnostic IAM; no loader chan
    (no grant required, not deniable); do not use `account_alias`.
 3. **Install `boto3`/`botocore` on the CI controller** for the delegated account lookup and
    Windows-agent S3 path.
-4. **Normalize the three-way bucket-shape contradiction** across `redhat_int.yml`,
+4. **Normalize the three-way bucket-shape contradiction** across the development overlay,
    `redhat_test.yml`/`redhat_prod.yml`, and the `deploy.yml` comment — the operative convention is
    account-scoped (`*-ansible`), which S1 makes automatic.
 5. **Keep** the SHA-256 pins + object keys committed unchanged (PR-reviewed supply-chain tamper anchors;

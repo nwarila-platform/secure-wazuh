@@ -259,7 +259,8 @@
       # The block above is no_log (module args carry AWS creds), so a failed download is
       # censored and undiagnosable. Re-fail here with the secret-free facts an operator
       # needs: which objects were expected and why the names might not match.
-      # ADR-0004: the bucket is runtime-derived/account-id-shaped; see the inline pointer below.
+      # ADR-0004: the workflow/local environment supplies an account-id-shaped bucket; see the
+      # inline pointer below.
       rescue:
 
         - name: 'S3 | Fail With Expected Object Names (Download Error Is Hidden By no_log)'
@@ -269,8 +270,9 @@
           ansible.builtin.fail:
             msg: >-
               S3 download failed on {{ inventory_hostname }} (original error hidden by
-              no_log). Verify the configured bucket (wazuh_server.s3.bucket — runtime-derived
-              per ADR-0004; deliberately not printed here, since it is now account-id-shaped)
+              no_log). Verify the configured bucket (wazuh_server.s3.bucket — supplied through
+              ANSIBLE_S3_BUCKET per ADR-0004; deliberately not printed because it is
+              account-id-shaped)
               contains these objects:
               {{ config.s3.bundle_key }},
               {{ __cert_files__ | map('regex_replace', '^', config.s3.certs_prefix ~ '/') | join(', ') }}.
@@ -1465,7 +1467,6 @@
     #endregion --- [ 09 DASHBOARD VALIDATION ] ----------------------------------------------- #
 
     #region ------ [ 10 FIM REALTIME VALIDATION ] -------------------------------------------- #
-
 
     # The syscheck stanza itself was owned in the Manager Configuration region (single
     # handler-deduped restart). Here we only CONFIRM the manager actually brought the

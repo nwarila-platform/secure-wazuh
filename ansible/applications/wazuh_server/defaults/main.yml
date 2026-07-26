@@ -12,8 +12,8 @@
 # Operator prereqs:
 #   - The persistent data volume is mounted at data_root (by linux_disk_manager / the deploy
 #     layer) before this role runs.
-#   - `ENV` as a play var (playbooks/deploy-aws-poc.yml declares it literally per play — no
-#     --extra-vars); AWS creds from the runner env via that playbook's per-play credential bridge.
+#   - `ENV` as an Ansible fact (playbooks/deploy-aws-poc.yml propagates literal `dev` — no
+#     --extra-vars); AWS creds from the runner env via that playbook's run-input bridge.
 #   - Exactly ONE Wazuh secret: `wazuh_server.secrets.admin_password` (see below). On the
 #     ephemeral AWS target the playbook mints it per run, so no operator supplies it. Every
 #     other credential is generated fresh each run (nothing persisted).
@@ -59,6 +59,11 @@ wazuh_server_defaults:
     - { canonical: '/var/log/filebeat', subpath: 'server/filebeat-logs' }
     - { canonical: '/var/lib/wazuh-dashboard', subpath: 'dashboard/data' }
     - { canonical: '/var/log/wazuh-dashboard', subpath: 'dashboard/logs' }
+
+  # Opt-in PoC proof entry points persist their append-only ledger on the same data disk so the
+  # pre-swap entries survive an AIO root-volume replacement.
+  poc_fim_proof:
+    ledger_path: '/mnt/data/wazuh-fim-ledger.jsonl'
   #endregion --- [ Persistent data volume ] ---------------------------------------------------- #
 
   #region ------ [ Directories ] ---------------------------------------------------------------- #
@@ -94,8 +99,8 @@ wazuh_server_defaults:
   #region ------ [ Endpoints (AIO => all local; no group deref — DASH-04 safe) ] ---------------- #
   indexer_host: '127.0.0.1'   # filebeat + manager indexer-connector + dashboard opensearch.hosts
   manager_host: '127.0.0.1'   # dashboard wazuh.yml manager API
-  endpoint_host: ''           # on-target reachability (health/api/443); '' => ansible_host|inventory_hostname
-  cert_name: ''               # S3 PEM basename; '' => inventory_hostname
+  endpoint_host: "{{ private_ip_address | default('', true) }}"  # '' => ansible_host|inventory_hostname
+  cert_name: "{{ wazuh_cert_name | default('', true) }}"         # '' => inventory_hostname
   node_name: ''               # OpenSearch node.name; '' => cert_name/inventory_hostname
   #endregion --- [ Endpoints ] ------------------------------------------------------------------ #
 

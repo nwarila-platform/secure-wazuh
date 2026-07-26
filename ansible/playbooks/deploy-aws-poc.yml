@@ -8,12 +8,12 @@
 #
 #   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 #
-# SELF-CONTAINED: it takes no --extra-vars and no operator-provided Wazuh secret. Its deployment
-# inputs come from the AWS inventory, and the one credential the stack needs is minted here
-# (Step 0) for this run only.
+# SELF-CONTAINED: it takes no --extra-vars and no operator-provided Wazuh secret. AWS credentials
+# and the required ANSIBLE_S3_BUCKET come from the controller environment; the one credential the
+# stack needs is minted here for this run only.
+# Step 0 fails closed unless the run-scoped inventory resolves the exact three-system topology.
 #
-# TWO-PHASE USAGE (the cumulative 4/4 proof — see the FIM proof section below for the ledger
-# rationale):
+# TWO-PHASE USAGE (the cumulative 4/4 proof):
 #   Phase 1 — run once after `terraform apply` stands the 3-system environment up (AIO + Linux
 #     agent + Windows agent). Deploys everything, then fires and proves 2 fresh FIM events, one
 #     per agent platform.
@@ -25,27 +25,59 @@
 #     never touches.
 # =========================================================================================== #
 
-# EPHEMERAL-TARGET CREDENTIAL POLICY. This environment is created and destroyed inside a single
-# run, so its admin credential is minted here rather than stored anywhere: there is no standing
-# secret to wire, rotate, or leak, and no committed default that could silently become a live
-# login. A permanent, long-lived target would need the opposite treatment (a real managed secret
-# that cannot be re-rolled on every deploy) — out of scope for this PoC path.
-#
-# Phase 2 mints a DIFFERENT password than phase 1, which is deliberate and safe: the role
-# re-renders internal_users.yml and re-pushes it with securityadmin on every deploy, and the FIM
-# proof authenticates to the indexer with the admin CLIENT CERTIFICATE, never this password. So
-# nothing carries a password across the OS-swap boundary.
-- name: 'Step 0 - Mint This Run''s Ephemeral Wazuh Admin Password'
-  hosts: 'wazuh_servers'
-  gather_facts: false
-  tasks:
+#region ------ [ Step 0: Propagate Run Inputs ] --------------------------------------------- #
 
-    # Drawn ONCE into a fact, never referenced as a bare lookup: a lookup re-evaluates on every
-    # reference, so a second reference would silently yield a DIFFERENT password than the one the
-    # stack was configured with. `run_once` shares this single value with every host in the play.
-    # The character mix satisfies the role's own complexity assert (validate.yml: >=15 chars with
-    # upper, lower, digit, and a symbol) by construction rather than by chance, and the symbol set
-    # is restricted to characters that are safe unquoted in the shell and in YAML.
+- name: 'Step 0 - Propagate Environment And AWS Credentials Across All Systems'
+  hosts: 'localhost:all'
+  gather_facts: false
+  pre_tasks:
+    - name: 'INIT | Require This Run''s Complete Three-System Inventory'
+      run_once: true
+      ansible.builtin.assert:
+        that:
+          - "lookup('ansible.builtin.env', 'GITHUB_RUN_ID') | trim | length > 0"
+          - "groups.get('wazuh_servers', []) | length == 1"
+          - "groups.get('wazuh_agents', []) | length == 1"
+          - "groups.get('wazuh_agents_windows', []) | length == 1"
+        quiet: true
+        fail_msg: >-
+          GITHUB_RUN_ID must be non-empty and its tagged deployment must resolve exactly one
+          Wazuh server, one Linux agent, and one Windows agent; resolved
+          {{ groups.get('wazuh_servers', []) | length }}/
+          {{ groups.get('wazuh_agents', []) | length }}/
+          {{ groups.get('wazuh_agents_windows', []) | length }}.
+  tasks:
+    - name: 'INIT | Propagate Environment And AWS Credentials Across All Systems'
+      run_once: true
+      no_log: true
+      ansible.builtin.set_fact:
+        ENV: 'dev'
+        AWS_ACCESS_KEY_ID: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
+        AWS_SECRET_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
+        AWS_SESSION_TOKEN: "{{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') }}"
+        AWS_DEFAULT_REGION: >-
+          {{ lookup('ansible.builtin.env', 'AWS_REGION')
+             | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) }}
+
+#endregion --- [ Step 0: Propagate Run Inputs ] --------------------------------------------- #
+
+#region ------ [ Bootstrap: Every Target Through The OS Dispatcher ] ------------------------ #
+
+- name: 'Bootstrap - Prepare Every Target Through Its Native OS Role'
+  hosts: 'all'
+  tasks:
+    - name: 'Bootstrap | Dispatch To This Target''s Supported OS Bootstrap'
+      ansible.builtin.include_role:
+        name: 'os_bootstrap'
+
+#endregion --- [ Bootstrap: Every Target Through The OS Dispatcher ] ------------------------ #
+
+#region ------ [ Stage 1: Wazuh All-In-One Stack ] ------------------------------------------ #
+
+- name: 'Stage 1 - Deploy Wazuh All-In-One Stack'
+  hosts: 'wazuh_servers'
+  pre_tasks:
+    # Drawn once: repeated bare lookups could produce different passwords in the same stack run.
     - name: 'INIT | Mint A Strong Ephemeral admin_password For This Run'
       run_once: true
       no_log: true
@@ -55,1309 +87,92 @@
                     length=32, min_lower=2, min_upper=2, min_numeric=2, min_special=2,
                     override_special='-_.=+') }}
 
-
-# =========================================================================================== #
-# --- [ Section: Data-Disk Provisioning ] --------------------------------------------------- #
-# Storage initializer. This section runs BEFORE the Wazuh stack so the data disk is provisioned
-# and mounted at /mnt/data for the server role to consume. The disk is selected by a stable
-# /dev/disk/by-id NAME (never /dev/sdX) and mounted by filesystem UUID (Nitro-safe) — see the
-# linux_disk_manager role README.
-#
-# `platform` and `disks` are declared LITERALLY below. This playbook deploys the AWS PoC and
-# nothing else, so each has exactly one correct value and there is no fallback chain to reason
-# about: an omission fails loudly (the role's validate.yml rejects an empty platform; an empty
-# disks list leaves /mnt/data unmounted, which Stage 1's BEGIN assert catches) instead of
-# silently mounting the wrong disk. `disks` declares a `function` — the EBS volume's Function tag
-# (terraform/aws.tfvars' ebs_block_devices[].tags.Function) — instead of a literal unique_id,
-# because the volume-id Terraform assigns at create time is not knowable here; the role's own AWS
-# resolver (linux_disk_manager's tasks/resolve_aws.yml) turns that tag into the real
-# `nvme-Amazon_Elastic_Block_Store_<volid>` by-id unique_id at run time via one controller-side
-# ec2_vol_info call, and fails loudly on zero or multiple matches.
-# =========================================================================================== #
-
-- name: 'Provision data disks (linux_disk_manager)'
-  hosts: 'wazuh_servers'
-  gather_facts: false
-  become: true
-  vars:
-    # The environment slug every role loader validates and uses to pick its vars/redhat_<env>.yml
-    # overlay. Declared literally in each of the four plays that run a loader (this one, Stage 1,
-    # Stage 2, Stage 3) — this playbook targets exactly one environment, so there is nothing to
-    # parameterize and no -e to supply.
-    ENV: 'int'
-    # Controller-side AWS credential bridge — the credential-consuming half of this play is
-    # linux_disk_manager's controller-delegated ec2_vol_info Function-tag resolver. See Stage 1's
-    # copy below for the full '' -never-omit CONTRACT; it applies verbatim here.
-    AWS_ACCESS_KEY_ID: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
-    AWS_SECRET_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
-    AWS_SESSION_TOKEN: "{{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') }}"
-    AWS_DEFAULT_REGION: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) }}"
-    # This is the loader's public override dictionary. Keeping it at play scope
-    # makes its precedence explicit and avoids treating it as role-private data.
-    linux_disk_manager:
-      platform: 'aws'
-      disks:
-        - function: 'wazuh-data'
-          mount_point: '/mnt/data'
-          fstype: 'xfs'
-          label: 'wazuh-data'
-          # Data mount: nodev,nosuid (STIG-friendly) but NOT noexec — the Wazuh indexer
-          # stages/runs content under /mnt/data.
-          opts: 'defaults,nodev,nosuid'
-          passno: 2
+  # Loader lookup('vars', role_name) requires role-named overrides, so this rule is inapplicable.
   roles:
     - role: 'linux_disk_manager'
-
-# =========================================================================================== #
-# --- [ Section: Linux Bootstrap ] ---------------------------------------------------------- #
-# Builds the canonical /opt/ansible/venv on every Linux Wazuh target. This section runs before
-# the Wazuh stages so the same self-contained invocation provisions the venv and then runs those
-# stages against it. The venv is NOT the default interpreter: RHEL 8 ships the
-# libselinux/dnf/firewalld C bindings only for platform-python (3.6), so the roles run under
-# platform-python and borrow /opt/ansible/venv ONLY on the amazon.aws.s3_object tasks (a
-# block-level `ansible_python_interpreter` override), which need a modern boto3/botocore that
-# 3.6 cannot install. See ansible.cfg and docs/explanation/toolchain-rhel8.md.
-#
-# The bootstrap itself runs under whatever interpreter Ansible auto-discovers (platform-python
-# on RHEL 8), because the venv it creates does not yet exist when this play starts.
-#
-# Scope: the exec-capable Ansible remote-tmp base (ansible.cfg's remote_tmp), the venv, the
-# SELinux bindings the venv needs, and fapolicyd trust on the venv tree. Nothing else — hostname,
-# /etc/hosts and repo configuration are the AMI's/Terraform's business, not this playbook's.
-# =========================================================================================== #
-
-# Exclude Windows endpoints: /opt/ansible/venv is a Linux (RHEL) boto3-on-target concern, and
-# the Windows agent path pulls the MSI via the controller's venv, not the target's. Without this
-# exclusion the RHEL-8 assert below fails on any wazuh_agents_windows host in a combined run.
-- name: 'Bootstrap | /opt/ansible/venv on every Linux target'
-  hosts: 'all:!wazuh_agents_windows'
-  gather_facts: false
-  become: true
-  tasks:
-
-    #region ------ [ Initialization ] ------------------------------------------------------- #
-
-    - name: 'INIT | Load Distribution Facts'
-      when: >-
-        ansible_facts.os_family is not defined
-        or ansible_facts.distribution_major_version is not defined
-      ansible.builtin.setup:
-        gather_subset:
-          - '!all'
-          - '!min'
-          - 'distribution'
-
-    - name: 'INIT | Assert OS Is RedHat-Family Major Version 8'
-      ansible.builtin.assert:
-        that:
-          - (ansible_facts.os_family | string) == 'RedHat'
-          - (ansible_facts.distribution_major_version | int) == 8
-        fail_msg: >-
-          This bootstrap contract accepts distributions reporting RedHat-family major version 8;
-          the committed AWS target selects a specific RHEL 8 AMI. Detected:
-          {{ ansible_facts.distribution | default('?') }}
-          {{ ansible_facts.distribution_version | default('?') }}
-        quiet: true
-
-    # ansible.cfg pins remote_tmp to /opt/wazuh-deploy/.tmp because /tmp, /var/tmp and /home
-    # are noexec on the STIG baseline, and Ansible's remote tmp must be exec-capable: any
-    # non-pipelined module (notably the amazon.aws.s3_object file transfers in the Wazuh roles)
-    # stages its AnsiballZ payload there. /opt is root-owned, so the login user cannot create
-    # the path on its own — pipelined bootstrap tasks never need it, but the first non-pipelined
-    # task otherwise fails UNREACHABLE at `mkdir /opt/wazuh-deploy`. Create it once here, under
-    # become, owned by the automation user so later tasks can make per-task ansible-tmp-* dirs
-    # without sudo. SELinux usr_t (exec-capable) mirrors /opt/ansible below.
-    - name: 'INIT | Ensure Ansible Remote-Tmp Base Exists (exec-capable, automation-user owned)'
-      ansible.builtin.file:
-        path: '/opt/wazuh-deploy/.tmp'
-        state: 'directory'
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
-        mode: '0700'
-        selevel: 's0'
-        serole: 'object_r'
-        setype: 'usr_t'
-        seuser: 'system_u'
-
-    #endregion --- [ Initialization ] ------------------------------------------------------- #
-
-    #region ------ [ Main: Prerequisite Packages ] ------------------------------------------ #
-
-    # RedHat-family 8 targets ship libselinux/firewall/dnf Python bindings for platform-python
-    # (no python3.12-libselinux, python3.12-firewall, or python3.12-dnf exist in
-    # AppStream/EPEL). The venv is therefore NOT the default interpreter — ansible.cfg
-    # leaves auto-discovery to pick platform-python, and the venv is only invoked on
-    # tasks that need modern boto3 (the amazon.aws.s3_object S3 download blocks in the
-    # Wazuh roles, gated by a block-level ansible_python_interpreter override).
-    - name: 'MAIN | Install Bootstrap Prerequisite Packages'
-      ansible.builtin.dnf:
-        name:
-          - 'python3.12'
-        state: 'present'
-        disable_gpg_check: false
-        sslverify: true
-        validate_certs: true
-
-    - name: 'MAIN | Read python3.12 Full Version (For Drift Detection)'
-      changed_when: false
-      register: '__python312_version__'
-      ansible.builtin.command:
-        cmd: '/usr/bin/python3.12 --version'
-
-    #endregion --- [ Main: Prerequisite Packages ] ------------------------------------------ #
-
-    #region ------ [ Main: Venv + fapolicyd Trust ] ----------------------------------------- #
-
-    - name: 'MAIN | Ensure /opt/ansible Exists With SELinux Contexts'
-      ansible.builtin.file:
-        path: '/opt/ansible'
-        state: 'directory'
-        owner: 'root'
-        group: 'root'
-        mode: '0755'
-        selevel: 's0'
-        serole: 'object_r'
-        setype: 'usr_t'
-        seuser: 'system_u'
-
-    # check_mode + search_string/state:absent reports the documented, structural `found`
-    # count — 0 means the exact expected line is not in the file, whether it's simply
-    # MISSING or PRESENT with a drifted value (an exact search_string never matches a
-    # differently-valued line, so drift also reads found:0). Same idiom the fapolicyd trust
-    # probe below in this file uses, and wazuh_server uses 4x — a proven, repo-wide pattern.
-    # Deliberately NOT `line:` + state:present (the prior implementation): that variant
-    # carries no `found` key at all and only signals via the free-text `.msg` ("line added")
-    # — an internal, UNDOCUMENTED message (lineinfile's RETURN contract is the empty stub
-    # `r'''#'''`) assembled ad hoc across 8 branches purely for human display. A future
-    # ansible-core reword of that string would silently disable drift detection with no
-    # failure (verified against the installed 2.16.19). Same pattern for the
-    # --system-site-packages flag probe below.
-    - name: 'MAIN | Probe Existing Venv Python Version Line'
-      changed_when: false
-      check_mode: true
-      failed_when: false
-      register: '__venv_version_probe__'
-      ansible.builtin.lineinfile:
-        path: '/opt/ansible/venv/pyvenv.cfg'
-        search_string: "version = {{ __python312_version__.stdout.split()[1] }}"
-        state: 'absent'
-
-    - name: 'MAIN | Probe Existing Venv --system-site-packages Flag'
-      changed_when: false
-      check_mode: true
-      failed_when: false
-      register: '__venv_site_packages_probe__'
-      ansible.builtin.lineinfile:
-        path: '/opt/ansible/venv/pyvenv.cfg'
-        search_string: 'include-system-site-packages = true'
-        state: 'absent'
-
-    - name: 'MAIN | Remove Drifted Venv (Wrong Python Or Missing system-site-packages)'
-      when: >-
-        (__venv_version_probe__.found | default(0) | int) == 0
-        or (__venv_site_packages_probe__.found | default(0) | int) == 0
-      ansible.builtin.file:
-        path: '/opt/ansible/venv'
-        state: 'absent'
-
-    - name: 'MAIN | Create Venv (--system-site-packages, owned by root)'
-      ansible.builtin.command:
-        cmd: '/usr/bin/python3.12 -m venv --system-site-packages /opt/ansible/venv'
-        creates: '/opt/ansible/venv/bin/pip'
-
-    # fapolicyd is part of the CIS/DISA STIG baseline this PoC's AMI is built from, but not
-    # every RHEL 8 image ships it. Gate the entire trust block on fapolicyd-cli being present
-    # so an image without it silently skips the block instead of failing. Detected here (rather
-    # than at the end of the file) because the pre-install trust block immediately below needs it.
-    - name: 'MAIN | Detect fapolicyd Presence'
-      register: '__fapolicyd_cli__'
-      ansible.builtin.stat:
-        path: '/usr/sbin/fapolicyd-cli'
-
-    # Two-phase, trust-before-use — mirrors the JDK/JNA precedent in wazuh_server's
-    # present_redhat.yml ("trust the tree FIRST, the next step execs from it"), the reverse
-    # of what this task did before. Phase 1 trusts the FRESH venv (python3.12 -m venv's own
-    # ensurepip output) before the pip tasks below invoke the venv's own bin/pip — without
-    # this, that invocation execs a brand-new, not-yet-trusted binary and fapolicyd DENIES it
-    # on a STIG host.
-    - name: 'MAIN | Trust /opt/ansible/venv In fapolicyd (Pre-Install)'
-      when: __fapolicyd_cli__.stat.exists | default(false)
-      block:
-
-        - name: 'MAIN | Probe Whether Venv Is Already In fapolicyd Trust'
-          check_mode: true
-          changed_when: false
-          failed_when: false
-          register: '__fapd_venv_probe__'
-          ansible.builtin.lineinfile:
-            path: '/etc/fapolicyd/fapolicyd.trust'
-            search_string: '/opt/ansible/venv'
-            state: 'absent'
-
-        - name: 'MAIN | Add /opt/ansible/venv To fapolicyd.trust (Pre-Install)'
-          when: (__fapd_venv_probe__.found | default(0) | int) == 0
-          register: '__fapd_add_pre__'
-          changed_when: __fapd_add_pre__.rc == 0
-          failed_when: __fapd_add_pre__.rc not in [0, 1]
-          ansible.builtin.command:
-            argv: ['fapolicyd-cli', '--file', 'add', '/opt/ansible/venv']
-
-        - name: 'MAIN | Refresh fapolicyd DB Inline (Pre-Install Trust Must Take Effect Now)'  # noqa: no-handler
-          when: __fapd_add_pre__ is changed
-          changed_when: false
-          ansible.builtin.command:
-            argv: ['fapolicyd-cli', '--update']
-
-    # pip / setuptools / wheel / packaging are bumped to latest FIRST, in their own task, so
-    # the boto3/botocore install below — a separate, later pip invocation — runs under a
-    # modern resolver.
-    - name: 'MAIN | Upgrade Pip Tooling In Venv (Modern Resolver)'  # noqa: package-latest
-      register: '__venv_pip_tooling__'
-      ansible.builtin.pip:
-        name:
-          - 'pip'
-          - 'setuptools'
-          - 'wheel'
-          - 'packaging'
-        virtualenv: '/opt/ansible/venv'
-        state: 'latest'
-
-    # boto3 / botocore are the actual reason this venv exists — the current amazon.aws
-    # collection's boto3 floor is too new for RHEL 8 platform-python (see docs/explanation/
-    # toolchain-rhel8.md). Pinned to a floor/ceiling range instead of `state: latest`: this is
-    # a reproducible hardened build, and `latest` would pull an unpinned version from public
-    # PyPI on every redeploy. The floor (1.34.0) matches the amazon.aws collection's own
-    # documented minimum — its packaged requirements.txt (`botocore>=1.34.0` / `boto3>=1.34.0`)
-    # and README ("Version 10.0.0 of this collection supports boto3 >= 1.34.0 and botocore >=
-    # 1.34.0"), confirmed against the installed 10.3.2. NOT ansible/requirements.yml: that file
-    # only pins the collection's own version range (amazon.aws >=6.0.0,<11.0.0) and documents no
-    # boto3/botocore floor itself. The ceiling guards against an unreviewed future major bump.
-    # Raise the ceiling deliberately once a newer major is vetted.
-    - name: 'MAIN | Install boto3/botocore In Venv (Pinned Floor/Ceiling)'
-      register: '__venv_boto3__'
-      ansible.builtin.pip:
-        name:
-          - 'boto3>=1.34.0,<2.0.0'
-          - 'botocore>=1.34.0,<2.0.0'
-        virtualenv: '/opt/ansible/venv'
-        state: 'present'
-
-    - name: 'MAIN | Ensure Venv Interpreters Are Executable'
-      loop:
-        - '/opt/ansible/venv/bin/python'
-        - '/opt/ansible/venv/bin/python3'
-        - '/opt/ansible/venv/bin/pip'
-        - '/opt/ansible/venv/bin/pip3'
-      loop_control:
-        loop_var: '__venv_file__'
-      ansible.builtin.file:
-        path: "{{ __venv_file__ }}"
-        mode: '0755'
-
-    # Phase 2: pip self-upgrading (state:latest above), or boto3/botocore being installed for
-    # the first time or upgraded after a deliberate pin-range bump, REWRITES files the
-    # pre-install trust already covered — the venv's own bin/pip launcher is the common case.
-    # fapolicyd's trust DB is hash-based, so a rewritten file's OLD entry no longer matches its
-    # new bytes; but the broad path-prefix probe used pre-install would still report found>0
-    # (SOME line for this path exists) even though the CURRENT bytes are untrusted, so
-    # re-running that probe here would wrongly skip re-adding the changed files forever after
-    # the first add. Gate on pip's OWN changed result instead — the reliable signal that the
-    # tree's content just changed — never on the probe. fapolicyd-cli --file add safely no-ops
-    # (rc 0/1) on a file whose hash is already current.
-    - name: 'MAIN | Re-Trust /opt/ansible/venv In fapolicyd (Post-Install)'
-      when: >-
-        (__fapolicyd_cli__.stat.exists | default(false))
-        and (__venv_pip_tooling__ is changed or __venv_boto3__ is changed)
-      block:
-
-        - name: 'MAIN | Re-Add /opt/ansible/venv To fapolicyd.trust (Post-Install)'
-          register: '__fapd_add_post__'
-          changed_when: __fapd_add_post__.rc == 0
-          failed_when: __fapd_add_post__.rc not in [0, 1]
-          ansible.builtin.command:
-            argv: ['fapolicyd-cli', '--file', 'add', '/opt/ansible/venv']
-
-        - name: 'MAIN | Refresh fapolicyd DB Inline (Post-Install Trust Must Take Effect Now)'  # noqa: no-handler
-          when: __fapd_add_post__ is changed
-          changed_when: false
-          ansible.builtin.command:
-            argv: ['fapolicyd-cli', '--update']
-
-    #endregion --- [ Main: Venv + fapolicyd Trust ] ----------------------------------------- #
-
-# =========================================================================================== #
-# --- [ Section: Wazuh Stack and Agent Deployment ] ----------------------------------------- #
-# Deploys the all-in-one Wazuh stack. After the indexer+server+dashboard
-# collapse, the whole central stack (indexer + manager + filebeat + dashboard) is ONE role
-# (wazuh_server) on ONE host. Split-host topology is no longer supported.
-#
-# The earlier data-disk section mounts /mnt/data first (the EBS volume is resolved from its
-# Function tag to a stable /dev/disk/by-id name and mounted by filesystem UUID; see that role),
-# and the Linux bootstrap section prepares the venv before these stages.
-#
-# Deployment inputs (no --extra-vars, ever):
-#   ENV                    - the committed environment slug this PoC targets, declared literally
-#                            in each play that runs a role loader; the loader picks up its
-#                            vars/redhat_<env>.yml overlay from it (bundle key/sha256/certs prefix
-#                            — the S3 bucket itself is account-derived, NOT per-env; see the
-#                            ADR-0004 note below).
-#   AWS_ACCESS_KEY_ID      - read from the runner environment with lookup('ansible.builtin.env',
-#   AWS_SECRET_ACCESS_KEY    ...) in the `vars:` of each of the four plays that invoke an
-#   AWS_SESSION_TOKEN        amazon.aws module (this stage, Stage 2, Stage 3, and the data-disk
-#   AWS_DEFAULT_REGION       play), and passed directly to the s3_object / aws_caller_info /
-#                            ec2_vol_info module args — never exported into a target shell. An
-#                            unset source var resolves to '' (each consumer applies its own
-#                            `| default(omit, true)`); AWS_DEFAULT_REGION resolves AWS_REGION
-#                            first, then AWS_DEFAULT_REGION.
-#
-# WAZUH SECRET: Step 0 mints the dashboard / OpenSearch `admin` password fresh for this run.
-# Every other Wazuh credential is also generated fresh and never persisted (see the
-# wazuh_server role, #region 01).
-#
-# S3 BUCKET (ADR-0004): every stage's `s3.bucket` is RUNTIME-DERIVED, never committed. Each stage
-# runs its own inline account-id derive task, which uses a
-# controller-delegated `amazon.aws.aws_caller_info` (the run's own AWS caller identity —
-# `sts:GetCallerIdentity`, no IAM grant required, cannot be denied) and registers
-# `__aws_caller_info__`; the stage's `vars:` then reference `__aws_caller_info__.account` directly
-# to feed `<account-id>-ansible` into the role as a FALLBACK default via the same override-dict
-# channel already used for admin_password below. No intermediate set_fact hop (repo convention:
-# no `set_fact` for derived data — play `vars:` are evaluated lazily at first use), and `register`
-# already produces an ordinary play-scoped var,
-# so by the time the role dereferences `s3.bucket` (after pre_tasks/tasks have run) the register is
-# already in scope. The committed overlay's literal `<account-id>-ansible` placeholder is never
-# actually used except as a fail-fast tripwire (it only survives if the derivation is skipped/
-# overridden away). A higher-precedence `wazuh_s3_bucket` value still wins through the documented
-# cross-account override channel; see docs/reference/s3-artifacts.md "Bucket naming".
-# =========================================================================================== #
-
-- name: 'Stage 1 - Wazuh all-in-one stack (indexer + manager + filebeat + dashboard)'
-  hosts: 'wazuh_servers'
-  gather_facts: false
-  environment:
-    # Route the role loader's staging dir onto the /mnt/data data disk. The shared loader
-    # creates its staging dir with a bare ansible.builtin.tempfile, which honors $TMPDIR and
-    # otherwise falls back to /tmp — a small STIG partition, far too small for the 1.66 GB
-    # offline bundle + its extraction. /mnt/data (the provisioned Wazuh data disk) is the
-    # intended, roomy home; the pre_task below guarantees the base path exists first.
-    # (No ENV key here: the loader consumes ENV as an ANSIBLE var — see vars: below — never the
-    # OS process env, so an environment:-injected ENV has zero consumers.)
-    TMPDIR: '/mnt/data/.ansible/tmp'
-  vars:
-    ENV: 'int'
-    # Controller-side AWS credential bridge. Short-lived credentials sourced into the runner
-    # environment become Ansible variables here, consumed by this stage's no_log
-    # amazon.aws.s3_object bundle/cert pulls (which run ON the target, where none of the
-    # controller's ambient AWS env exists — so these vars are the ONLY thing carrying the
-    # credential across) and by the controller-delegated aws_caller_info derive below. They are
-    # never exported to a target shell. Declared per-play rather than once globally because only
-    # the four plays that actually invoke an amazon.aws module need them — this stage, Stage 2,
-    # Stage 3 and the data-disk play.
-    #
-    # CONTRACT: an unset source env var resolves to an empty string '' — never `omit`, never
-    # undefined. This holds for every line below, including AWS_DEFAULT_REGION's AWS_REGION-
-    # preferring fallback (still empty if both region vars are unset). Consumers absorb that empty
-    # string themselves at the point of use, applying `| default(omit, true)` there. Do NOT
-    # centralize that omit-conversion here: outside a module-argument context Ansible's `omit`
-    # marker renders as a non-empty placeholder string, so a bare `default(omit, true)` would hand
-    # every consumer a truthy placeholder instead of '', silently defeating any downstream fallback
-    # (e.g. a role's config.s3.region default) that only triggers on empty/undefined.
-    AWS_ACCESS_KEY_ID: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
-    AWS_SECRET_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
-    AWS_SESSION_TOKEN: "{{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') }}"
-    AWS_DEFAULT_REGION: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) }}"
-    wazuh_server:
-      s3:
-        # ADR-0004 fallback: a higher-precedence wazuh_s3_bucket value always wins; otherwise the bucket
-        # is this run's own account-scoped `<account-id>-ansible`, read directly off the
-        # __aws_caller_info__ register set by the imported AWS account-id derive pre_task below
-        # (repo convention: no `set_fact` for derived data — play `vars:` are evaluated lazily at
-        # first use). The register is already in scope by the time the role dereferences s3.bucket.
-        # The loader's recursive combine
-        # (wazuh_server/tasks/main.yml "Loading Overrides") merges only s3.bucket, leaving the
-        # overlay's bundle_key/bundle_sha256/certs_prefix pins untouched.
-        bucket: "{{ wazuh_s3_bucket | default(__aws_caller_info__.account ~ '-ansible', true) }}"
-      secrets:
-        # Step 0's freshly minted wazuh_admin_password wins through this existing fallback chain;
-        # the WAZUH_ADMIN_PASSWORD lookup remains a lower-precedence role-expression fallback,
-        # but this AWS PoC path requires no operator-provided Wazuh secret.
-        # If both are unset or empty, the role's validate.yml hard-fails before mutation.
-        admin_password: "{{ wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD'), true) }}"
-      # S3 is the current certificate-distribution boundary. ADR-0001 defines the target Vault
-      # PKI model, where a client issues per-host certificates on demand without a CA key on disk
-      # or pre-staged certificates. Under the implemented model, the node pulls
-      # functions/wazuh/certs/<cert_name>.pem + -key.pem by name. The role itself (defaults/
-      # main.yml, present_redhat.yml's __aio_node__) already defaults cert_name to the host's
-      # OWN inventory_hostname when empty — this passthrough is an OPTIONAL override on top of
-      # that role default, not what supplies it: an unset wazuh_cert_name still resolves cleanly
-      # (the ephemeral EC2 host gets its own throwaway self-signed cert in S3, pulled by its
-      # inventory name), no -e required. Same override shape as s3.bucket above.
-      cert_name: "{{ wazuh_cert_name | default('', true) }}"
-      # On-target reachability for the manager-API health/auth waits (https://<host>:55000/...),
-      # and the ONLY definition site for it. The aws_ec2 plugin sets `ansible_host` to the
-      # instance-id for SSH-over-SSM, and the role's own '' default resolves endpoint_host to
-      # ansible_host — an instance-id is not a dialable address — so the AIO's private IP is
-      # supplied here instead, straight from the plugin's own hostvars. The `| default('', true)`
-      # guard keeps a missing hostvar from raising a raw AnsibleUndefinedVariable: it hands the
-      # role its own documented '' fallback instead (defaults/main.yml:95, present_redhat.yml:26).
-      endpoint_host: "{{ private_ip_address | default('', true) }}"
-  pre_tasks:
-    # ADR-0004 account-id derive. Written inline in each of the three stages that need it, rather
-    # than imported from a shared task file, so this playbook stays self-contained. Every stage
-    # runs its own copy because each is a SEPARATE PLAY against a SEPARATE host group and
-    # `register` stores per-host: Stage 1's result (parked on the wazuh_servers host) is simply
-    # absent from Stage 2/3's different hosts. `sts:GetCallerIdentity` (amazon.aws.aws_caller_info)
-    # needs no IAM grant and cannot be denied, unlike `.account_alias` (needs iam:ListAccountAliases,
-    # which IS deniable). Consumers read `__aws_caller_info__.account` directly as an ordinary,
-    # lazily-evaluated play var — no set_fact hop (repo convention: no `set_fact` for derived data).
-    # `run_once: true` stops N agent hosts in one stage from each firing a redundant STS call, and
-    # Ansible fans the registered result out to every host in the play, so the bare name resolves
-    # for all of them.
-    - name: 'PREP | Derive Runtime AWS Account ID (Controller-Side, STS GetCallerIdentity Only)'
-      delegate_to: 'localhost'
-      become: false
-      run_once: true
-      no_log: true
-      register: '__aws_caller_info__'
       vars:
-        # Run boto3 under the SAME interpreter that runs ansible-playbook (the runner venv, which
-        # already has boto3/botocore) — the localhost analogue of the Linux target's
-        # /opt/ansible/venv override, mirroring the only other delegate_to: localhost site in this
-        # codebase (wazuh_agent/tasks/present_windows.yml's controller-delegated S3 fetch).
-        # no_log: true because the module args below carry AWS creds, exactly like every
-        # amazon.aws task in this repo; the derived account id itself is exactly the value ADR-0004
-        # keeps out of committed files, so it stays out of the run log too (this repo has already
-        # suffered an account-id-in-logs leak).
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
-      amazon.aws.aws_caller_info:
-        region: "{{ AWS_DEFAULT_REGION | default(omit, true) }}"
-        access_key: "{{ AWS_ACCESS_KEY_ID | default(omit, true) }}"
-        secret_key: "{{ AWS_SECRET_ACCESS_KEY | default(omit, true) }}"
-        session_token: "{{ AWS_SESSION_TOKEN | default(omit, true) }}"
+        linux_disk_manager:  # noqa: var-naming[no-role-prefix]
+          platform: 'aws'
+          disks:
+            - function: 'wazuh-data'
+              mount_point: '/mnt/data'
+              label: 'wazuh-data'
 
-    # BEGIN guard: the next task (PREP) is Stage 1's first mutation — it creates the loader's
-    # staging root that then receives the 1.66 GB offline bundle. Nothing upstream verifies
-    # /mnt/data is a real mounted disk; if the earlier provisioning play was skipped or failed,
-    # PREP happily mkdir's onto the small STIG root partition and the bundle + all
-    # indexer/manager/SIEM data silently lands there instead of the dedicated data disk. Fail
-    # loudly here rather than converging green onto the wrong disk.
-    - name: 'BEGIN | Probe Whether /mnt/data Is A Mounted Filesystem'
-      become: true
-      ansible.builtin.command: 'mountpoint -q /mnt/data'
-      register: __mnt_data_probe__
-      changed_when: false
-      failed_when: false
-
-    - name: 'BEGIN | Assert /mnt/data Is A Mounted Data Disk'
-      ansible.builtin.assert:
-        that:
-          - "__mnt_data_probe__.rc == 0"
-        quiet: true
-        fail_msg: >-
-          /mnt/data is not a mounted filesystem (mountpoint -q rc={{ __mnt_data_probe__.rc }}).
-          Stage 1 is about to stage the 1.66 GB offline bundle under /mnt/data/.ansible/tmp —
-          without the dedicated data disk mounted here, the bundle and all indexer/manager/SIEM
-          data would silently land on the small STIG-sized root partition instead. The data-disk
-          play earlier in this playbook provisions and mounts it, so reaching here unmounted means
-          that play was skipped or its volume never attached.
-
-    - name: 'PREP | Ensure Loader Staging Root Exists On The Data Disk'
-      become: true
-      ansible.builtin.file:
-        path: '/mnt/data/.ansible/tmp'
-        state: 'directory'
-        owner: 'root'
-        group: 'root'
-        mode: '0700'
-        selevel: 's0'
-        serole: 'object_r'
-        setype: 'tmp_t'
-        seuser: 'system_u'
-  roles:
+    # Role scope keeps linux_disk_manager from calling mkdtemp before /mnt/data is mounted.
     - role: 'wazuh_server'
-
-- name: 'Stage 2 - Wazuh agents (Linux endpoints)'
-  hosts: 'wazuh_agents'
-  gather_facts: false
-  vars:
-    ENV: 'int'
-    # Controller-side AWS credential bridge — consumed by this stage's ON-TARGET no_log
-    # amazon.aws.s3_object RPM pull and by the controller-delegated aws_caller_info derive below.
-    # See Stage 1's copy for the full '' -never-omit CONTRACT; it applies verbatim here.
-    AWS_ACCESS_KEY_ID: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
-    AWS_SECRET_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
-    AWS_SESSION_TOKEN: "{{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') }}"
-    AWS_DEFAULT_REGION: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) }}"
-    wazuh_agent:
-      s3:
-        # Same ADR-0004 fallback as Stage 1 (see that stage's comment) — one shared
-        # account-scoped bucket for every role, per docs/reference/s3-artifacts.md.
-        bucket: "{{ wazuh_s3_bucket | default(__aws_caller_info__.account ~ '-ansible', true) }}"
-      # SOLE DEFINITION SITE. manager.host / agent_ip / fim live HERE and nowhere else — one
-      # definition site per value. A play-level `wazuh_agent:` REPLACES any same-named dict
-      # wholesale (Ansible does not deep-merge and this repo sets no hash_behaviour=merge), which
-      # is exactly why a second copy in an inventory vars file could only ever be dead weight — the
-      # inventory copies these keys once had were permanently shadowed by this dict and have been
-      # removed rather than kept as a second, silently-dead definition.
-      #
-      # Guard: private_ip_address is an aws_ec2-only hostvar. `| default('', true)` keeps a missing
-      # one from raising a raw AnsibleUndefinedVariable — this play resolves it to '' FIRST, then
-      # hands that to the role's OWN documented fallback chain ('' -> ansible_host, then an
-      # actionable assert — see wazuh_agent/tasks/present_redhat.yml's __manager_host__/__agent_ip__
-      # derivation). Deferring to the role here (rather than re-deriving ansible_host a second time
-      # in this playbook) keeps the fallback logic single-sourced and fails loudly via the role's
-      # own asserts instead of a raw AnsibleUndefinedVariable if private_ip_address were ever
-      # unusable.
-      manager:
-        host: "{{ hostvars[groups['wazuh_servers'][0]].private_ip_address | default('', true) }}"
-      agent_ip: "{{ private_ip_address | default('', true) }}"
-      fim:
-        # Watch /etc in real time (the same directory the manager watches) so editing a file there
-        # on this endpoint emits an immediate agent-sourced FIM alert (rule 550/554). The vendor
-        # default only scans /etc every 12h, which is far too slow for the proof section below.
-        realtime_paths: ['/etc']
-  pre_tasks:
-    # BEGIN guard: manager.host above bare-indexes groups['wazuh_servers'][0]. The AWS
-    # deploy-destroy loop can leave a stale running tagged instance behind, which yields 2
-    # members and would silently select whichever one Ansible lists first — possibly the STALE
-    # host. Fail loudly instead of enrolling agents against an unpredictable/wrong manager.
-    - name: 'BEGIN | Assert Exactly One Wazuh Manager Host Resolved'
-      run_once: true
-      ansible.builtin.assert:
-        that:
-          - "groups['wazuh_servers'] | length == 1"
-        quiet: true
-        fail_msg: >-
-          Expected exactly 1 host in the 'wazuh_servers' group, found
-          {{ groups['wazuh_servers'] | length }}: {{ groups['wazuh_servers'] | join(', ') }}.
-          A stale/duplicate tagged instance likely survived a previous AWS deploy-destroy cycle —
-          terminate it (or fix the aws_ec2 inventory filters) so exactly one wazuh_servers host
-          resolves before enrolling agents.
-
-    # ADR-0004 account-id derive — see Stage 1's copy for the full rationale (why it is written
-    # inline, why run_once, why the register needs no set_fact hop). Repeated per-stage because
-    # each stage is a separate play against a separate host group; a register/fact from Stage 1's
-    # host is simply absent from Stage 2's (different) hosts.
-    - name: 'PREP | Derive Runtime AWS Account ID (Controller-Side, STS GetCallerIdentity Only)'
-      delegate_to: 'localhost'
-      become: false
-      run_once: true
-      no_log: true
-      register: '__aws_caller_info__'
+      environment:
+        TMPDIR: '/mnt/data/.ansible/tmp'
       vars:
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
-      amazon.aws.aws_caller_info:
-        region: "{{ AWS_DEFAULT_REGION | default(omit, true) }}"
-        access_key: "{{ AWS_ACCESS_KEY_ID | default(omit, true) }}"
-        secret_key: "{{ AWS_SECRET_ACCESS_KEY | default(omit, true) }}"
-        session_token: "{{ AWS_SESSION_TOKEN | default(omit, true) }}"
+        wazuh_server:  # noqa: var-naming[no-role-prefix]
+          s3:
+            bucket: "{{ lookup('ansible.builtin.env', 'ANSIBLE_S3_BUCKET') }}"
+          secrets:
+            admin_password: "{{ wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD'), true) }}"
+
+#endregion --- [ Stage 1: Wazuh All-In-One Stack ] ------------------------------------------ #
+
+#region ------ [ Stage 2: Wazuh Agents ] ---------------------------------------------------- #
+- name: 'Stage 2 - Deploy Wazuh Agents Through The Normal Role Entry'
+  hosts: 'wazuh_agents:wazuh_agents_windows'
   roles:
     - role: 'wazuh_agent'
-
-# =========================================================================================== #
-# --- [ Section: Windows OpenSSH Bootstrap ] ------------------------------------------------ #
-# Bootstrap play: flip a Windows target's OpenSSH DefaultShell from cmd to PowerShell. MUST run
-# BEFORE any other play against wazuh_agents_windows; MUST stay idempotent (a refresh-replaced
-# instance re-arrives at the framework's cmd default and needs this to run again).
-#
-# Keep this single bootstrap play immediately before Stage 3; never add a second copy. That bug
-# shipped once already, back when the bootstrap lived in its own playbook and one deployment path
-# reached Stage 3 without running it: Stage 3's first file push died on a cmd-ism ("Parameter
-# format not correct") against a target still on DefaultShell=cmd — the 2026-07-24 live e2e run
-# hit exactly that. Folding it into this file is what makes the omission impossible.
-#
-# WHY THE FRAMEWORK LEAVES IT cmd: aws-terraform-framework's windows_ssh_user_data deliberately
-# leaves OpenSSH's DefaultShell at cmd.exe — per that framework's own locals.tf ("SSH bootstrap
-# user_data" comment): "The OpenSSH default shell is intentionally left as cmd; setting it to
-# PowerShell breaks Terraform remote-exec SCP upload when this dormant SSH bootstrap is
-# re-activated." That is a Terraform-owned concern this product does not touch.
-#
-# WHY THE PRODUCT FLIPS IT: every REAL play against this group connects with
-# `ansible_shell_type: powershell`, set per-host by aws_ec2.yml's compose: block (keyed off EC2's
-# `platform` hostvar). A freshly-launched instance's actual DefaultShell is still cmd.exe until
-# something flips it, so that inventory setting is a mismatch until this play runs.
-#
-# WHY `ansible_shell_type: cmd` HERE, specifically: this play's OWN SSH session lands on the
-# CURRENT (not-yet-flipped) DefaultShell, i.e. cmd.exe — its raw commands must be wrapped
-# cmd-style to actually execute, so this play overrides the inventory's powershell setting for
-# itself only (play `vars:` are precedence 12, compose-set inventory host vars precedence 8). Once
-# DefaultShell is flipped, the NEXT SSH connection (Stage 3, powershell-shelled per the inventory)
-# picks it up automatically — DefaultShell is read per NEW session, so no sshd
-# restart is needed here. "New session" is the catch, though: OpenSSH's shell choice is bound
-# to the ControlPersist master at the moment THAT master was opened, and ControlPersist=60s
-# keeps this play's own (pre-flip, cmd-bound) master warm well past this play — the final
-# `meta: reset_connection` task below exists to discard that cached master so the next play's
-# connection is actually new, not a reused mux socket still pinned to cmd.
-#
-# WHY IT MUST STAY FIRST AND RE-ENTRANT: this play runs again on every deploy, and the two cases
-# it must survive are opposites.
-#   - A NEWLY LAUNCHED instance arrives on the framework's cmd default and needs the flip.
-#   - An ALREADY-FLIPPED instance needs the flip skipped. In this product that is the common case,
-#     not the rare one: only the manager carries `refresh = true`, so the OS-swap replaces the AIO
-#     while both agents keep running — a Windows agent therefore reaches the post-swap redeploy
-#     still serving PowerShell from the first deploy.
-# The second case cannot be detected through this play's own cmd-wrapped session (see the flip
-# task), so the probe and the flip are both best-effort and the post-reset assert at the end is
-# the gate that actually decides whether this play succeeded.
-# =========================================================================================== #
-
-- name: 'Bootstrap Windows OpenSSH DefaultShell (cmd -> PowerShell)'
-  hosts: 'wazuh_agents_windows'
-  gather_facts: false
-  become: false
-  vars:
-    ansible_shell_type: cmd
-    # Belt-and-braces against ansible.cfg's `[privilege_escalation] become = True`: the
-    # `become: false` play keyword above already covers every task here, but the ansible_become
-    # VARIABLE is what ansible-core consults first (MAGIC_VARIABLE_MAPPING overrides the keyword
-    # from vars), so pinning it false is the durable guard — sudo does not exist on these targets.
-    # Scoped to the three Windows-targeting plays, never to Linux, where a stray `true` would
-    # silently re-enable become on tasks that deliberately set `become: false`.
-    ansible_become: false
-  tasks:
-
-    - name: 'BEGIN (win) | Query Current OpenSSH DefaultShell'
-      register: __openssh_defaultshell_query__
-      changed_when: false
-      failed_when: false
-      ansible.builtin.raw: 'reg query "HKLM\SOFTWARE\OpenSSH" /v DefaultShell'
-
-    # Idempotency guard: only fires when the query above does NOT already show PowerShell as
-    # DefaultShell — covers both a never-flipped instance (cmd.exe, or the value entirely
-    # missing pre-first-boot) and a refresh-replaced instance that re-arrived at the framework's
-    # cmd default. No /f-less confirmation prompt risk: /f forces the add without one.
-    # NOTE the DOUBLED backslashes in the Jinja string literal below: unlike the raw commands
-    # above (verbatim text, no {{ }} involved), this `when:` IS a Jinja expression, and Jinja's
-    # own string-literal lexer applies Python-style escapes INSIDE '...'/"..." — a single \v
-    # would decode to a vertical-tab control character, not literal backslash+v, silently
-    # breaking this comparison (and the whole idempotency guard) forever. \\ decodes to one
-    # literal backslash, matching reg query's real output.
-    #
-    # `failed_when: false`, because against an ALREADY-flipped host NEITHER raw command here can
-    # succeed. The play pins ansible_shell_type to cmd for the pre-flip session, so ansible wraps
-    # every command as `chcp.com 65001 >nul 2>&1 && ...`, which a PowerShell DefaultShell rejects
-    # outright ("The token '&&' is not a valid statement separator"). That parse error leaves the
-    # query's stdout EMPTY, so the guard above cannot see the powershell.exe that is already there
-    # and fires regardless — and the flip then hits the same parse error. Both outcomes are
-    # harmless and expected; the post-reset assert below is what actually decides.
-    - name: 'PROCESS (win) | Flip OpenSSH DefaultShell To PowerShell'
-      when: >-
-        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' not in
-        (__openssh_defaultshell_query__.stdout | default('', true))
-      changed_when: true
-      failed_when: false
-      ansible.builtin.raw: 'reg add "HKLM\SOFTWARE\OpenSSH" /v DefaultShell /t REG_SZ /d "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" /f'
-
-    # UNCONDITIONAL — no when: — for two reasons: (a) ansible-core's meta: reset_connection does
-    # not reliably honor conditionals; (b) it is harmless when nothing was flipped (one extra
-    # reconnect, ~a second) but ESSENTIAL when it was.
-    #
-    # THE MUX MECHANIC (do not remove this task as "unnecessary" without re-reading this):
-    # OpenSSH serves the shell bound to the ControlPersist master at the moment THAT master was
-    # established, not at the moment a command is sent. The query task above already opened (or
-    # reused) a master while DefaultShell was still cmd, and ControlPersist=60s keeps that
-    # cmd-bound master warm well past the end of this play. The registry flip only affects
-    # masters established AFTER it runs — the cached one is untouched by it. Without this reset,
-    # the very next play's first command (ansible_shell_type: powershell, `;`-joined per the
-    # powershell shell plugin) rides that SAME warm cmd-bound socket and dies on a cmd-ism
-    # ("Parameter format not correct" — exactly the failure a live -vvvv repro traced to this).
-    # reset_connection closes the cached master so the next connection opens a fresh one, which
-    # binds to the NOW-flipped DefaultShell as intended.
-    - name: 'END (win) | Reset The SSH Connection (apply the new DefaultShell)'
-      ansible.builtin.meta: 'reset_connection'
-
-    # THE REAL GATE. Everything above is best-effort precisely because a re-entrant run cannot
-    # talk to an already-flipped host through the cmd wrapper. This task runs over the FRESH
-    # post-reset session with the powershell shell type the rest of the deploy uses, so it is the
-    # first command in this play that is guaranteed to be wrapped correctly for whatever shell is
-    # actually serving. If the flip genuinely did not take, this fails loudly here rather than
-    # letting the next play die on an unexplained cmd-ism.
-    - name: 'END (win) | Verify DefaultShell Now Serves PowerShell'
       vars:
-        ansible_shell_type: 'powershell'
-      register: __openssh_defaultshell_verify__
-      changed_when: false
-      failed_when: >-
-        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' not in
-        (__openssh_defaultshell_verify__.stdout | default('', true))
-      ansible.builtin.raw: 'reg query "HKLM\SOFTWARE\OpenSSH" /v DefaultShell'
+        # Loader lookup('vars', role_name) requires this role-named override; the noqa is inapplicable.
+        wazuh_agent:  # noqa: var-naming[no-role-prefix]
+          # ansible_host is an EC2 instance ID for SSM here, so enrollment needs the private IPv4.
+          agent_ip: "{{ private_ip_address | default('', true) }}"
+          # Step 0 asserts exactly one manager, so topology indexing is safe in this playbook.
+          manager:
+            host: >-
+              {{ hostvars[groups['wazuh_servers'][0]].private_ip_address
+                 | default(hostvars[groups['wazuh_servers'][0]].ansible_host, true)
+                 | default(groups['wazuh_servers'][0], true) }}
+          s3:
+            bucket: "{{ lookup('ansible.builtin.env', 'ANSIBLE_S3_BUCKET') }}"
+#endregion --- [ Stage 2: Wazuh Agents ] ---------------------------------------------------- #
 
-# Windows endpoints use the SAME wazuh_agent role via its native Windows entry point
-# (tasks/main_windows.yml) — the Linux loader can't run on Windows. The MSI comes from S3 like
-# the Linux RPM (pinned in vars/windows_<env>.yml): amazon.aws.s3_object downloads it DELEGATED
-# to the controller (venv boto3 + these AWS creds), then win_copy pushes it. No bootstrap venv
-# on the target. No-op when the wazuh_agents_windows group is empty.
-- name: 'Stage 3 - Wazuh agents (Windows endpoints)'
-  hosts: 'wazuh_agents_windows'
-  gather_facts: false
-  become: false
-  vars:
-    ENV: 'int'
-    # Same guard as the OpenSSH bootstrap play above — see its comment.
-    ansible_become: false
-    # Controller-side AWS credential bridge — consumed by the Windows entry's controller-delegated
-    # no_log amazon.aws.s3_object MSI fetch and by the aws_caller_info derive below. See Stage 1's
-    # copy for the full '' -never-omit CONTRACT; it applies verbatim here.
-    AWS_ACCESS_KEY_ID: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
-    AWS_SECRET_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
-    AWS_SESSION_TOKEN: "{{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') }}"
-    AWS_DEFAULT_REGION: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) }}"
-    wazuh_agent:
-      s3:
-        # Same ADR-0004 fallback as Stage 1/2 (see Stage 1's comment). The Windows entry point
-        # (tasks/main_windows.yml) reads this SAME `wazuh_agent` var through its own lightweight
-        # defaults<-overlay<-override merge (not the shared Linux loader), recursive-combine too.
-        bucket: "{{ wazuh_s3_bucket | default(__aws_caller_info__.account ~ '-ansible', true) }}"
-      # SOLE DEFINITION SITE. manager.host / agent_ip / windows.fim_realtime_paths live HERE and
-      # nowhere else — same wholesale-replacement rule as Stage 2 (see that stage's comment), and
-      # the same reason the inventory copies of these keys were removed rather than kept as a dead
-      # second definition. NOTE the Windows FIM key is windows.fim_realtime_paths, NOT
-      # fim.realtime_paths.
-      #
-      # Guard: same `| default('', true)` as Stage 2 — defer to the role's own fallback + assert
-      # chain rather than re-deriving ansible_host here too.
-      manager:
-        host: "{{ hostvars[groups['wazuh_servers'][0]].private_ip_address | default('', true) }}"
-      agent_ip: "{{ private_ip_address | default('', true) }}"
-      windows:
-        # Watch the Windows hosts-file directory in real time so writing a file there emits an
-        # immediate agent-sourced FIM alert. The Windows FIM trigger play below writes into this
-        # exact path — after the fold those two literals are the only pair that must stay in sync.
-        fim_realtime_paths: ['C:\Windows\System32\drivers\etc']
+#region ------ [ Stage 3: FIM Triggers ] ---------------------------------------------------- #
+
+- name: 'Stage 3a - Trigger One FIM Event On Every Linux Agent'
+  hosts: 'wazuh_agents'
   tasks:
-    # BEGIN guard: same stale-instance risk as Stage 2 (see that stage's comment) — manager.host
-    # above bare-indexes groups['wazuh_servers'][0].
-    - name: 'BEGIN | Assert Exactly One Wazuh Manager Host Resolved'
-      run_once: true
-      ansible.builtin.assert:
-        that:
-          - "groups['wazuh_servers'] | length == 1"
-        quiet: true
-        fail_msg: >-
-          Expected exactly 1 host in the 'wazuh_servers' group, found
-          {{ groups['wazuh_servers'] | length }}: {{ groups['wazuh_servers'] | join(', ') }}.
-          A stale/duplicate tagged instance likely survived a previous AWS deploy-destroy cycle —
-          terminate it (or fix the aws_ec2 inventory filters) so exactly one wazuh_servers host
-          resolves before enrolling agents.
-
-    # ADR-0004 account-id derive — see Stage 1's copy for the full rationale. Repeated per-stage
-    # (see Stage 2's comment). This play is already become: false, so the task-level become: false
-    # below is belt-and-suspenders.
-    - name: 'PREP | Derive Runtime AWS Account ID (Controller-Side, STS GetCallerIdentity Only)'
-      delegate_to: 'localhost'
-      become: false
-      run_once: true
-      no_log: true
-      register: '__aws_caller_info__'
-      vars:
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
-      amazon.aws.aws_caller_info:
-        region: "{{ AWS_DEFAULT_REGION | default(omit, true) }}"
-        access_key: "{{ AWS_ACCESS_KEY_ID | default(omit, true) }}"
-        secret_key: "{{ AWS_SECRET_ACCESS_KEY | default(omit, true) }}"
-        session_token: "{{ AWS_SESSION_TOKEN | default(omit, true) }}"
-
-    - name: 'Deploy Wazuh agent via native Windows entry'
+    - name: 'TRIGGER | Emit One Linux Marker Through The Agent Role'
       ansible.builtin.include_role:
         name: 'wazuh_agent'
-        tasks_from: 'main_windows'
+        tasks_from: 'fim_trigger'
 
-# =========================================================================================== #
-# --- [ Section: Cumulative FIM Proof ] ------------------------------------------------------ #
-# Proof section: fire a REAL File Integrity Monitoring event on EVERY enrolled agent
-# (Linux + Windows) and confirm each one lands in the wazuh-alerts index that backs the
-# dashboard UI, attributed to the ENDPOINT agent (agent.id != "000", never the manager's local
-# agent). Injecting a synthetic alert straight into the manager's alerts.json (agent 000)
-# would only exercise the indexing pipeline and never the agent path — this section deliberately
-# does not take that shortcut.
-#
-# TWO-PHASE USAGE (the cumulative 4/4 proof):
-#   Phase 1 — run once right after `terraform apply` stands the environment up. This section's
-#     trigger plays write ONE marker on the Linux agent and ONE on the Windows agent (2 fresh
-#     events); the ledger play below records both; the validate play proves both.
-#   Phase 2 — run again after `terraform apply -var refresh_serial=1` (the AIO's OS-swap) and a
-#     redeploy. The trigger plays fire again — 2 MORE fresh markers — but the validate play now
-#     proves EVERY entry ever recorded, phase-1 survivors included: 2 pre-swap + 2 new = 4,
-#     proving the manager's alert history and this ledger both survived the AIO losing its OS.
-#   This is cumulative BY CONSTRUCTION, not by re-querying old alerts each time: see the ledger
-#   rationale below.
-#
-# THE LEDGER (/mnt/data/wazuh-fim-ledger.jsonl): one JSON line per marker ever triggered, on the
-# AIO's DATA disk — the same disk linux_disk_manager provisions and re-attaches across an
-# OS-swap replacement (the disk is a separate resource from the instance's root volume; Terraform
-# replaces the instance, not the volume). A plain root filesystem file would NOT survive an
-# OS-swap; /mnt/data does. That survival is exactly what makes phase 2's "prove ALL 4" validation
-# possible from a bare re-read of this file, with no separate bookkeeping of "which markers did
-# phase 1 already prove".
-#
-# HONEST CAVEAT: the ledger is APPEND-ONLY for the environment's lifetime. A marker whose alert
-# never indexes (a genuine regression, or a run interrupted mid-way) keeps failing every later
-# validation run until the environment is destroyed — there is no prune/skip mechanism. This is
-# correct behavior for an ephemeral e2e environment (deploy -> prove -> destroy, never reused
-# across separate PoC lifetimes), not a bug to route around.
-#
-# Idempotent-ish: each trigger writes a uniquely-named file (random suffix, no Date/epoch), so
-# each run adds fresh, provable events rather than colliding with a prior run's markers. Each
-# trigger also WAITS for its agent's FIM realtime engine to report armed for the CURRENT agent
-# process before writing anything: syscheck only starts realtime monitoring after its initial
-# baseline scan completes, and a marker written into that pre-arm window is silently DROPPED,
-# not queued — it would only surface at the next scheduled scan, hours later by this codebase's
-# config. "For the CURRENT process" matters because the Windows agent ARMS TWICE: once at MSI
-# install with the stock config (our FIM dir not yet configured), then again when the role
-# restarts the service after injecting our syscheck block — a naive "does this log line exist
-# anywhere" check stale-matches the FIRST arming and returns immediately, before the SECOND
-# (the only one actually watching our directory) has even happened. The wait therefore compares
-# the last arming log line's timestamp against the running process's own start time, not just
-# the line's existence — see each trigger task's own comment for the verified Wazuh source
-# citations covering the log format and process/unit names.
-# =========================================================================================== #
-
-- name: 'Trigger FIM (Linux) - write a monitored file on the agent'
-  hosts: 'wazuh_agents'
-  gather_facts: false
-  become: true
-  vars:
-    fim_demo_dir: '/etc/wazuh-fim-demo'
-  tasks:
-
-    - name: 'TRIGGER | Ensure The Real-Time Watched Demo Directory Exists'
-      ansible.builtin.file:
-        path: "{{ fim_demo_dir }}"
-        state: 'directory'
-        owner: 'root'
-        group: 'root'
-        mode: '0755'
-
-    # A per-run unique filename makes each invocation a distinct, unambiguous event to search
-    # for — no risk of matching a stale alert from an earlier run. inventory_hostname + a random
-    # suffix keeps it readable in the dashboard. (No Date/epoch: keep it deterministic-free.)
-    # __fim_path__ is recorded alongside the marker (not re-derived later) so the ledger play
-    # below — a SEPARATE play against a SEPARATE host group — can read both straight off
-    # hostvars without duplicating this play's directory convention.
-    - name: 'TRIGGER | Compute A Unique Marker For This Run (draw the random ONCE)'
-      # `| random` RE-EVALUATES on every reference, so the random must be drawn once into a
-      # concrete fact here and the path DERIVED from that fact (next task). Referencing a single
-      # `{{ ... | random }}` vars entry twice yields two different numbers — the ledger records
-      # one, the file on disk gets the other, and the FIM proof never matches (Windows failed
-      # exactly this way; Linux passed only when the two draws happened to line up).
-      ansible.builtin.set_fact:
-        __fim_marker__: "fim-proof-{{ inventory_hostname }}-{{ 9999999999 | random }}"
-
-    - name: 'TRIGGER | Derive The Monitored Path From The Fixed Marker'
-      ansible.builtin.set_fact:
-        __fim_path__: "{{ fim_demo_dir }}/{{ __fim_marker__ }}.txt"
-
-    # THE ARMING RACE, PROCESS-AWARE: syscheck only starts REALTIME monitoring after its
-    # initial baseline scan completes. Verified against the wazuh/wazuh v4.14.5 source
-    # (src/syscheckd/src/run_check.c): fim_scan() (the baseline walk) runs SYNCHRONOUSLY to
-    # completion; ONLY THEN is the realtime thread created. Inside that thread,
-    # log_realtime_status() logs "(6012): Real-time file integrity monitoring started."
-    # (src/error_messages/information_messages.h) only once the watch descriptor is confirmed
-    # active, immediately before the thread's first blocking wait for real events.
-    #
-    # A NAIVE "does this line exist anywhere in ossec.log" check is NOT sufficient — the agent
-    # can arm MORE THAN ONCE per lifetime (e.g. a config change that restarts the service), and a
-    # stale line from a PRIOR arming (watching a DIFFERENT, now-superseded config) satisfies a
-    # plain existence check instantly, before the CURRENT process has armed at all. This is
-    # structural on Windows (see that play's identical task): the role always installs the MSI
-    # with its stock config first, then restarts once our syscheck block is injected. Linux
-    # agents in this codebase install with the final config from the start, so double-arming is
-    # not expected here today — but the check below is written to be correct regardless, rather
-    # than relying on that happening to be true.
-    #
-    # THE FIX: compare the LAST "(6012)" line's timestamp against the wazuh-agent SERVICE's own
-    # ActiveEnterTimestamp (`systemctl show wazuh-agent --property=ActiveEnterTimestamp` — unit
-    # name confirmed both from Wazuh's own packaging, src/init/templates/wazuh-agent.service, and
-    # from this codebase's own wazuh_agent role, which already manages
-    # `ansible.builtin.systemd: name: 'wazuh-agent'` — present_redhat.yml). A 6012 line OLDER
-    # than the current service start belongs to a PRIOR incarnation and is ignored; only a 6012
-    # NEWER than the current start proves realtime armed under the config this run cares about.
-    # ossec.log timestamps are "YYYY/MM/DD HH:MM:SS ..." — verified in src/shared/time_op.c's
-    # w_get_timestamp(): `snprintf(..., "%d/%02d/%02d %02d:%02d:%02d", ...)` via localtime_r
-    # (same format on both platforms). `tr '/' '-'` turns the leading date token into unambiguous
-    # ISO-style YYYY-MM-DD before handing it to `date -d`, sidestepping any locale-dependent
-    # MM/DD-vs-DD/MM guessing GNU date's fuzzy parser might otherwise do.
-    - name: 'TRIGGER | Wait For The FIM Realtime Engine To Be Armed For The CURRENT Agent Process'
-      become: true
-      register: '__fim_armed_check__'
-      changed_when: false
-      retries: 30
-      delay: 10
-      until: __fim_armed_check__.stdout | trim == 'ARMED'
-      args:
-        executable: '/bin/bash'
-      ansible.builtin.shell: |
-        set -uo pipefail
-
-        proc_start_raw="$(systemctl show wazuh-agent --property=ActiveEnterTimestamp --value 2>/dev/null || true)"
-        if [ -z "${proc_start_raw}" ] || [ "${proc_start_raw}" = "n/a" ]; then
-          echo 'NOT_ARMED (wazuh-agent service has no ActiveEnterTimestamp yet)'
-          exit 0
-        fi
-        proc_start_epoch="$(date -d "${proc_start_raw}" +%s)"
-
-        last_line="$(grep 'Real-time file integrity monitoring started' /var/ossec/logs/ossec.log 2>/dev/null | tail -n1 || true)"
-        if [ -z "${last_line}" ]; then
-          echo 'NOT_ARMED (no 6012 line in ossec.log yet)'
-          exit 0
-        fi
-        log_ts_raw="$(echo "${last_line}" | awk '{print $1, $2}' | tr '/' '-')"
-        log_epoch="$(date -d "${log_ts_raw}" +%s)"
-
-        if [ "${log_epoch}" -gt "${proc_start_epoch}" ]; then
-          echo 'ARMED'
-        else
-          echo 'NOT_ARMED (latest 6012 predates the current wazuh-agent service start; stale arming)'
-        fi
-
-    - name: 'TRIGGER | Create The File (This Is The FIM Event The Agent Detects In Real Time)'
-      ansible.builtin.copy:
-        dest: "{{ __fim_path__ }}"
-        content: "secure-wazuh FIM proof {{ __fim_marker__ }}\n"
-        owner: 'root'
-        group: 'root'
-        mode: '0644'
-
-    - name: 'TRIGGER | Report The Marker + Monitored Path'
-      ansible.builtin.debug:
-        msg: "Wrote {{ __fim_path__ }} on {{ inventory_hostname }} — expect a syscheck 'added' alert from this agent."
-
-- name: 'Trigger FIM (Windows) - write a monitored file on the agent'
+- name: 'Stage 3b - Trigger One FIM Event On Every Windows Agent'
   hosts: 'wazuh_agents_windows'
-  gather_facts: false
-  become: false
-  vars:
-    # Same guard as the OpenSSH bootstrap play — see its comment.
-    ansible_become: false
-    # Stage 3 above sets windows.fim_realtime_paths to this same path — write DIRECTLY into it,
-    # no subdirectory: unlike /etc/wazuh-fim-demo on Linux, this path always exists on a stock
-    # Windows image, so there is nothing to create first. The two literals are now in one file;
-    # keep them in sync.
-    fim_demo_dir_windows: 'C:\Windows\System32\drivers\etc'
   tasks:
+    - name: 'TRIGGER | Emit One Windows Marker Through The Agent Role'
+      ansible.builtin.include_role:
+        name: 'wazuh_agent'
+        tasks_from: 'fim_trigger_windows'
 
-    # Same rationale as the Linux play's marker+path task: both facts land on hostvars here so
-    # the ledger play can read them without re-deriving the Windows path convention.
-    - name: 'TRIGGER (win) | Compute A Unique Marker For This Run (draw the random ONCE)'
-      # Same re-evaluation trap as the Linux play above: draw the random once into a concrete
-      # fact, then derive the path from it, so the ledger marker and the on-disk filename match.
-      ansible.builtin.set_fact:
-        __fim_marker__: "fim-proof-{{ inventory_hostname }}-{{ 9999999999 | random }}"
+#endregion --- [ Stage 3: FIM Triggers ] ---------------------------------------------------- #
 
-    - name: 'TRIGGER (win) | Derive The Monitored Path From The Fixed Marker'
-      ansible.builtin.set_fact:
-        __fim_path__: "{{ fim_demo_dir_windows }}\\{{ __fim_marker__ }}.txt"
+#region ------ [ Stage 4: Cumulative FIM Ledger ] ------------------------------------------- #
 
-    # THE ARMING RACE, PROCESS-AWARE (see the Linux play's identical task for the full
-    # baseline-scan-then-realtime-thread source citation). The agent role records whether WazuhSvc
-    # was running before config ownership and gates its restart handler on that latch. A fresh MSI
-    # therefore receives the final server/FIM config before its sole service start and emits one
-    # current-process 6012, rather than arming once on stock config and again after a role-driven
-    # restart.
-    #
-    # Keep this process-aware comparison unchanged. It remains cheap, is proven live, still
-    # handles legitimate later config changes to an already-running service, and makes any
-    # regression that reintroduces a second first-install arming fail safely instead of letting a
-    # stale 6012 release the marker during a new baseline scan.
-    #
-    # THE FIX: compare the LAST 6012 line's timestamp against the CURRENT wazuh-agent.exe
-    # process's own StartTime — a stale line from any prior incarnation is OLDER than the current
-    # process, so it is correctly ignored; only a newer 6012 proves realtime armed under OUR
-    # config. Process name confirmed from the MSI
-    # packaging itself: src/win32/wazuh-installer.wxs maps `wazuh-agent.exe` as the agent binary,
-    # installed at C:\Program Files (x86)\ossec-agent\wazuh-agent.exe
-    # (.github/actions/check_files/windows_agent_base.csv) — this is the PROCESS name Get-Process
-    # matches on, distinct from the Windows SERVICE name ("WazuhSvc", src/win32/win_service.c),
-    # which is not used here. ossec.log timestamps are "yyyy/MM/dd HH:mm:ss ..." — same verified
-    # format as the Linux play's citation (src/shared/time_op.c, w_get_timestamp) — parsed via
-    # [datetime]::ParseExact against that exact format, invariant culture (no locale-sensitive
-    # tokens in it, but no reason to leave it to chance).
-    - name: 'TRIGGER (win) | Wait For The FIM Realtime Engine To Be Armed For The CURRENT Agent Process'
-      register: '__fim_armed_check__'
-      changed_when: false
-      retries: 60
-      delay: 10
-      until: __fim_armed_check__.stdout | trim == 'ARMED'
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = 'Stop'
-
-        try {
-          $procStart = (Get-Process -Name 'wazuh-agent' -ErrorAction Stop |
-            Sort-Object -Property StartTime -Descending |
-            Select-Object -First 1).StartTime
-        } catch {
-          Write-Output 'NOT_ARMED (wazuh-agent.exe process not found yet)'
-          exit 0
-        }
-
-        $lastLine = Get-Content -Path 'C:\Program Files (x86)\ossec-agent\ossec.log' -ErrorAction SilentlyContinue |
-          Select-String -Pattern 'Real-time file integrity monitoring started' |
-          Select-Object -Last 1
-
-        if (-not $lastLine) {
-          Write-Output 'NOT_ARMED (no 6012 line in ossec.log yet)'
-          exit 0
-        }
-
-        $tsText = (($lastLine.Line -split '\s+')[0..1]) -join ' '
-        $culture = [System.Globalization.CultureInfo]::InvariantCulture
-        $lastLog6012 = [datetime]::ParseExact($tsText, 'yyyy/MM/dd HH:mm:ss', $culture)
-
-        if ($lastLog6012 -gt $procStart) {
-          Write-Output 'ARMED'
-        } else {
-          Write-Output 'NOT_ARMED (latest 6012 predates the current wazuh-agent.exe process start; stale arming)'
-        }
-
-    - name: 'TRIGGER (win) | Create The File (This Is The FIM Event The Agent Detects In Real Time)'
-      ansible.windows.win_copy:
-        dest: "{{ __fim_path__ }}"
-        content: "secure-wazuh Windows FIM proof {{ __fim_marker__ }}\n"
-
-    - name: 'TRIGGER (win) | Report The Marker + Monitored Path'
-      ansible.builtin.debug:
-        msg: "Wrote {{ __fim_path__ }} on {{ inventory_hostname }} — expect a syscheck 'added' alert from this Windows agent."
-
-- name: 'Trigger FIM - append this run to the cumulative ledger'
+- name: 'Stage 4 - Append This Run To The Cumulative FIM Ledger'
   hosts: 'wazuh_servers'
-  gather_facts: false
-  become: true
-  run_once: true
-  vars:
-    __ledger_path__: '/mnt/data/wazuh-fim-ledger.jsonl'
   tasks:
+    - name: 'LEDGER | Invoke The Product-Owned Ledger Entry Point'
+      run_once: true
+      ansible.builtin.include_role:
+        name: 'wazuh_server'
+        tasks_from: 'fim_ledger'
 
-    # Facts persist per-host for the rest of the RUN, not just this play — without an explicit
-    # reset, a second inclusion of this playbook in the same overall run (there isn't one today,
-    # but the loop below is the same accumulate-via-loop pattern used elsewhere in this codebase,
-    # e.g. linux_disk_manager's resolve_aws.yml) would silently accumulate onto a leftover list.
-    - name: 'LEDGER | Reset The Entries Accumulator For This Run'
-      ansible.builtin.set_fact:
-        __ledger_entries__: []
+#endregion --- [ Stage 4: Cumulative FIM Ledger ] ------------------------------------------- #
 
-    # Every host across BOTH agent groups that actually triggered this run (an empty group is a
-    # no-op here, same as everywhere else in this codebase) — filtered to those carrying
-    # __fim_marker__, so a topology missing one platform entirely never breaks this loop.
-    - name: 'LEDGER | Accumulate One Entry Per Triggered Agent (Linux + Windows)'
-      loop: "{{ (groups['wazuh_agents'] | default([])) + (groups['wazuh_agents_windows'] | default([])) }}"
-      loop_control:
-        loop_var: 'agent_host'
-        label: "{{ agent_host }}"
-      when: hostvars[agent_host].__fim_marker__ is defined
-      vars:
-        __entry__:
-          agent: "{{ agent_host }}"
-          platform: "{{ 'windows' if (agent_host in (groups['wazuh_agents_windows'] | default([]))) else 'linux' }}"
-          marker: "{{ hostvars[agent_host].__fim_marker__ }}"
-          path: "{{ hostvars[agent_host].__fim_path__ }}"
-      ansible.builtin.set_fact:
-        __ledger_entries__: "{{ __ledger_entries__ + [__entry__] }}"
+#region ------ [ Stage 5: Cumulative FIM Proof ] -------------------------------------------- #
 
-    # One line per entry, appended (never rewritten) to the DATA-disk ledger — see the file
-    # section rationale above for why /mnt/data specifically. lineinfile's own idempotency
-    # (it will not duplicate
-    # a byte-identical line) is a bonus, not the safety mechanism: each marker's random suffix
-    # already makes every line unique across the environment's whole lifetime.
-    - name: 'LEDGER | Append One JSON Line Per Triggered Marker To The Cumulative Ledger'
-      loop: "{{ __ledger_entries__ }}"
-      loop_control:
-        label: "{{ item.agent }} / {{ item.marker }}"
-      ansible.builtin.lineinfile:
-        path: "{{ __ledger_path__ }}"
-        create: true
-        owner: 'root'
-        group: 'root'
-        mode: '0600'
-        line: "{{ item | to_json }}"
-
-    - name: 'LEDGER | Report The Additions From This Run'
-      ansible.builtin.debug:
-        msg: >-
-          Appended {{ __ledger_entries__ | length }} entries to {{ __ledger_path__ }}:
-          {{ __ledger_entries__ | map(attribute='marker') | list }}
-
-- name: 'Trigger FIM - prove EVERY cumulative ledger entry reached the indexer (what the UI shows)'
+- name: 'Stage 5 - Prove Every Cumulative FIM Ledger Entry Reached The Indexer'
   hosts: 'wazuh_servers'
-  gather_facts: false
-  become: true
-  run_once: true
-  vars:
-    __ledger_path__: '/mnt/data/wazuh-fim-ledger.jsonl'
   tasks:
+    - name: 'PROVE | Invoke The Product-Owned Proof Entry Point'
+      run_once: true
+      ansible.builtin.include_role:
+        name: 'wazuh_server'
+        tasks_from: 'fim_prove'
 
-    - name: 'PROVE | Slurp The Cumulative Ledger'
-      ansible.builtin.slurp:
-        src: "{{ __ledger_path__ }}"
-      register: __ledger_raw__
-
-    - name: 'PROVE | Parse Every Ledger Line Into A List Of Entries'
-      vars:
-        __lines__: "{{ (__ledger_raw__.content | b64decode).split('\n') | select() | list }}"
-      ansible.builtin.set_fact:
-        __ledger_entries__: "{{ __lines__ | map('from_json') | list }}"
-
-    # Facts persist per-host for the rest of the RUN — same rationale as the ledger play's own
-    # reset above (and linux_disk_manager's resolve_aws.yml precedent): without an explicit
-    # reset, a second inclusion of THIS play in the same run would carry the FIRST inclusion's
-    # missing-entries list into the SECOND inclusion's assert. The failure direction is safe
-    # (false-failure, never a false-pass) and today's two e2e phases are separate
-    # ansible-playbook processes, so this is consistency-hardening, not a live bug.
-    - name: 'PROVE | Reset The Missing-Entries Accumulator For This Run'
-      ansible.builtin.set_fact:
-        __missing_entries__: []
-
-    # Loop with a readable label (agent/platform/marker) so a failed run's output already names
-    # which entries are being checked, before the final assert below even runs.
-    # ignore_errors: a retry-exhausted item must NOT halt the play here — every remaining entry
-    # still needs its own full retry cycle, and the NEXT task turns per-entry results into one
-    # clear, complete "which entries are missing" report rather than stopping at the first miss.
-    #
-    # retries/delay = a 10-minute ceiling (60 x 10s), not a 2-minute one (24 x 5s): a fresh
-    # Windows agent's INITIAL FIM sync backlog can legitimately delay a realtime event's delivery
-    # several minutes past trigger time, even though the arming wait in the trigger play already
-    # confirmed realtime was armed before the marker was written. The role injects the realtime
-    # directories into the MSI's stock ossec.conf, so the fresh agent's baseline
-    # also includes the DEFAULT Windows monitored set (System32 sets + full registry hives — huge
-    # on WS2025 STIG); that baseline sync floods the agent->manager channel at exactly the moment
-    # we trigger, and the realtime marker event queues BEHIND it, arriving late rather than lost.
-    # Linux avoids this because its /etc baseline is small. Raising the ceiling costs nothing on
-    # the common path — a proven entry still returns on its first poll; it only gives a delayed
-    # Windows event enough time to drain from the initial synchronization queue.
-    - name: 'PROVE | Wait For The Agent-Sourced FIM Alert Of Each Ledger Entry In wazuh-alerts-*'
-      loop: "{{ __ledger_entries__ }}"
-      loop_control:
-        loop_var: 'entry'
-        label: "{{ entry.agent }} ({{ entry.platform }}) / {{ entry.marker }}"
-      register: '__fim_search__'
-      ignore_errors: true
-      retries: 60
-      delay: 10
-      until: >-
-        (__fim_search__.json.hits.total.value | default(0) | int) > 0
-      vars:
-        # Linux: syscheck.path is a keyword field, so an exact `term` match against the full
-        # recorded path is unambiguous. Windows: syscheck may normalize the path's case/drive
-        # letter/separators, so match via `wildcard` on the marker alone instead — the marker's
-        # random suffix keeps it globally unique regardless of normalization.
-        __path_clause__: >-
-          {{ {'term': {'syscheck.path': entry.path}} if entry.platform == 'linux'
-          else {'wildcard': {'syscheck.path': '*' ~ entry.marker ~ '*'}} }}
-      ansible.builtin.uri:
-        # Query the indexer over loopback: this play runs ON the indexer host and the node cert's
-        # SANs are 127.0.0.1/localhost/<node-name>. `ansible_host` here is the EC2 instance-id
-        # (SSH-over-SSM dials by id), so an https://<ansible_host>:9200 URL is not even dialable,
-        # let alone verifiable under validate_certs.
-        url: "https://127.0.0.1:9200/wazuh-alerts-*/_search"
-        method: 'POST'
-        client_cert: '/etc/wazuh-indexer/certs/admin.pem'
-        client_key: '/etc/wazuh-indexer/certs/admin-key.pem'
-        ca_path: '/etc/wazuh-indexer/certs/root-ca.pem'
-        validate_certs: true
-        body_format: 'json'
-        body:
-          size: 1
-          sort: [{ '@timestamp': 'desc' }]
-          query:
-            bool:
-              must:
-                - "{{ __path_clause__ }}"
-                - { term: { 'agent.name': "{{ entry.agent }}" } }
-              # Gate on the endpoint agent id so this can never pass on a manager-local (000)
-              # event — the whole point is to prove the ENDPOINT reported it.
-              must_not:
-                - { term: { 'agent.id': '000' } }
-
-    - name: 'PROVE | Determine Which Ledger Entries Are Still Missing Their Alert'
-      loop: "{{ __fim_search__.results }}"
-      loop_control:
-        loop_var: 'result'
-        label: "{{ result.entry.agent }} / {{ result.entry.marker }}"
-      when: (result.json.hits.total.value | default(0) | int) == 0
-      ansible.builtin.set_fact:
-        __missing_entries__: "{{ __missing_entries__ + [result.entry] }}"
-
-    - name: 'PROVE | Assert EVERY Ledger Entry Has A Proven Agent-Sourced FIM Alert'
-      ansible.builtin.assert:
-        that:
-          - (__missing_entries__ | length) == 0
-        quiet: true
-        fail_msg: >-
-          {{ __missing_entries__ | length }} of {{ __ledger_entries__ | length }}
-          cumulative ledger entries have NO agent-sourced FIM alert in wazuh-alerts-* yet:
-          {% for m in __missing_entries__ %}{{ m.agent }} ({{ m.platform }})
-          marker={{ m.marker }}{% if not loop.last %}, {% endif %}{% endfor %}. The ledger is
-          append-only for this environment's lifetime (/mnt/data survives an AIO OS-swap) — a
-          marker whose alert never indexed keeps failing every later validation run until the
-          environment is destroyed; that is correct for an ephemeral e2e env (torn down every
-          cycle), not a bug to route around. Check that each listed agent is enrolled/Active on
-          the manager, its ossec.conf has a <directories realtime="yes"> block covering its demo
-          path, and filebeat is shipping to the indexer.
-        success_msg: >-
-          PROVEN: all {{ __ledger_entries__ | length }} cumulative ledger entries have an
-          agent-sourced FIM alert in wazuh-alerts-* (agent.id != 000) —
-          {{ __ledger_entries__ | selectattr('platform', 'equalto', 'linux') | list | length }}
-          linux + {{ __ledger_entries__ | selectattr('platform', 'equalto', 'windows') | list
-          | length }} windows. Visible in the dashboard under Threat Hunting / FIM.
-
-    # PoC EVIDENCE: a machine-readable summary of the proof this play just completed, available
-    # for an invoking workflow to render into docs/reference/poc-evidence.md and publish with the
-    # proof run. Gated on POC_EVIDENCE_JSON being set at all — the documented invocation
-    # above does not set that env var and never reaches this block, so its behavior stays
-    # byte-identical to before this feature existed: nothing extra written, nothing extra
-    # changed. Reached only after the assert above, so every entry here is already PROVEN true —
-    # this block has nothing to decide, only to record.
-    - name: 'PROVE (poc-evidence) | Build And Write The Machine-Readable Proof Summary'
-      when: (lookup('env', 'POC_EVIDENCE_JSON') | length) > 0
-      block:
-
-        # Facts persist per-host for the rest of the run — same reset rationale as the ledger
-        # and missing-entries accumulators above.
-        - name: 'PROVE (poc-evidence) | Reset The Evidence-Entries Accumulator For This Run'
-          ansible.builtin.set_fact:
-            __poc_evidence_entries__: []
-
-        # One evidence entry per ledger entry, combining what the ledger already recorded
-        # (agent/platform/marker) with what its OWN query hit proved (rule id, agent id, the
-        # index it landed in) — __fim_search__.results[N].entry is the SAME ledger entry
-        # __fim_search__.results[N].json is that entry's own query response from the task above.
-        - name: 'PROVE (poc-evidence) | Accumulate One Evidence Entry Per Proven Ledger Entry'
-          loop: "{{ __fim_search__.results }}"
-          loop_control:
-            loop_var: 'result'
-            label: "{{ result.entry.agent }} / {{ result.entry.marker }}"
-          vars:
-            __hit__: "{{ result.json.hits.hits[0]._source }}"
-            __entry__:
-              agent: "{{ result.entry.agent }}"
-              platform: "{{ result.entry.platform }}"
-              marker: "{{ result.entry.marker }}"
-              proven: true
-              rule_id: "{{ __hit__.rule.id }}"
-              agent_id: "{{ __hit__.agent.id }}"
-              index: "{{ result.json.hits.hits[0]._index }}"
-          ansible.builtin.set_fact:
-            __poc_evidence_entries__: "{{ __poc_evidence_entries__ + [__entry__] }}"
-
-        # Lands on the CONTROLLER workspace, not the AIO this whole play otherwise targets —
-        # delegate_to/become mirror the wazuh_agent present_windows.yml S3 fetch and each stage's
-        # own account-id derive above, the controller-delegation convention used throughout this
-        # codebase. No secrets in content: agent names, platform, marker text, and Wazuh rule/
-        # agent ids are all non-sensitive PoC metadata.
-        # NOTE: totals.* render as JSON STRINGS ("2", not 2) — Ansible's non-native-Jinja
-        # templating stringifies numeric leaves nested inside a `vars:`-built dict literal like
-        # this one. Harmless for every consumer here (jq -r and bash string interpolation read
-        # "2" and 2 identically); not worth fighting for a purely cosmetic JSON-type nit.
-        - name: 'PROVE (poc-evidence) | Write The Proof JSON To The Controller'
-          delegate_to: 'localhost'
-          become: false
-          vars:
-            __poc_evidence__:
-              generated_by: 'deploy-aws-poc.yml'
-              entries: "{{ __poc_evidence_entries__ }}"
-              totals:
-                proven: "{{ __poc_evidence_entries__ | length }}"
-                linux: "{{ __poc_evidence_entries__ | selectattr('platform', 'equalto', 'linux') | list | length }}"
-                windows: "{{ __poc_evidence_entries__ | selectattr('platform', 'equalto', 'windows') | list | length }}"
-          ansible.builtin.copy:
-            dest: "{{ lookup('env', 'POC_EVIDENCE_JSON') }}"
-            content: "{{ __poc_evidence__ | to_nice_json }}"
-            mode: '0644'
+#endregion --- [ Stage 5: Cumulative FIM Proof ] -------------------------------------------- #

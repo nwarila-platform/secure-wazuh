@@ -43,6 +43,7 @@
 !/.github/
 !/.github/.framework-pin
 !/.github/.aws-tf-framework-pin
+!/.github/actionlint.yaml
 !/.github/CODEOWNERS
 !/.github/ISSUE_TEMPLATE/
 !/.github/ISSUE_TEMPLATE/bug_report.yml
@@ -136,6 +137,8 @@
 !/ansible/applications/wazuh_server/molecule/.gitkeep
 !/ansible/applications/wazuh_server/tasks/
 !/ansible/applications/wazuh_server/tasks/clean_redhat.yml
+!/ansible/applications/wazuh_server/tasks/fim_ledger.yml
+!/ansible/applications/wazuh_server/tasks/fim_prove.yml
 !/ansible/applications/wazuh_server/tasks/main.yml
 !/ansible/applications/wazuh_server/tasks/present_redhat.yml
 !/ansible/applications/wazuh_server/tasks/validate.yml
@@ -150,7 +153,7 @@
 !/ansible/applications/wazuh_server/templates/wazuh.yml.j2
 !/ansible/applications/wazuh_server/vars/
 !/ansible/applications/wazuh_server/vars/main.yml
-!/ansible/applications/wazuh_server/vars/redhat_int.yml
+!/ansible/applications/wazuh_server/vars/redhat_dev.yml
 !/ansible/applications/wazuh_server/vars/redhat_prod.yml
 !/ansible/applications/wazuh_server/vars/redhat_test.yml
 !/ansible/inventory/
