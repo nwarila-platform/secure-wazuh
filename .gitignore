@@ -156,28 +156,9 @@
 !/ansible/inventory/
 !/ansible/inventory/aws/
 !/ansible/inventory/aws/aws_ec2.yml
-!/ansible/inventory/aws/group_vars/
-!/ansible/inventory/aws/group_vars/all.yml
-!/ansible/inventory/aws/group_vars/wazuh_agents.yml
-!/ansible/inventory/aws/group_vars/wazuh_agents_windows.yml
-!/ansible/inventory/aws/group_vars/wazuh_servers.yml
 !/ansible/inventory/proxmox.yml
 !/ansible/playbooks/
-!/ansible/playbooks/aws_runner_env.yml
-!/ansible/playbooks/bootstrap.yml
-!/ansible/playbooks/deploy_all.yml
-!/ansible/playbooks/e2e_full.yml
-!/ansible/playbooks/linux_disk_manager.yml
-!/ansible/playbooks/site.yml
-!/ansible/playbooks/tasks/
-!/ansible/playbooks/tasks/derive_aws_account_id.yml
-!/ansible/playbooks/wazuh_agent.yml
-!/ansible/playbooks/wazuh_agent_windows.yml
-!/ansible/playbooks/wazuh_pipeline_smoke.yml
-!/ansible/playbooks/wazuh_server.yml
-!/ansible/playbooks/wazuh_trigger_fim.yml
-!/ansible/playbooks/wazuh_trigger_fim_windows.yml
-!/ansible/playbooks/windows_ssh_bootstrap.yml
+!/ansible/playbooks/deploy-aws-poc.yml
 !/ansible/requirements.yml
 
 # --------------------------------------------------------------------------- #

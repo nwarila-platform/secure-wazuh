@@ -12,8 +12,10 @@
 # Operator prereqs:
 #   - The persistent data volume is mounted at data_root (by linux_disk_manager / the deploy
 #     layer) before this role runs.
-#   - `env` via --extra-vars; AWS creds from the runner env (playbooks/aws_runner_env.yml).
-#   - Exactly ONE operator secret: `wazuh_server.secrets.admin_password` (see below). Every
+#   - `ENV` as a play var (playbooks/deploy-aws-poc.yml declares it literally per play — no
+#     --extra-vars); AWS creds from the runner env via that playbook's per-play credential bridge.
+#   - Exactly ONE Wazuh secret: `wazuh_server.secrets.admin_password` (see below). On the
+#     ephemeral AWS target the playbook mints it per run, so no operator supplies it. Every
 #     other credential is generated fresh each run (nothing persisted).
 # =========================================================================================== #
 
@@ -51,10 +53,10 @@ wazuh_server_defaults:
   #region ------ [ Persistent data volume (union of all components) ] --------------------------- #
   data_root: '/mnt/data/wazuh'
   data_binds:
-    - { canonical: '/var/lib/wazuh-indexer',   subpath: 'indexer/data' }
-    - { canonical: '/var/log/wazuh-indexer',   subpath: 'indexer/logs' }
-    - { canonical: '/var/ossec',               subpath: 'server/ossec' }
-    - { canonical: '/var/log/filebeat',        subpath: 'server/filebeat-logs' }
+    - { canonical: '/var/lib/wazuh-indexer', subpath: 'indexer/data' }
+    - { canonical: '/var/log/wazuh-indexer', subpath: 'indexer/logs' }
+    - { canonical: '/var/ossec', subpath: 'server/ossec' }
+    - { canonical: '/var/log/filebeat', subpath: 'server/filebeat-logs' }
     - { canonical: '/var/lib/wazuh-dashboard', subpath: 'dashboard/data' }
     - { canonical: '/var/log/wazuh-dashboard', subpath: 'dashboard/logs' }
   #endregion --- [ Persistent data volume ] ---------------------------------------------------- #
@@ -64,28 +66,28 @@ wazuh_server_defaults:
   # post = created AFTER RPM install (service accounts now exist); re-chowns the bind targets.
   directories:
     pre:
-      - { path: '/mnt/data/wazuh',              mode: '0750' }
+      - { path: '/mnt/data/wazuh', mode: '0750' }
       - { path: '/mnt/data/wazuh/indexer/data', mode: '0750' }
       - { path: '/mnt/data/wazuh/indexer/logs', mode: '0750' }
-      - { path: '/var/lib/wazuh-indexer',       mode: '0750' }
-      - { path: '/var/log/wazuh-indexer',       mode: '0750' }
+      - { path: '/var/lib/wazuh-indexer', mode: '0750' }
+      - { path: '/var/log/wazuh-indexer', mode: '0750' }
     post:
-      - { path: '/var/lib/wazuh-indexer',           owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }
-      - { path: '/var/log/wazuh-indexer',           owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }
-      - { path: '/etc/wazuh-indexer/certs',         owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0500' }
-      - { path: '/var/lib/wazuh-indexer/tmp',       owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }
-      - { path: '/usr/share/wazuh-indexer/lib/jna', owner: 'root',            group: 'wazuh-indexer',   mode: '0750' }
-      - { path: '/etc/filebeat/certs',              owner: 'root',            group: 'root',            mode: '0500' }
-      - { path: '/etc/wazuh-dashboard/certs',       owner: 'wazuh-dashboard', group: 'wazuh-dashboard', mode: '0500' }
+      - { path: '/var/lib/wazuh-indexer', owner: 'wazuh-indexer', group: 'wazuh-indexer', mode: '0750' }
+      - { path: '/var/log/wazuh-indexer', owner: 'wazuh-indexer', group: 'wazuh-indexer', mode: '0750' }
+      - { path: '/etc/wazuh-indexer/certs', owner: 'wazuh-indexer', group: 'wazuh-indexer', mode: '0500' }
+      - { path: '/var/lib/wazuh-indexer/tmp', owner: 'wazuh-indexer', group: 'wazuh-indexer', mode: '0750' }
+      - { path: '/usr/share/wazuh-indexer/lib/jna', owner: 'root', group: 'wazuh-indexer', mode: '0750' }
+      - { path: '/etc/filebeat/certs', owner: 'root', group: 'root', mode: '0500' }
+      - { path: '/etc/wazuh-dashboard/certs', owner: 'wazuh-dashboard', group: 'wazuh-dashboard', mode: '0500' }
   #endregion --- [ Directories ] ---------------------------------------------------------------- #
 
   #region ------ [ Services ] ------------------------------------------------------------------- #
   # Start ORDER is enforced per-#region (indexer green BEFORE filebeat), NOT by looping this
   # list. Listed for enable/daemon_reload bookkeeping.
   services:
-    - { name: 'wazuh-indexer',   enabled: true, state: 'started' }
-    - { name: 'wazuh-manager',   enabled: true, state: 'started' }
-    - { name: 'filebeat',        enabled: true, state: 'started' }
+    - { name: 'wazuh-indexer', enabled: true, state: 'started' }
+    - { name: 'wazuh-manager', enabled: true, state: 'started' }
+    - { name: 'filebeat', enabled: true, state: 'started' }
     - { name: 'wazuh-dashboard', enabled: true, state: 'started' }
   #endregion --- [ Services ] ------------------------------------------------------------------- #
 
@@ -138,12 +140,12 @@ wazuh_server_defaults:
 
   #region ------ [ Filebeat config ] ------------------------------------------------------------ #
   filebeat:
-    certs_dir:          '/etc/filebeat/certs'
-    config_path:        '/etc/filebeat/filebeat.yml'
-    module_config_dir:  '/etc/filebeat/modules.d'
+    certs_dir: '/etc/filebeat/certs'
+    config_path: '/etc/filebeat/filebeat.yml'
+    module_config_dir: '/etc/filebeat/modules.d'
     module_config_path: '/etc/filebeat/modules.d/wazuh.yml'
-    module_dir:         '/usr/share/filebeat/module'
-    indexer_username:   'logstash'
+    module_dir: '/usr/share/filebeat/module'
+    indexer_username: 'logstash'
   #endregion --- [ Filebeat config ] ------------------------------------------------------------ #
 
   #region ------ [ Manager (ossec.conf + keystore + API users + FIM) ] -------------------------- #
@@ -153,8 +155,12 @@ wazuh_server_defaults:
     # The manager indexer-connector authenticates as the cluster admin (full write on
     # wazuh-states-*). admin is the ONE operator-provided password.
     keystore_indexer_user: 'admin'
+    # Narrow no-password-literal exemption: these are Wazuh's public vendor factory bootstrap
+    # values, not operator secrets or desired credentials. They are used only to authenticate a
+    # fresh rbac.db for immediate rotation; present_redhat.yml then proves the running API rejects
+    # every factory value.
     api_users:
-      - { id: 1, username: 'wazuh',     default_password: 'wazuh' }
+      - { id: 1, username: 'wazuh', default_password: 'wazuh' }
       - { id: 2, username: 'wazuh-wui', default_password: 'wazuh-wui' }
 
     # FILE INTEGRITY MONITORING (the headline fix). The all-in-one box's local agent 000 runs
@@ -180,13 +186,13 @@ wazuh_server_defaults:
 
   #region ------ [ Dashboard config ] ----------------------------------------------------------- #
   dashboard:
-    certs_dir:        '/etc/wazuh-dashboard/certs'
-    main_config:      '/etc/wazuh-dashboard/opensearch_dashboards.yml'
-    wazuh_config:     '/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml'
+    certs_dir: '/etc/wazuh-dashboard/certs'
+    main_config: '/etc/wazuh-dashboard/opensearch_dashboards.yml'
+    wazuh_config: '/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml'
     indexer_username: 'kibanaserver'
     manager_username: 'wazuh-wui'
-    bind_address:     '0.0.0.0'
-    service_state:    'started'
+    bind_address: '0.0.0.0'
+    service_state: 'started'
   #endregion --- [ Dashboard config ] ----------------------------------------------------------- #
 
   #region ------ [ Side-deps ] ------------------------------------------------------------------ #

@@ -26,19 +26,21 @@ all:
           ansible_ssh_private_key_file: /root/.ssh/id_rsa_wazuh
           node_name: tcnhq-prxmx01
           vm_id: 1000
-          # Consumed by playbooks/linux_disk_manager.yml's `linux_disk_manager:` role-param
-          # templates (wazuh_disk_platform / wazuh_disks default() fallbacks) as the
-          # Proxmox-specific override of that playbook's VMware-lab default.
-          # linux_disk_manager now supports `proxmox`, so Step 0 provisions this declared disk.
+          # The Proxmox-specific linux_disk_manager targeting, kept here with the host it
+          # describes. NOTE: nothing consumes it today — the playbook that read
+          # wazuh_disk_platform / wazuh_disks through default() fallbacks is gone, and the one
+          # remaining playbook (deploy-aws-poc.yml) declares its AWS disk literally instead.
+          # This target is parked (see .github/workflows/deploy.yml's proxmox job); when it is
+          # picked back up, whatever play drives it must read these two keys explicitly.
           # Before its first live run, verify the QEMU by-id serial and the disk's current layout.
           wazuh_disk_platform: proxmox
           wazuh_disks:
-            - unique_id:   scsi-SQEMU_QEMU_HARDDISK_wazuh-data
+            - unique_id: scsi-SQEMU_QEMU_HARDDISK_wazuh-data
               mount_point: /mnt/data
-              fstype:      xfs
-              label:       wazuh-data
-              opts:        defaults,nodev,nosuid
-              passno:      2
+              fstype: xfs
+              label: wazuh-data
+              opts: defaults,nodev,nosuid
+              passno: 2
 
     # Vestigial central groups — the same AIO host, vars inherited from wazuh_servers above.
     wazuh_indexers:

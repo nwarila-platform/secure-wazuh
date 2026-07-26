@@ -17,7 +17,7 @@
 - name: 'Wazuh manager config changed | stop'
   listen: 'wazuh-manager-config-changed'
   ansible.builtin.systemd:
-    name:  'wazuh-manager'
+    name: 'wazuh-manager'
     state: 'stopped'
 
 - name: 'Wazuh manager config changed | terminate stale API child'
@@ -48,7 +48,7 @@
 - name: 'Wazuh manager config changed | start'
   listen: 'wazuh-manager-config-changed'
   ansible.builtin.systemd:
-    name:  'wazuh-manager'
+    name: 'wazuh-manager'
     state: 'started'
 
 # Notified when filebeat.yml is rendered/changed. Filebeat reloads cleanly via a
@@ -57,17 +57,17 @@
 - name: 'Filebeat config changed'
   listen: 'filebeat-config-changed'
   ansible.builtin.systemd:
-    name:  'filebeat'
+    name: 'filebeat'
     state: 'restarted'
 
 # Notified when the dashboard's TLS material, opensearch_dashboards.yml, keystore password, or
 # wazuh.yml changes. Gated on __wazuh_dashboard_start__ (set in present_redhat.yml BEGIN from
-# config.dashboard.service_state). The dedicated gate is preserved pending its separate behavioral
-# follow-up; handlers can read wazuh_server_running live at flush time.
+# config.dashboard.service_state). The dedicated fact freezes the intended state before handlers
+# flush, avoiding dependence on later variable resolution.
 - name: 'Restart wazuh-dashboard'
   listen: 'wazuh-dashboard-config-changed'
   when: __wazuh_dashboard_start__ | default(true)
   ansible.builtin.systemd:
-    name:          'wazuh-dashboard'
-    state:         'restarted'
+    name: 'wazuh-dashboard'
+    state: 'restarted'
     daemon_reload: true

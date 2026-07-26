@@ -30,11 +30,11 @@ There is one thing the RHEL 8 platform-python cannot do: run the boto3/botocore 
 
 The resolution is a dedicated interpreter used **only** for the S3 tasks:
 
-1. `bootstrap.yml` installs `python3.12` (available in AppStream) and builds `/opt/ansible/venv` with `--system-site-packages`, then pip-installs a fresh boto3/botocore into it. On STIG hosts it also adds the venv tree to fapolicyd trust.
+1. `deploy-aws-poc.yml`'s Linux Bootstrap section installs `python3.12` (available in AppStream) and builds `/opt/ansible/venv` with `--system-site-packages`, then pip-installs a fresh boto3/botocore into it. On STIG hosts it also adds the venv tree to fapolicyd trust.
 2. The venv is **not** the default interpreter. `ansible.cfg` leaves `interpreter_python` on auto-discovery so ordinary modules keep landing on platform-python and its C bindings.
 3. Only the `amazon.aws.s3_object` tasks override `ansible_python_interpreter` to the venv, at block level. That is the sole place the modern Python is used.
 
-This gives module dispatch a modern boto3 for the two things that need it — the bundle/cert download in the server role and the RPM download in the agent role — without breaking `dnf`, SELinux, or `firewalld`, which stay on platform-python. Each role's install path asserts the venv exists (`BEGIN | Assert Bootstrap Venv Is Present`) so a host that skipped bootstrap fails loudly rather than mysteriously.
+This gives module dispatch a modern boto3 for the two things that need it — the bundle/cert download in the server role and the RPM download in the agent role — without breaking `dnf`, SELinux, or `firewalld`, which stay on platform-python. Each role's install path asserts the venv exists (`BEGIN | Assert Bootstrap Venv Is Present`) so a host that somehow skipped the bootstrap section fails loudly rather than mysteriously.
 
 ## Consequences
 

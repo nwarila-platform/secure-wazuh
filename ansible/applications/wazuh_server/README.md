@@ -31,7 +31,7 @@ mounts, service state). User overrides go in the `wazuh_server:` extra-var dict.
 - The `/mnt/data` data disk mounted (step 0 — `linux_disk_manager`). The role binds the
   indexer/manager/dashboard state onto subdirectories of `/mnt/data/wazuh`; it does not
   partition or format raw disks.
-- The bootstrap venv (`bootstrap.yml`) — the S3 download borrows its boto3.
+- The bootstrap venv (`deploy-aws-poc.yml`'s Linux Bootstrap section) — the S3 download borrows its boto3.
 - The offline bundle + cert PEMs in S3 at the keys pinned in the env overlay, each verified
   against a SHA-256 pin after download. See
   [`../../../docs/reference/s3-artifacts.md`](../../../docs/reference/s3-artifacts.md).

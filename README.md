@@ -78,11 +78,12 @@ make install
 # 2. Static gates (what CI runs): lint + terraform fmt + the allowlist guard
 make ci
 
-# 3. Deploy to a target (composes the pinned ansible-framework, then runs the stack).
+# 3. Deploy to the AWS PoC (composes the pinned ansible-framework, then runs the stack and
+#    proves a real FIM event on each endpoint). Zero --extra-vars: the whole target is two
+#    files — the dynamic inventory and the one playbook.
 #    The dev compose helper builds a local _dev-build/ mirror of the CI execution container.
 #    (compose scripts are dev-only and intentionally untracked; see the composition model doc.)
-cd _dev-build && ansible-playbook -i inventory/proxmox.yml playbooks/deploy_all.yml \
-  -e env=int -e @/path/to/aws-vars.json
+cd _dev-build && ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 ```
 
 Full walkthrough: [docs/how-to/deploy-the-stack.md](docs/how-to/deploy-the-stack.md).
@@ -95,8 +96,8 @@ secure-wazuh/
 │   ├── applications/
 │   │   ├── wazuh_server/       # collapsed all-in-one role (indexer+manager+filebeat+dashboard)
 │   │   └── wazuh_agent/        # endpoint agent role (composed from ansible-framework)
-│   ├── playbooks/              # site.yml + per-component playbooks
-│   └── inventory/
+│   ├── playbooks/              # deploy-aws-poc.yml — the one playbook, end to end
+│   └── inventory/              # aws/aws_ec2.yml (dynamic) · proxmox.yml (parked target)
 ├── terraform/
 │   ├── proxmox.tfvars          # permanent target inputs  (proxmox-vm-terraform-framework)
 │   └── aws.tfvars              # ephemeral PoC inputs      (aws-terraform-framework)
@@ -127,9 +128,9 @@ A push to `main` triggers [`deploy.yml`](.github/workflows/deploy.yml):
 
 Rationale and the full pattern: [ADR&nbsp;0002](docs/decision-records/repo/0002-combined-terraform-ansible-delivery.md).
 
-> **Status.** [`deploy.yml`](.github/workflows/deploy.yml) is a reviewed **first cut** — the job
-> graph, guardrails, and framework pinning are in place, but the per-environment secret/OIDC
-> wiring (marked with `# WIRE:` in the workflow) must be completed before it runs green end to end.
+[`deploy.yml`](.github/workflows/deploy.yml) derives its AWS role and state-bucket names from
+organization-scoped configuration, authenticates with OIDC, composes both pinned frameworks,
+and destroys the ephemeral AWS stack after proof.
 
 ## Proof of Concept — live evidence
 
@@ -138,8 +139,9 @@ deploys the full 3-system PoC (AIO + a Linux agent + a Windows agent), fires a r
 Monitoring event on **both** endpoint platforms, force-replaces the AIO's OS drive mid-run
 (`terraform apply -var refresh_serial=1`) to prove agents reconnect and indexer data survives a
 manager rebuild, validates all four cumulative events, then **always** destroys the environment —
-a disposable, genuinely-exercised deploy rather than a mocked test. It fires once per MR (open,
-reopen, or draft→ready-for-review); apply the `rerun-poc` label for an on-demand re-run. Cost is
+a disposable, genuinely-exercised deploy rather than a mocked test. For MRs touching the workflow's
+configured `paths:`, it fires once per MR (open, reopen, or draft→ready-for-review); apply the
+`rerun-poc` label for an on-demand re-run. Cost is
 roughly $1 per run and $0 standing. Results land straight in the MR as
 [`docs/reference/poc-evidence.md`](docs/reference/poc-evidence.md); full logs are in the
 [`e2e-full`](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/e2e-full.yml)

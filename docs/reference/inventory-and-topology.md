@@ -31,9 +31,9 @@ The roles refuse configurations they cannot serve correctly rather than deployin
 | `wazuh_servers` | The single AIO host | `wazuh_server` (indexer + manager + Filebeat + dashboard) |
 | `wazuh_agents` | Linux endpoint hosts only | `wazuh_agent` |
 | `wazuh_agents_windows` | Windows endpoint hosts only | `wazuh_agent`, via its native Windows entry point (`tasks/main_windows.yml`, bypassing the Linux-only loader) |
-| `wazuh_indexers`, `wazuh_dashboards` | The same AIO host | Present for inventory clarity and Terraform-generated grouping; the AIO role runs off `wazuh_servers` |
+| `wazuh_indexers`, `wazuh_dashboards` | Static-inventory compatibility aliases; omitted by the AWS dynamic inventory | None; the AIO role runs only from `wazuh_servers` |
 
-`site.yml` deploys `wazuh_server` to `wazuh_servers`, then `wazuh_agent` to `wazuh_agents` if that group has hosts, then (Stage 3) `wazuh_agent` to `wazuh_agents_windows` if that group has hosts.
+`deploy-aws-poc.yml` deploys `wazuh_server` to `wazuh_servers` (Stage 1), then `wazuh_agent` to `wazuh_agents` if that group has hosts (Stage 2), then `wazuh_agent` to `wazuh_agents_windows` if that group has hosts (Stage 3, after the Windows OpenSSH bootstrap play).
 
 ### Minimal all-in-one inventory
 
