@@ -41,10 +41,12 @@ install:
 
 lint: yamllint ansible-lint
 
-# Lint only tracked YAML (the deliverable) — never the git-ignored provider
-# cache, dev lab, or compose output.
+# Lint cached or otherwise visible YAML (the deliverable) — never deleted paths,
+# the git-ignored provider cache, dev lab, or compose output.
 yamllint:
-	git ls-files -z -- '*.yml' '*.yaml' | xargs -0 -r yamllint --config-file .yamllint.yml
+	@git ls-files --cached --others --exclude-standard -- '*.yml' '*.yaml' \
+	  | while read -r file; do test -f "$$file" && printf '%s\0' "$$file"; done \
+	  | xargs -0 -r yamllint --config-file .yamllint.yml
 
 # Lint the Git-cached or otherwise visible product Ansible YAML explicitly inside
 # the composed tree. CI calls this target after composing the same path, so local
@@ -62,6 +64,7 @@ ansible-lint:
 	}; \
 	install -m 0644 "$(CURDIR)/.yamllint.yml" "$$root/.yamllint.yml"; \
 	files=$$(git ls-files --cached --others --exclude-standard -- ansible \
+	  | while read -r file; do test -f "$(CURDIR)/$$file" && printf '%s\n' "$$file"; done \
 	  | grep -E '\.ya?ml$$' | sed 's|^ansible/||' | sort -u); \
 	test -n "$$files" || { \
 	  printf 'ERROR: no cached or visible product Ansible YAML files found\n' >&2; \
@@ -104,7 +107,8 @@ allowlist-check:
 	  case "$$p" in \
 	    */) git ls-files --cached --others --exclude-standard -- "$${p%/}" | grep -q . \
 	          || echo "$$p" ;; \
-	    *)  git ls-files --error-unmatch "$$p" >/dev/null 2>&1 || echo "$$p" ;; \
+	    *)  git ls-files --cached --others --exclude-standard -- "$$p" | grep -qx "$$p" \
+	          || echo "$$p" ;; \
 	  esac; \
 	done); \
 	if [ -n "$$orphans" ]; then \

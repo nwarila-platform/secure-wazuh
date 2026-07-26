@@ -29,7 +29,7 @@
 # either an explicit framework name override or re-stamping the standing group under a
 # non-colliding name.
 
-environment = "poc"
+environment = "dev"
 
 # Readiness gate: path (on the Terraform runner) to the OpenSSH private key matching
 # all_systems[*].key_name. All 3 systems below keep readiness_gate = false (SSM-only reachability
@@ -80,9 +80,9 @@ all_systems = [
     # refresh=true instance — a fresh root volume from `ami` above, new instance-id, but its data
     # volume (ebs_block_devices below) is UNAFFECTED and gets re-attached to the new instance
     # (Terraform replaces the aws_instance resource, not the separate aws_ebs_volume). This is
-    # the "replace-OS-only" proof: the AIO's indexer data (and this playbook's FIM ledger, see
-    # wazuh_trigger_fim.yml) survives even though the OS underneath it does not. The two agents
-    # below stay refresh = false so the swap never touches them — only the AIO's OS is under test.
+    # the "replace-OS-only" proof: the AIO's indexer data and the FIM ledger written by
+    # wazuh_server/tasks/fim_ledger.yml survive even though the OS underneath does not. The two
+    # agents below stay refresh = false so the swap never touches them — only the AIO OS is tested.
     refresh = true
 
     tags = {
@@ -100,8 +100,8 @@ all_systems = [
       volume_size           = "50"
     }
 
-    # Dedicated data volume for /mnt/data (Wazuh indexer + alert storage, and the FIM ledger —
-    # see wazuh_trigger_fim.yml). Ephemeral sizing; the permanent Proxmox box carries 256 GB. The
+    # Dedicated data volume for /mnt/data (Wazuh indexer + alert storage, and the ledger written
+    # by wazuh_server/tasks/fim_ledger.yml). Ephemeral sizing; the permanent Proxmox box carries 256 GB. The
     # framework assigns this volume's device name positionally (first extra volume -> /dev/sdd)
     # — but consumers must NEVER use positional names (Nitro can re-enumerate NVMe devices across
     # reboots, and this volume is explicitly re-attached across an OS-swap replacement too).
@@ -143,8 +143,8 @@ all_systems = [
     associate_public_ip = false
   },
   {
-    # Linux endpoint agent: enrolls against the AIO above, proves the agent-sourced FIM path
-    # (wazuh_trigger_fim.yml) distinctly from the manager's own local agent 000.
+    # Linux endpoint agent: enrolls against the AIO above; Stage 3a of deploy-aws-poc.yml proves
+    # its agent-sourced FIM path distinctly from the manager's own local agent 000.
     region            = "us_east_1"
     hostname          = "secure-wazuh-poc-agent-linux"
     availability_zone = "us-east-1a"
@@ -190,8 +190,8 @@ all_systems = [
     associate_public_ip = false
   },
   {
-    # Windows endpoint agent: same role as the Linux agent above, native win_* enrollment path
-    # (wazuh_agent role's main_windows entry).
+    # Windows endpoint agent: same normal role entry as the Linux agent above, dispatched to the
+    # native win_* enrollment path by the shared loader.
     region            = "us_east_1"
     hostname          = "secure-wazuh-poc-agent-win"
     availability_zone = "us-east-1a"
@@ -269,7 +269,7 @@ managed_security_groups = {
     egress = []
 
     tags = {
-      Environment = "poc"
+      Environment = "dev"
       System      = "wazuh"
       Role        = "wazuh-aio"
     }

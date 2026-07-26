@@ -20,11 +20,11 @@ ansible/
 │   │                                  Deliberately NO sibling group_vars/ — see its header.
 │   └── proxmox.yml                    permanent all-in-one inventory (target currently parked)
 ├── playbooks/
-│   └── deploy-aws-poc.yml             THE only playbook. Mint credential → data disk → venv →
-│                                      AIO stack → Linux agents → Windows OpenSSH bootstrap →
-│                                      Windows agents → FIM trigger + cumulative proof.
-│                                      Zero --extra-vars; every input is a literal in this file
-│                                      or a compose: fact in the inventory above.
+│   └── deploy-aws-poc.yml             THE only playbook. Propagate run inputs → dispatch each OS
+│                                      bootstrap → data disk + AIO → both agents through one
+│                                      normal role entry → FIM trigger + cumulative proof.
+│                                      Zero --extra-vars; inputs come from this file, inventory,
+│                                      and the controller environment.
 ├── applications/
 │   ├── wazuh_server/                  vendored: collapsed all-in-one central role
 │   ├── wazuh_agent/                   composed from ansible-framework (Linux RPM + Windows MSI)
@@ -48,30 +48,27 @@ byte-identical across product and framework copies. It validates `ENV`, merges r
 `vars/<family>[_<env>].yml` overlays and the playbook's `<role>:` override dict, and dispatches to
 `<state>_<family>.yml` via `first_found`. The tracked `wazuh_server` loader is byte-identical to
 the framework application loaders. The Linux roles ship `present_redhat.yml` +
-`clean_redhat.yml`; `wazuh_agent` also ships a native Windows entry (`tasks/main_windows.yml` +
-`present_windows.yml`) that bypasses the Linux-only loader. **Do not make role-specific edits in
+`clean_redhat.yml`; `wazuh_agent` also ships `present_windows.yml`, reached through the same
+Windows-safe normal loader entry as Linux. **Do not make role-specific edits in
 `tasks/main.yml`.**
 
 ## Required Ansible vars
 
-**None are supplied by the operator — `deploy-aws-poc.yml` takes zero `--extra-vars`.** The table
-below is what the roles consume and where each value comes from.
+**None are supplied as `--extra-vars`.** The table below lists what inventory and roles consume
+and where each value comes from.
 
 | var | purpose |
 |---|---|
-| `ENV` | Environment selector (`int`/`test`/`prod`); the loader auto-loads `vars/redhat_<env>.yml` (Linux) / `vars/windows_<env>.yml` (Windows). Declared **literally as `'int'`** in each play that runs a loader — this playbook targets exactly one environment. |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Read from the runner env by the per-play credential bridge in `deploy-aws-poc.yml` and passed to `amazon.aws.s3_object` as module args. |
+| `ENV` | Environment selector (`dev`/`test`/`prod`); the loader auto-loads `vars/redhat_<env>.yml` (Linux) / `vars/windows_<env>.yml` (Windows). Propagated **literally as `'dev'`** to every host — this playbook targets exactly one environment. |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Read from the runner env by the run-input propagation play in `deploy-aws-poc.yml` and passed to `amazon.aws` modules as arguments. |
 | `AWS_DEFAULT_REGION` | Region for the S3 download (unless the overlay sets `s3.region`). Resolves `AWS_REGION` first, then `AWS_DEFAULT_REGION`. |
 | `AWS_SESSION_TOKEN` | Optional (STS). |
-| `wazuh_admin_password` | The one Wazuh credential. **Minted per run** by the playbook's Step 0; the `WAZUH_ADMIN_PASSWORD` env var remains a lower-precedence fallback leg of the role's chain. |
+| `ANSIBLE_S3_BUCKET` | Required controller environment variable naming the artifact bucket. GitHub workflows derive it from the org-global account-id input; local operators export it explicitly. |
+| `GITHUB_RUN_ID` | Required inventory selector. GitHub provides it to every workflow step; local operators resolve it from the deployed commit-sha tag as documented below. |
+| `wazuh_admin_password` | The one Wazuh credential. **Minted per run** by Stage 1; the `WAZUH_ADMIN_PASSWORD` env var remains a lower-precedence fallback leg of the role's chain. |
 
-Two more values are runtime-derived rather than declared: the S3 bucket (`<account-id>-ansible`,
-from `sts:GetCallerIdentity` — ADR-0004) and the EBS volume's `/dev/disk/by-id` name (from its
-`Function` tag, via `linux_disk_manager`'s own AWS resolver).
-
-`WAZUH_ENV` is a separate, CI-side knob: `inventory/aws/aws_ec2.yml` reads it for its
-`tag:Environment` discovery filter (default `poc`). It selects which hosts are found, not which
-role overlay is loaded.
+The EBS volume's `/dev/disk/by-id` name is runtime-derived from its `Function` tag through
+`linux_disk_manager`'s AWS resolver.
 
 Credentials are **never exported into the target shell** — the roles pass them as `no_log`
 module args so sudo/audit/Wazuh logs never capture them. See
@@ -79,8 +76,8 @@ module args so sudo/audit/Wazuh logs never capture them. See
 
 ## Target prerequisites
 
-- **Central hosts** need the `/mnt/data` data disk (`linux_disk_manager` provisions it — the
-  playbook's data-disk play, before any Wazuh stage).
+- **Central hosts** need the `/mnt/data` data disk (`linux_disk_manager` provisions it before the
+  `wazuh_server` role entry in Stage 1).
 - **boto3/botocore come from the bootstrap venv**, not dnf/pip on the target: the playbook's
   Linux Bootstrap section builds `/opt/ansible/venv` (Python 3.12) and the S3 tasks borrow it via
   a block-level `ansible_python_interpreter` override. The Windows path runs `s3_object` delegated
@@ -95,9 +92,12 @@ module args so sudo/audit/Wazuh logs never capture them. See
 ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 ```
 
-The Linux and Windows endpoint groups may individually be empty, but at least one endpoint agent
-is required. An AIO-only inventory is unsupported: no trigger host means the loop-driven ledger
-file is never created, and the proof play deliberately fails when it slurps that missing file.
+Outside GitHub Actions, resolve `GITHUB_RUN_ID` through the deployment's commit-sha tag first; see
+[`../docs/how-to/deploy-the-stack.md`](../docs/how-to/deploy-the-stack.md#run-scoped-inventory).
+
+This AWS target requires exactly one AIO, one Linux agent, and one Windows agent. Step 0 asserts
+that complete topology before any target work, so an empty, partial, or duplicate run-scoped
+inventory fails rather than skipping plays.
 Run the playbook a second time after an AIO OS-swap (`terraform apply -var refresh_serial=1`) for
 the cumulative FIM proof — see
 [`../docs/how-to/deploy-the-stack.md`](../docs/how-to/deploy-the-stack.md).

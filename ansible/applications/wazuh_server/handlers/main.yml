@@ -16,12 +16,14 @@
 # sequence because wazuh-apid can leave 55000 bound after systemd reports stopped.
 - name: 'Wazuh manager config changed | stop'
   listen: 'wazuh-manager-config-changed'
+  become: true
   ansible.builtin.systemd:
     name: 'wazuh-manager'
     state: 'stopped'
 
 - name: 'Wazuh manager config changed | terminate stale API child'
   listen: 'wazuh-manager-config-changed'
+  become: true
   register: '__wazuh_apid_pkill__'
   changed_when: __wazuh_apid_pkill__.rc == 0
   failed_when: __wazuh_apid_pkill__.rc not in [0, 1]
@@ -33,7 +35,7 @@
       - '-f'
       - '/var/ossec/api/scripts/wazuh_apid.py'
 
-# Handlers cannot see task-level vars, so the endpoint override is read from the v3.1.0
+# Handlers cannot see task-level vars, so the endpoint override is read from the v3.2.0
 # loader's `<role>_running` merged-config fact (persists for the play, so it is still set
 # when handlers flush mid-play) with the same ansible_host → inventory_hostname fallback
 # chain the role tasks use.
@@ -47,6 +49,7 @@
 
 - name: 'Wazuh manager config changed | start'
   listen: 'wazuh-manager-config-changed'
+  become: true
   ansible.builtin.systemd:
     name: 'wazuh-manager'
     state: 'started'
@@ -56,6 +59,7 @@
 # `filebeat test output` smoke check runs against the new config.
 - name: 'Filebeat config changed'
   listen: 'filebeat-config-changed'
+  become: true
   ansible.builtin.systemd:
     name: 'filebeat'
     state: 'restarted'
@@ -66,6 +70,7 @@
 # flush, avoiding dependence on later variable resolution.
 - name: 'Restart wazuh-dashboard'
   listen: 'wazuh-dashboard-config-changed'
+  become: true
   when: __wazuh_dashboard_start__ | default(true)
   ansible.builtin.systemd:
     name: 'wazuh-dashboard'

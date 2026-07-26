@@ -1,0 +1,11 @@
+---
+self-hosted-runner:
+  labels:
+    - 'proxmox-lab'
+
+paths:
+  .github/workflows/deploy.yml:
+    ignore:
+      # The Proxmox job is deliberately parked at job scope so it cannot schedule its private
+      # self-hosted runner. Keep the workflow shape in place for an explicit future reactivation.
+      - 'constant expression "false" in condition'

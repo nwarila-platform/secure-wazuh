@@ -4,7 +4,11 @@
 
 This guide takes a freshly applied AWS proof-of-concept environment and brings up the collapsed Wazuh all-in-one (AIO) stack — OpenSearch indexer, manager, Filebeat, and dashboard on one host — plus both endpoint agent platforms, and then proves a real File Integrity Monitoring event on each.
 
-The AWS target is **exactly two committed files**: the dynamic inventory `ansible/inventory/aws/aws_ec2.yml` and the single playbook `ansible/playbooks/deploy-aws-poc.yml`. There is no `group_vars/` directory and no second playbook — every connection fact lives in the inventory's `compose:` block and every deployment input is a literal in the playbook's own play `vars:`.
+The AWS target is **exactly two orchestration files**: the dynamic inventory
+`ansible/inventory/aws/aws_ec2.yml` and the single playbook
+`ansible/playbooks/deploy-aws-poc.yml`. There is no `group_vars/` directory and no second
+playbook — connection facts live in the inventory's `compose:` block; deployment inputs come
+from the playbook and the controller environment.
 
 The permanent Proxmox target is **parked**: its job in [`deploy.yml`](../../.github/workflows/deploy.yml) is gated off and no playbook currently drives it. `ansible/inventory/proxmox.yml` is still committed as the inventory that target will use again.
 
@@ -12,17 +16,32 @@ The permanent Proxmox target is **parked**: its job in [`deploy.yml`](../../.git
 
 - **A controller with the pinned toolchain.** Install the development dependencies from `requirements-dev.txt`: `ansible-core >=2.16,<2.17`, `ansible-lint 24.x`, `yamllint`. The runtime collections (`ansible.posix <2`, `community.general <8`, `amazon.aws`, `ansible.windows`) come from `ansible/requirements.yml`. The version ceiling is deliberate — see [`explanation/toolchain-rhel8.md`](../explanation/toolchain-rhel8.md).
 - **A composed run tree.** The product roles under `ansible/applications/` resolve fully only when overlaid onto the pinned `ansible-framework` loader. CI composes this automatically; for local runs, build the `_dev-build/` tree with the dev compose helper and run every Ansible command from inside it. See [`explanation/composition-model.md`](../explanation/composition-model.md).
-- **`boto3`/`botocore` on the controller.** The dynamic inventory plugin and the playbook's controller-delegated calls (the ADR-0004 account-id derive, the Windows MSI fetch, `linux_disk_manager`'s EBS Function-tag resolver) all run `amazon.aws` modules under the controller's own interpreter.
+- **`boto3`/`botocore` on the controller.** The dynamic inventory plugin and the
+  controller-delegated Windows MSI fetch and `linux_disk_manager` EBS Function-tag resolver run
+  `amazon.aws` modules under the controller's own interpreter.
 - **The SSM Session Manager plugin on the controller.** The PoC security group has zero inbound rules, so every SSH/SFTP/SCP call is tunnelled through `aws ssm start-session`; that ProxyCommand shells out to a separate binary the AWS CLI does not bundle.
-- **Artifacts staged in S3.** Upload the `wazuh-offline.tar.gz` bundle and record its SHA-256 in `s3.bundle_sha256`; upload the node cert PEMs under `s3.certs_prefix`; upload the agent RPM/MSI and record their SHA pins. Object names and pins are catalogued in [`reference/s3-artifacts.md`](../reference/s3-artifacts.md). The bucket itself is never committed — the playbook derives `<account-id>-ansible` at run time (ADR-0004).
-- **AWS credentials in the runner environment** (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` or `AWS_DEFAULT_REGION`, optional `AWS_SESSION_TOKEN`). Each play that invokes an `amazon.aws` module reads them with `lookup('ansible.builtin.env', ...)` in its own `vars:` and passes them as `no_log` module arguments. Never export them into the target shell — see [`how-to/provide-aws-credentials-safely.md`](provide-aws-credentials-safely.md).
-- **No operator secret.** This target needs none: the playbook's Step 0 mints the OpenSearch/dashboard `admin` password for the run, and every other credential is generated fresh and never persisted.
+- **Artifacts staged in S3.** Upload the `wazuh-offline.tar.gz` bundle and record its SHA-256 in
+  `s3.bundle_sha256`; upload the node cert PEMs under `s3.certs_prefix`; upload the agent RPM/MSI
+  and record their SHA pins. Object names and pins are catalogued in
+  [`reference/s3-artifacts.md`](../reference/s3-artifacts.md). The bucket itself is never
+  committed; workflows export `ANSIBLE_S3_BUCKET` from their existing account-id-derived value,
+  and local operators export the bucket name explicitly (ADR-0004).
+- **AWS credentials in the runner environment** (`AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` or `AWS_DEFAULT_REGION`, optional `AWS_SESSION_TOKEN`).
+  The run-input play reads them once and the roles pass them as `no_log` module arguments. Never
+  export them into the target shell — see
+  [`how-to/provide-aws-credentials-safely.md`](provide-aws-credentials-safely.md).
+- **No operator secret.** This target needs none: Stage 1 mints the OpenSearch/dashboard `admin`
+  password for the run, and every other credential is generated fresh and never persisted.
 
 ## Procedure: deploy
 
 Everything below runs from inside the composed tree.
 
 ```bash
+# Required non-secret artifact-bucket input for local operation.
+export ANSIBLE_S3_BUCKET='your-org-artifact-bucket-name'
+
 # Static gates.
 PYTHONUTF8=1 yamllint .
 ansible-lint
@@ -35,13 +54,54 @@ ansible-inventory -i inventory/aws/aws_ec2.yml --graph
 ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 ```
 
-That one playbook runs, in order: mint the run's ephemeral admin password; provision and mount the `/mnt/data` data disk (`linux_disk_manager`, selecting the EBS volume by its `Function` tag and mounting by filesystem UUID); build `/opt/ansible/venv` on every Linux target; deploy the AIO `wazuh_server` role onto `wazuh_servers`; enroll `wazuh_agent` on `wazuh_agents` (Linux); flip the Windows OpenSSH `DefaultShell` from `cmd` to PowerShell; enroll `wazuh_agent` on `wazuh_agents_windows` via its native Windows entry point; then fire one real FIM event per agent platform, append them to the cumulative ledger on `/mnt/data`, and assert every ledger entry reached the `wazuh-alerts-*` index attributed to the endpoint agent (`agent.id != 000`).
+That one playbook runs, in order: propagate the `dev` tier and AWS credential bridge; bootstrap
+every target through `os_bootstrap`; provision and mount `/mnt/data`; mint the run's ephemeral
+admin password and deploy `wazuh_server`; deploy both agent platforms together through the normal
+`wazuh_agent` entry; invoke the Linux and Windows FIM trigger entries; append their markers to the
+cumulative ledger on `/mnt/data`; and prove every ledger entry reached `wazuh-alerts-*` as an
+endpoint-agent event (`agent.id != 000`).
 
-The Linux and Windows endpoint groups may individually be empty, but at least one endpoint agent is required. An AIO-only inventory is unsupported: without a trigger host the loop-driven ledger file is never created, and the proof play deliberately fails when it slurps that missing file.
+This AWS target requires exactly one AIO, one Linux agent, and one Windows agent. Step 0 rejects an
+empty, partial, or duplicate run-scoped inventory before any target work begins.
 
 ### Environment selection
 
-`ENV: 'int'` is declared literally in each play that runs a role loader — this playbook targets exactly one environment, so there is nothing to parameterize. The `WAZUH_ENV` environment variable is a different knob: the inventory plugin reads it for its `tag:Environment` filter (default `poc`), i.e. it selects which hosts are discovered, not which `vars/redhat_<env>.yml` overlay a role loads.
+`ENV: 'dev'` is propagated literally to every target — this playbook targets exactly one
+environment, so there is nothing to parameterize.
+
+### Run-scoped inventory
+
+In GitHub Actions, `GITHUB_RUN_ID` is a default environment variable available to every step. The
+Terraform framework stamps it as `nwarila:provenance:run-id`, and the inventory requires that
+exact tag value. Step 0 fails before target work unless the selector is non-empty and resolves the
+complete three-system topology.
+
+For a local run, resolve the active deployment through the commit tag and export its run id:
+
+```bash
+commit_sha="$(git rev-parse HEAD)"
+mapfile -t matching_run_ids < <(
+  aws ec2 describe-instances \
+    --filters \
+      "Name=tag:nwarila:management:repository,Values=nwarila-platform/secure-wazuh" \
+      "Name=tag:nwarila:provenance:commit-sha,Values=${commit_sha}" \
+      "Name=instance-state-name,Values=running" \
+    --query "Reservations[].Instances[].Tags[?Key=='nwarila:provenance:run-id'].Value[]" \
+    --output text |
+    tr '\t' '\n' |
+    sed '/^$/d' |
+    sort -u
+)
+if [[ "${#matching_run_ids[@]}" -ne 1 ]]; then
+  echo "Expected one active deployment for ${commit_sha}; found ${#matching_run_ids[@]}" >&2
+  exit 1
+fi
+export GITHUB_RUN_ID="${matching_run_ids[0]}"
+ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
+```
+
+The uniqueness check is deliberate: if the same commit has multiple active deployments, choose
+the intended workflow run explicitly instead of letting one deployment satisfy another's run.
 
 ### Two-phase usage (the cumulative 4/4 proof)
 

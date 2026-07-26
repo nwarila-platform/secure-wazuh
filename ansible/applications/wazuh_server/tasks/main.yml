@@ -1,5 +1,5 @@
 # =========================================================================================== #
-# File: '{{ role_path }}/tasks/main.yml'                                      | Version 3.1.0 #
+# File: '{{ role_path }}/tasks/main.yml'                                      | Version 3.2.0 #
 # --- [ Description ] ----------------------------------------------------------------------- #
 #                                                                                             #
 #                        NO ROLE CUSTOMIZATIONS SHOULD HAPPEN IN THIS FILE                    #
@@ -10,10 +10,10 @@
 #   3. Builds the role's running configuration by merging layers in precedence order:         #
 #      defaults -> OS overlays (interleaved with env at each level) -> user overrides        #
 #   4. Validates the merged running config via the role's optional tasks/validate.yml         #
-#   5. Creates a secure temp directory for the role to use during execution                   #
+#   5. Creates a secure POSIX temp directory for the role to use during execution             #
 #   6. Resolves the most-specific OS task file via first_found cascade:                      #
 #      e.g., present_redhat_rocky_10.yml -> present_redhat_rocky.yml -> present_redhat.yml   #
-#   7. Cleans up the temp directory regardless of success or failure                          #
+#   7. Cleans up the POSIX temp directory regardless of success or failure                    #
 #                                                                                             #
 #                        NO ROLE CUSTOMIZATIONS SHOULD HAPPEN IN THIS FILE                    #
 #                                                                                             #
@@ -93,14 +93,16 @@
 
         #region ------ [ Initialization: Loading Installed Package Facts ] -------------------------- #
 
-        # Populate ansible_facts.packages with the host's installed package list.
+        # Populate ansible_facts.packages with the POSIX remote host's installed package list.
         # Skipped if already populated (e.g., from gather_facts: true in the playbook or a
-        # prior role). Uses manager: auto so this task is OS-family agnostic — the correct
+        # prior role). Uses manager: auto so this task is POSIX-family agnostic — the correct
         # backend (rpm, apt, etc.) is selected based on what is available on the target.
         # OS-specific task files can assert against ansible_facts.packages without needing
         # their own gather task.
         - name: 'INIT | Loading Installed Package Facts'
-          when: ansible_facts.packages is not defined
+          when:
+            - ansible_facts.packages is not defined
+            - (ansible_facts.os_family | default('') | lower) != 'windows'
 
           ansible.builtin.package_facts:
             manager: auto
@@ -235,7 +237,7 @@
 
         #region ------ [ Initialization: Creating Temp Directory ] --------------------------------- #
 
-        # Create a temporary directory on the remote host for staging files during role
+        # Create a temporary directory on the POSIX remote host for staging files during role
         # execution (e.g., downloaded packages, generated configs). Automatically cleaned
         # up in the 'always' block. Disable by setting '<role_name>.temp_dir: false'.
         # The path is stored in '__temp_dir__.path' for use in OS-specific task files.
@@ -243,7 +245,9 @@
           become: true
           changed_when: false
           register: '__temp_dir__'
-          when: (lookup('vars', role_name, default={})['temp_dir'] | default(true)) | bool
+          when:
+            - (lookup('vars', role_name, default={})['temp_dir'] | default(true)) | bool
+            - (ansible_facts.os_family | default('') | lower) != 'windows'
 
           ansible.builtin.tempfile:
             state: directory
@@ -254,7 +258,9 @@
         - name: 'INIT | Securing Temporary Directory'
           become: true
           changed_when: false
-          when: __temp_dir__.path is defined
+          when:
+            - __temp_dir__.path is defined
+            - (ansible_facts.os_family | default('') | lower) != 'windows'
 
           ansible.builtin.file:
             path: "{{ __temp_dir__.path }}"
@@ -328,16 +334,18 @@
 
   #region ------ [ Cleaning Up ] ------------------------------------------------------------- #
 
-  # Runs regardless of success or failure. Ensures the temp directory is removed even
+  # Runs regardless of success or failure. Ensures the POSIX temp directory is removed even
   # if the role errors out, preventing orphaned files from accumulating on the target.
   always:
 
-    # Remove the temp directory created during initialization. Skipped if temp_dir
+    # Remove the POSIX temp directory created during initialization. Skipped if temp_dir
     # was disabled or if creation failed (i.e., __temp_dir__.path is not set).
     - name: 'Cleanup | Removing Temp File(s)'
       become: true
       changed_when: false
-      when: (( __temp_dir__ is defined ) and ( __temp_dir__.path is defined ))
+      when:
+        - (( __temp_dir__ is defined ) and ( __temp_dir__.path is defined ))
+        - (ansible_facts.os_family | default('') | lower) != 'windows'
 
       ansible.builtin.file:
         path: "{{ __temp_dir__.path }}"

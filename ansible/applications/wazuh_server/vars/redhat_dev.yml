@@ -1,19 +1,18 @@
 ---
 # =========================================================================================== #
-# File: '{{ role_path }}/vars/redhat_int.yml'
+# File: '{{ role_path }}/vars/redhat_dev.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
-# Per-env overlay loaded by the generic role loader when os_family=redhat AND ENV=int.
+# Per-env overlay loaded by the generic role loader when os_family=redhat AND ENV=dev.
 # Merged on top of defaults/main.yml::wazuh_server_defaults via recursive combine. The whole
 # s3 dict lives in the env overlay (not defaults) so the bucket + object keys + SHA-256 pins
 # are chosen per environment. The org convention is an account-scoped `<account-id>-ansible`
 # bucket, not env-suffixed (see docs/reference/s3-artifacts.md).
 #
-# s3.bucket below is RUNTIME-SUBSTITUTED (ADR-0004) — playbooks/deploy-aws-poc.yml derives the
-# caller's AWS account id (amazon.aws.aws_caller_info, controller-side) and injects it as a fallback
-# default via the wazuh_server override dict, so this literal `<account-id>` is never actually
-# used. Do NOT hand-edit it: it is a deliberate fail-fast TRIPWIRE — if it ever reaches a real
-# AWS call, that call fails immediately on an unresolvable bucket name instead of silently
-# reading/writing the wrong account. The real account id is never committed to this repo.
+# s3.bucket below is overridden from the controller's required ANSIBLE_S3_BUCKET environment
+# variable (ADR-0004). GitHub Actions derives that export from its existing org-global account-id
+# input; local operators export the bucket name explicitly. Do NOT hand-edit this literal: it is a
+# deliberate fail-fast TRIPWIRE — if it ever reaches a real AWS call, validation rejects it before
+# any download. The real account id is never committed to this repo.
 # =========================================================================================== #
 
 s3:

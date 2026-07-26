@@ -67,8 +67,8 @@ the trust statement above: IAM identity policies cannot contain a `Principal`.
     tagged volume can't be grown to `io2`;
   - **Identity — repository-id, not a name prefix (v5, migration complete 2026-07):** every
     mutating action is scoped to the immutable **`nwarila:management:repository-id = "1307854438"`**
-    tag (secure-wazuh's GitHub repo id) — the interim `Name=secure-wazuh-poc*` + `Environment=poc`
-    pair this replaces is gone from the policy entirely (so the teardown leg can never be denied —
+    tag (secure-wazuh's GitHub repo id) — the interim name-prefix + legacy environment-tag pair
+    this replaces is gone from the policy entirely (so the teardown leg can never be denied —
     the record's primary cost control is destroy-always). The tag is stamped by the framework's
     *mandatory* deployment identity, never hand-set: `aws-terraform-framework` applies it (alongside
     `managed-by`/`repository`/`stack`/`environment`/`owner`/`commit-sha`/`run-id`) to every taggable
@@ -141,10 +141,10 @@ SSM path works over the internet gateway with **no open ports** and no NAT/endpo
 `secure-wazuh-poc-key` key pair (private key stays local; never committed). Named resources:
 `secure-wazuh-igw`, `secure-wazuh-public-use1a`, `secure-wazuh-public-rt`, `secure-wazuh-poc-sg`.
 `secure-wazuh-poc-sg` (`sg-06a3a06bcc4413c10`) carries a one-time, hand-stamped
-`nwarila:management:repository-id = 1307854438` tag (replacing the retired `Environment=poc` note —
-this SG is permanent/hand-provisioned, outside Terraform, so nothing re-applies the tag per run) so
-the deploy role's `ResourceTag`-gated lifecycle actions keep working when they touch ENIs that
-reference it alongside the framework-created per-system SGs.
+`nwarila:management:repository-id = 1307854438` tag (replacing the retired hand-stamped environment
+tag — this SG is permanent/hand-provisioned, outside Terraform, so nothing re-applies the tag per
+run) so the deploy role's `ResourceTag`-gated lifecycle actions keep working when they touch ENIs
+that reference it alongside the framework-created per-system SGs.
 
 **Security-group composition:** every system's ENI references the standing SG above by ID. The
 Wazuh AIO's interface list additionally references `secure-wazuh-poc-aio`, the key of its own
