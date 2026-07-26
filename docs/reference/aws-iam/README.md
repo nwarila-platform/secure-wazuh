@@ -12,15 +12,52 @@ record** of the live IAM.
 
 | Role | Trust | Attached policies | Purpose |
 |---|---|---|---|
-| `github_nwarila-platform_secure-wazuh` | GitHub OIDC → `main` | `github_nwarila-platform_secure-wazuh` (S3 state + artifact read) · `github_nwarila-platform_secure-wazuh_deploy` | CI deploy (OIDC, no long-lived keys) |
+| `github_nwarila-platform_secure-wazuh` | GitHub OIDC → `main` and same-repository pull requests | `github_nwarila-platform_secure-wazuh` (S3 state + artifact read) · `github_nwarila-platform_secure-wazuh_deploy` | CI deploy and automatic PR proof (OIDC, no long-lived keys) |
 | `github_nwarila-platform_secure-wazuh-admin` | broker `AssumeRole` (≤1h) | `secure-wazuh-folder-admin` (inline, S3 folder admin) · `github_nwarila-platform_secure-wazuh_deploy` | Operator artifact management **and** local deploy via boxed creds |
 | `secure-wazuh-poc-role` | `ec2.amazonaws.com` | `AmazonSSMManagedInstanceCore` (AWS-managed) · `secure-wazuh-poc-role-s3` (inline) | EC2 **instance profile** — SSM agent + S3 artifact read. Name contains `wazuh` to satisfy the deploy policy's `iam:PassRole` guard. |
 
 The `_deploy` policy on the `-admin` role is a **deliberate, reversible deviation** from its
-recorded S3-only duty — it lets the local `deploy → test → destroy` run under the boxed `-admin`
-credentials while the CI OIDC path is unwired. Detach it once CI OIDC is live.
+recorded S3-only duty — it lets an operator run the local `deploy → test → destroy` path with
+boxed `-admin` credentials. Detach it when that local deploy path is retired.
+
+### Deploy-role trust policy
+
+This is the source trust document for `github_nwarila-platform_secure-wazuh`. The two exact `sub`
+values admit this repository's `main` branch and automatic pull-request proof runs, while the
+audience remains `sts.amazonaws.com`; the workflow separately excludes fork pull requests before
+the credentialed job starts. The `<account-id>` token is deliberately not a live value. The
+operator substitutes the org-global `AWS_ACCOUNT_ID` while applying the trust document and does
+not commit the materialized copy.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GitHubActionsForMainAndSameRepositoryPullRequests",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": [
+            "repo:nwarila-platform/secure-wazuh:ref:refs/heads/main",
+            "repo:nwarila-platform/secure-wazuh:pull_request"
+          ]
+        }
+      }
+    }
+  ]
+}
+```
 
 ## Policies (`policies/`)
+
+These files are identity/permissions policies attached to roles. They deliberately do not repeat
+the trust statement above: IAM identity policies cannot contain a `Principal`.
 
 - **`secure-wazuh_deploy.json`** — the budget + security deploy policy (managed; attached to **both**
   roles). Implicit-deny by default; explicit-allow **only** for the exact 3-system spec:
@@ -109,12 +146,18 @@ this SG is permanent/hand-provisioned, outside Terraform, so nothing re-applies 
 the deploy role's `ResourceTag`-gated lifecycle actions keep working when they touch ENIs that
 reference it alongside the framework-created per-system SGs.
 
-**Per-system security groups (framework-managed, NOT standing):** the standing SG above stays
-zero-inbound (SSM only). Each SYSTEM's own inbound/outbound firewall is a **per-deploy, framework-created
-SG** (via `managed_security_groups` in the tfvars), added to that system's ENI alongside the standing
-SG. The Wazuh AIO owns the manager's inbound mesh (`secure-wazuh-poc-aio`: tcp 1514/1515 from the deploy
-subnet); agents only initiate outbound and ride the standing egress SG. Creating a shared, cross-system
-rule is intentionally **not** the framework's role — each system defines its own.
+**Security-group composition:** every system's ENI references the standing SG above by ID. The
+Wazuh AIO's interface list additionally references `secure-wazuh-poc-aio`, the key of its own
+per-deploy group declared in the top-level `managed_security_groups` map. That group owns the
+manager's inbound mesh (tcp 1514/1515 from the deploy subnet); agents only initiate outbound and
+use the standing group's egress.
+
+The framework's inline per-system `managed_security_group` attribute is deliberately not used
+here. It derives the AWS group name as `<hostname>-sg`, which would make the AIO group
+`secure-wazuh-poc-sg` and collide case-insensitively with the permanent standing group of that
+name in the same VPC. AWS cannot create the duplicate group. Adopting the inline attribute would
+require either an explicit name override in the framework or re-stamping the standing group under
+a non-colliding name.
 
 ## Cost & count backstops
 

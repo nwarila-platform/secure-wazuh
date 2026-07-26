@@ -53,9 +53,8 @@
     # admin_password non-empty/length/complexity is now validated at loader INIT — see
     # tasks/validate.yml — before this file even starts, so it is not re-asserted here.
 
-    # Record the intended dashboard service state for the play-end restart handler. The dedicated
-    # gate is preserved pending its separate behavioral follow-up; handlers can read the loader's
-    # running-config fact live at flush time.
+    # Freeze the intended dashboard service state for the play-end restart handler. A dedicated
+    # fact keeps handler behavior independent of later variable lookups at flush time.
     - name: 'BEGIN | Record Dashboard Intended State'
       ansible.builtin.set_fact:
         __wazuh_dashboard_start__: "{{ (config.dashboard.service_state | default('started')) == 'started' }}"
@@ -97,8 +96,8 @@
     # freshly-reverted VM; skipping it drops install time and avoids SSH-multiplex timeouts.
     - name: 'PROCESS | Install Side Dependencies'
       ansible.builtin.dnf:
-        name:        "{{ config.side_deps }}"
-        state:       'present'
+        name: "{{ config.side_deps }}"
+        state: 'present'
         disablerepo: 'epel'
 
     - name: 'PROCESS | Create Pre-Install Directories'
@@ -106,9 +105,9 @@
       loop_control:
         label: '{{ item.path }}'
       ansible.builtin.file:
-        path:  "{{ item.path }}"
+        path: "{{ item.path }}"
         state: 'directory'
-        mode:  "{{ item.mode }}"
+        mode: "{{ item.mode }}"
 
     # Every bind SOURCE ({{ data_root }}/{{ subpath }}) and its canonical MOUNTPOINT must exist
     # before the bind mount — the mount fails if either is missing. directories.pre only covers
@@ -124,22 +123,22 @@
       loop_control:
         label: '{{ item }}'
       ansible.builtin.file:
-        path:  "{{ item }}"
+        path: "{{ item }}"
         state: 'directory'
         owner: 'root'
         group: 'root'
-        mode:  '0750'
+        mode: '0750'
 
     - name: 'PROCESS | Set Up Bind Mounts'
       loop: "{{ config.data_binds }}"
       loop_control:
         label: '{{ item.canonical }}'
       ansible.posix.mount:
-        src:    "{{ config.data_root }}/{{ item.subpath }}"
-        path:   "{{ item.canonical }}"
+        src: "{{ config.data_root }}/{{ item.subpath }}"
+        path: "{{ item.canonical }}"
         fstype: 'none'
-        opts:   'bind'
-        state:  'mounted'
+        opts: 'bind'
+        state: 'mounted'
 
     # Fatal persistence invariant: /var/ossec must be its own live mount, and the canonical
     # directory must resolve to the exact persistent manager-tree inode. Device+inode equality
@@ -193,18 +192,18 @@
     - name: 'PROCESS | Apply Sysctl Requirements'
       loop: "{{ config.sysctl | dict2items }}"
       ansible.posix.sysctl:
-        name:        "{{ item.key }}"
-        value:       "{{ item.value }}"
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
         sysctl_file: '/etc/sysctl.d/99-wazuh.conf'
-        state:       'present'
-        reload:      true
+        state: 'present'
+        reload: true
 
     - name: 'PROCESS | Open Stack Ports In firewalld'
       loop: "{{ config.firewall.ports }}"
       ansible.posix.firewalld:
-        zone:      "{{ config.firewall.zone }}"
-        port:      "{{ item }}"
-        state:     'enabled'
+        zone: "{{ config.firewall.zone }}"
+        port: "{{ item }}"
+        state: 'enabled'
         permanent: true
         immediate: true
 
@@ -228,12 +227,12 @@
         ansible_python_interpreter: '/opt/ansible/venv/bin/python'
       module_defaults:
         amazon.aws.s3_object:
-          bucket:    "{{ config.s3.bucket }}"
-          region:    "{{ AWS_DEFAULT_REGION | default(config.s3.region | default(omit), true) }}"
+          bucket: "{{ config.s3.bucket }}"
+          region: "{{ AWS_DEFAULT_REGION | default(config.s3.region | default(omit), true) }}"
           access_key: "{{ AWS_ACCESS_KEY_ID | default(omit, true) }}"
           secret_key: "{{ AWS_SECRET_ACCESS_KEY | default(omit, true) }}"
           session_token: "{{ AWS_SESSION_TOKEN | default(omit, true) }}"
-          mode:      'get'
+          mode: 'get'
           overwrite: 'different'
           # The deploy identity is intentionally least-privilege: s3:GetObject on the pinned
           # object keys only (plus prefix-scoped ListBucket). s3_object's default bucket
@@ -248,14 +247,14 @@
           changed_when: false
           amazon.aws.s3_object:
             object: "{{ config.s3.bundle_key }}"
-            dest:   "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
+            dest: "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
 
         - name: 'S3 | Download Cert PEMs'
           changed_when: false
           loop: "{{ __cert_files__ }}"
           amazon.aws.s3_object:
             object: "{{ config.s3.certs_prefix }}/{{ item }}"
-            dest:   "{{ __temp_dir__.path }}/{{ item }}"
+            dest: "{{ __temp_dir__.path }}/{{ item }}"
 
       # The block above is no_log (module args carry AWS creds), so a failed download is
       # censored and undiagnosable. Re-fail here with the secret-free facts an operator
@@ -284,7 +283,7 @@
     # hash. Mismatch = S3 bundle was tampered with → abort install.
     - name: 'S3 | Verify Downloaded Bundle Matches Trusted SHA256'
       ansible.builtin.stat:
-        path:               "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
+        path: "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
         checksum_algorithm: 'sha256'
       register: '__bundle_verify__'
       failed_when: (__bundle_verify__.stat.checksum | lower) != (config.s3.bundle_sha256 | lower)
@@ -294,8 +293,8 @@
     - name: 'S3 | Extract Offline Tarball Into Temp Dir'
       changed_when: false
       ansible.builtin.unarchive:
-        src:        "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
-        dest:       "{{ __temp_dir__.path }}"
+        src: "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
+        dest: "{{ __temp_dir__.path }}"
         remote_src: true
 
     #endregion --- [ 03 S3 STAGING ] -------------------------------------------------------- #
@@ -309,9 +308,9 @@
       vars:
         __wazuh_packages_dir__: "{{ __temp_dir__.path }}/wazuh-offline/wazuh-packages"
         __wazuh_package_patterns__:
-          - { name: 'wazuh-indexer',   pattern: 'wazuh-indexer-*.x86_64.rpm' }
-          - { name: 'wazuh-manager',   pattern: 'wazuh-manager-*.x86_64.rpm' }
-          - { name: 'filebeat',        pattern: 'filebeat-*.x86_64.rpm' }
+          - { name: 'wazuh-indexer', pattern: 'wazuh-indexer-*.x86_64.rpm' }
+          - { name: 'wazuh-manager', pattern: 'wazuh-manager-*.x86_64.rpm' }
+          - { name: 'filebeat', pattern: 'filebeat-*.x86_64.rpm' }
           - { name: 'wazuh-dashboard', pattern: 'wazuh-dashboard-*.x86_64.rpm' }
       block:
 
@@ -322,8 +321,8 @@
             loop_var: '__pkg__'
             label: "{{ __pkg__.name }}"
           ansible.builtin.find:
-            paths:     "{{ __wazuh_packages_dir__ }}"
-            patterns:  "{{ __pkg__.pattern }}"
+            paths: "{{ __wazuh_packages_dir__ }}"
+            patterns: "{{ __pkg__.pattern }}"
             file_type: 'file'
 
         - name: 'PROCESS | Assert Each Required RPM Found Exactly Once'
@@ -341,7 +340,7 @@
 
         - name: 'PROCESS | Import Wazuh GPG Signing Key Into rpmdb'
           ansible.builtin.rpm_key:
-            key:   "{{ __temp_dir__.path }}/wazuh-offline/wazuh-files/GPG-KEY-WAZUH"
+            key: "{{ __temp_dir__.path }}/wazuh-offline/wazuh-files/GPG-KEY-WAZUH"
             state: 'present'
 
         # Wazuh's rpm_key import perturbs the RHEL release pubkey entry in rpmdb (the canonical
@@ -368,7 +367,7 @@
 
             - name: 'PROCESS | Re-Import RHEL Release Pubkey From Canonical File'
               ansible.builtin.rpm_key:
-                key:   '/etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release'
+                key: '/etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release'
                 state: 'present'
 
         - name: 'PROCESS | Capture Persistent client.keys Before RPM Install'
@@ -380,8 +379,8 @@
         - name: 'PROCESS | Apply Local RPMs With dnf'
           register: '__rpm_install__'
           ansible.builtin.dnf:
-            name:            "{{ __rpm_find__.results | map(attribute='files') | flatten | map(attribute='path') | list }}"
-            state:           'present'
+            name: "{{ __rpm_find__.results | map(attribute='files') | flatten | map(attribute='path') | list }}"
+            state: 'present'
             allow_downgrade: true   # bundle pin wins over any newer drifted version
 
         - name: 'PROCESS | Capture Persistent client.keys After RPM Install'
@@ -416,8 +415,8 @@
         - name: 'PROCESS | Lock Wazuh Service Accounts (Non-Interactive Per Nessus Allowlist)'
           loop: "{{ config.stig.local_users }}"
           ansible.builtin.user:
-            name:          "{{ item }}"
-            shell:         '/sbin/nologin'
+            name: "{{ item }}"
+            shell: '/sbin/nologin'
             password_lock: true
 
     - name: 'PROCESS | Create Post-Install Directories'
@@ -425,11 +424,11 @@
       loop_control:
         label: '{{ item.path }}'
       ansible.builtin.file:
-        path:  "{{ item.path }}"
+        path: "{{ item.path }}"
         state: 'directory'
         owner: "{{ item.owner }}"
         group: "{{ item.group }}"
-        mode:  "{{ item.mode }}"
+        mode: "{{ item.mode }}"
 
     # The RPM scriptlets chown FILES under the canonical paths but leave the bind-mount
     # DIRECTORY itself root:root (we pre-created it before install). Re-own each bind canonical
@@ -448,10 +447,10 @@
              else 'wazuh-dashboard' if item.canonical in ['/var/lib/wazuh-dashboard', '/var/log/wazuh-dashboard']
              else 'root' }}
       ansible.builtin.file:
-        path:    "{{ item.canonical }}"
-        state:   'directory'
-        owner:   "{{ __bind_owner__ }}"
-        group:   "{{ __bind_owner__ }}"
+        path: "{{ item.canonical }}"
+        state: 'directory'
+        owner: "{{ __bind_owner__ }}"
+        group: "{{ __bind_owner__ }}"
         recurse: "{{ item.canonical == '/var/ossec' and (__rpm_install__ is changed) }}"
 
     # --- Indexer fapolicyd JDK + JNA trust ------------------------------------------------- #
@@ -476,15 +475,15 @@
       failed_when: false
       register: '__fapd_jdk_probe__'
       ansible.builtin.lineinfile:
-        path:          '/etc/fapolicyd/fapolicyd.trust'
+        path: '/etc/fapolicyd/fapolicyd.trust'
         search_string: "{{ config.fapolicyd.jdk_path }}"
-        state:         'absent'
+        state: 'absent'
 
     - name: 'PROCESS | Trust JDK Tree In fapolicyd (Pre-Extract)'
       when: (__fapd_jdk_probe__.found | default(0) | int) == 0
       register: '__fapd_jdk__'
       changed_when: __fapd_jdk__.rc == 0
-      failed_when:  __fapd_jdk__.rc not in [0, 1]
+      failed_when: __fapd_jdk__.rc not in [0, 1]
       ansible.builtin.command:
         argv: ['fapolicyd-cli', '--file', 'add', "{{ config.fapolicyd.jdk_path }}"]
 
@@ -497,8 +496,8 @@
     - name: 'PROCESS | Discover Bundled JNA Jar'
       register: '__jna_jar__'
       ansible.builtin.find:
-        paths:     '/usr/share/wazuh-indexer/lib'
-        patterns:  'jna-*.jar'
+        paths: '/usr/share/wazuh-indexer/lib'
+        patterns: 'jna-*.jar'
         file_type: 'file'
 
     - name: 'PROCESS | Assert Exactly One JNA Jar Found'
@@ -527,15 +526,15 @@
 
     - name: 'PROCESS | Normalize Extracted JNA Native Library Permissions'
       ansible.builtin.file:
-        path:    "{{ config.fapolicyd.jna_path }}/com"
-        owner:   'root'
-        group:   'wazuh-indexer'
-        mode:    'u=rwX,g=rX,o='
+        path: "{{ config.fapolicyd.jna_path }}/com"
+        owner: 'root'
+        group: 'wazuh-indexer'
+        mode: 'u=rwX,g=rX,o='
         recurse: true
         selevel: 's0'
-        serole:  'object_r'
-        setype:  'lib_t'
-        seuser:  'system_u'
+        serole: 'object_r'
+        setype: 'lib_t'
+        seuser: 'system_u'
 
     - name: 'PROCESS | Probe JNA fapolicyd Trust'
       check_mode: true
@@ -543,15 +542,15 @@
       failed_when: false
       register: '__fapd_jna_probe__'
       ansible.builtin.lineinfile:
-        path:          '/etc/fapolicyd/fapolicyd.trust'
+        path: '/etc/fapolicyd/fapolicyd.trust'
         search_string: "{{ config.fapolicyd.jna_path }}"
-        state:         'absent'
+        state: 'absent'
 
     - name: 'PROCESS | Trust JNA Dir In fapolicyd (Post-Extract)'
       when: (__fapd_jna_probe__.found | default(0) | int) == 0
       register: '__fapd_jna__'
       changed_when: __fapd_jna__.rc == 0
-      failed_when:  __fapd_jna__.rc not in [0, 1]
+      failed_when: __fapd_jna__.rc not in [0, 1]
       ansible.builtin.command:
         argv: ['fapolicyd-cli', '--file', 'add', "{{ config.fapolicyd.jna_path }}"]
 
@@ -563,10 +562,10 @@
 
     - name: 'PROCESS | Drop jvm.options.d Override For STIG noexec + fapolicyd'
       ansible.builtin.copy:
-        dest:  '/etc/wazuh-indexer/jvm.options.d/99-stig.options'
+        dest: '/etc/wazuh-indexer/jvm.options.d/99-stig.options'
         owner: 'root'
         group: 'wazuh-indexer'
-        mode:  '0640'
+        mode: '0640'
         content: |
           # STIG-noexec + fapolicyd accommodations
           -Djava.io.tmpdir=/var/lib/wazuh-indexer/tmp
@@ -584,18 +583,18 @@
     - name: 'PROCESS | Place TLS Material'
       register: '__tls_material__'
       loop:
-        - { src: 'root-ca.pem',                dest: 'root-ca.pem',     mode: '0440' }
-        - { src: 'admin.pem',                  dest: 'admin.pem',       mode: '0440' }
-        - { src: 'admin-key.pem',              dest: 'admin-key.pem',   mode: '0400' }
-        - { src: '{{ __aio_node__ }}.pem',     dest: 'indexer.pem',     mode: '0440' }
+        - { src: 'root-ca.pem', dest: 'root-ca.pem', mode: '0440' }
+        - { src: 'admin.pem', dest: 'admin.pem', mode: '0440' }
+        - { src: 'admin-key.pem', dest: 'admin-key.pem', mode: '0400' }
+        - { src: '{{ __aio_node__ }}.pem', dest: 'indexer.pem', mode: '0440' }
         - { src: '{{ __aio_node__ }}-key.pem', dest: 'indexer-key.pem', mode: '0400' }
       ansible.builtin.copy:
-        src:        "{{ __temp_dir__.path }}/{{ item.src }}"
-        dest:       "{{ config.certs_dir }}/{{ item.dest }}"
+        src: "{{ __temp_dir__.path }}/{{ item.src }}"
+        dest: "{{ config.certs_dir }}/{{ item.dest }}"
         remote_src: true
-        owner:      'wazuh-indexer'
-        group:      'wazuh-indexer'
-        mode:       "{{ item.mode }}"
+        owner: 'wazuh-indexer'
+        group: 'wazuh-indexer'
+        mode: "{{ item.mode }}"
 
     - name: 'PROCESS | Read Admin Certificate DN'
       register: '__admin_dn_cmd__'
@@ -631,14 +630,14 @@
     - name: 'PROCESS | Render opensearch.yml From Template (DNs From Actual Certs)'
       register: '__opensearch_config__'
       vars:
-        __admin_dn__:   "{{ __admin_dn_cmd__.stdout | split('subject=') | last }}"
+        __admin_dn__: "{{ __admin_dn_cmd__.stdout | split('subject=') | last }}"
         __indexer_dn__: "{{ __indexer_dn_cmd__.stdout | split('subject=') | last }}"
       ansible.builtin.template:
-        src:   'opensearch.yml.j2'
-        dest:  '/etc/wazuh-indexer/opensearch.yml'
+        src: 'opensearch.yml.j2'
+        dest: '/etc/wazuh-indexer/opensearch.yml'
         owner: 'wazuh-indexer'
         group: 'wazuh-indexer'
-        mode:  '0640'
+        mode: '0640'
 
     # Restart on a cert change too, not only an opensearch.yml change: a same-DN cert renewal
     # rewrites indexer.pem/-key.pem (and root-ca.pem) without moving the templated DN allowlist,
@@ -647,21 +646,21 @@
     - name: 'PROCESS | Restart Indexer If opensearch.yml Or TLS Material Changed'
       when: __opensearch_config__ is changed or __tls_material__ is changed
       ansible.builtin.systemd:
-        name:  'wazuh-indexer'
+        name: 'wazuh-indexer'
         state: 'restarted'
 
     - name: 'PROCESS | Enable And Start wazuh-indexer'
       ansible.builtin.systemd:
-        name:          'wazuh-indexer'
-        enabled:       true
-        state:         'started'
+        name: 'wazuh-indexer'
+        enabled: true
+        state: 'started'
         daemon_reload: true
 
     - name: 'PROCESS | Wait For Indexer To Listen On 9200'
       ansible.builtin.wait_for:
-        host:    "{{ __indexer_host__ }}"
-        port:    9200
-        delay:   5
+        host: "{{ __indexer_host__ }}"
+        port: 9200
+        delay: 5
         timeout: 240
 
     # The role is intentionally narrow: write-only access to Wazuh's alert and archive indices,
@@ -671,12 +670,12 @@
     # `indices:admin/template/put`; ingest-pipeline admin is still required.
     - name: 'PROCESS | Ensure Filebeat Wazuh Index Writer Role Exists'
       ansible.builtin.blockinfile:
-        path:   '/etc/wazuh-indexer/opensearch-security/roles.yml'
+        path: '/etc/wazuh-indexer/opensearch-security/roles.yml'
         marker: '# {mark} ANSIBLE MANAGED WAZUH FILEBEAT WRITER ROLE'
         insertafter: EOF
-        owner:  'wazuh-indexer'
-        group:  'wazuh-indexer'
-        mode:   '0640'
+        owner: 'wazuh-indexer'
+        group: 'wazuh-indexer'
+        mode: '0640'
         block: |
           wazuh_filebeat_writer:
             reserved: false
@@ -700,12 +699,12 @@
 
     - name: 'PROCESS | Ensure Filebeat Wazuh Index Writer Mapping Exists'
       ansible.builtin.blockinfile:
-        path:   '/etc/wazuh-indexer/opensearch-security/roles_mapping.yml'
+        path: '/etc/wazuh-indexer/opensearch-security/roles_mapping.yml'
         marker: '# {mark} ANSIBLE MANAGED WAZUH FILEBEAT WRITER MAPPING'
         insertafter: EOF
-        owner:  'wazuh-indexer'
-        group:  'wazuh-indexer'
-        mode:   '0640'
+        owner: 'wazuh-indexer'
+        group: 'wazuh-indexer'
+        mode: '0640'
         block: |
           wazuh_filebeat_writer:
             reserved: false
@@ -722,16 +721,16 @@
     - name: 'PROCESS | Render internal_users.yml From Rotating Passwords'
       no_log: true
       ansible.builtin.template:
-        src:   'internal_users.yml.j2'
-        dest:  '/etc/wazuh-indexer/opensearch-security/internal_users.yml'
+        src: 'internal_users.yml.j2'
+        dest: '/etc/wazuh-indexer/opensearch-security/internal_users.yml'
         owner: 'wazuh-indexer'
         group: 'wazuh-indexer'
-        mode:  '0640'
+        mode: '0640'
 
     - name: 'PROCESS | Push Security Config Via securityadmin'
       environment:
         OPENSEARCH_JAVA_HOME: '/usr/share/wazuh-indexer/jdk'
-        JAVA_HOME:            '/usr/share/wazuh-indexer/jdk'
+        JAVA_HOME: '/usr/share/wazuh-indexer/jdk'
       changed_when: true
       ansible.builtin.command:
         argv:
@@ -755,11 +754,11 @@
       delay: 10
       until: __health__.status == 200
       ansible.builtin.uri:
-        url:            "https://{{ __indexer_host__ }}:9200/_cluster/health"
-        method:         'GET'
-        client_cert:    "{{ config.certs_dir }}/admin.pem"
-        client_key:     "{{ config.certs_dir }}/admin-key.pem"
-        ca_path:        "{{ config.certs_dir }}/root-ca.pem"
+        url: "https://{{ __indexer_host__ }}:9200/_cluster/health"
+        method: 'GET'
+        client_cert: "{{ config.certs_dir }}/admin.pem"
+        client_key: "{{ config.certs_dir }}/admin-key.pem"
+        ca_path: "{{ config.certs_dir }}/root-ca.pem"
         validate_certs: true
         return_content: true
 
@@ -783,15 +782,15 @@
     - name: 'END | Pre-Load Wazuh Index Template Via Admin Cert'
       changed_when: false
       ansible.builtin.uri:
-        url:            "https://{{ __indexer_host__ }}:9200/_template/wazuh"
-        method:         'PUT'
-        client_cert:    "{{ config.certs_dir }}/admin.pem"
-        client_key:     "{{ config.certs_dir }}/admin-key.pem"
-        ca_path:        "{{ config.certs_dir }}/root-ca.pem"
+        url: "https://{{ __indexer_host__ }}:9200/_template/wazuh"
+        method: 'PUT'
+        client_cert: "{{ config.certs_dir }}/admin.pem"
+        client_key: "{{ config.certs_dir }}/admin-key.pem"
+        ca_path: "{{ config.certs_dir }}/root-ca.pem"
         validate_certs: true
-        body_format:    'json'
-        body:           "{{ __wazuh_template__.content | b64decode | from_json }}"
-        status_code:    [200, 201]
+        body_format: 'json'
+        body: "{{ __wazuh_template__.content | b64decode | from_json }}"
+        status_code: [200, 201]
 
     #endregion --- [ 05 INDEXER CONFIG + SECURITY INIT + CLUSTER-GREEN GATE ] --------------- #
 
@@ -805,8 +804,8 @@
     - name: 'PROCESS | Substitute Indexer Host In ossec.conf'
       notify: 'wazuh-manager-config-changed'
       ansible.builtin.replace:
-        path:    "{{ config.manager.config_path }}"
-        regexp:  '(?<=<host>)https://[^<]+(?=</host>)'
+        path: "{{ config.manager.config_path }}"
+        regexp: '(?<=<host>)https://[^<]+(?=</host>)'
         replace: "https://{{ __indexer_host__ }}:9200"
 
     # FIM fix folded in here (BEFORE the first manager start) so the same
@@ -817,8 +816,8 @@
     - name: 'FIM | Own Manager syscheck Stanza (realtime, whodata=no)'
       notify: 'wazuh-manager-config-changed'
       ansible.builtin.replace:
-        path:    "{{ config.manager.config_path }}"
-        regexp:  '(?s)<syscheck>.*?</syscheck>'
+        path: "{{ config.manager.config_path }}"
+        regexp: '(?s)<syscheck>.*?</syscheck>'
         replace: "{{ lookup('template', 'syscheck.xml.j2') | trim }}"
 
     # Negative migration: keep this task until every persistent manager configuration has
@@ -843,24 +842,24 @@
     # respawned reading the new files before anything below dials it.
     - name: 'PROCESS | Ensure Manager API ssl Directory Exists'
       ansible.builtin.file:
-        path:  '/var/ossec/api/configuration/ssl'
+        path: '/var/ossec/api/configuration/ssl'
         state: 'directory'
         owner: 'wazuh'
         group: 'wazuh'
-        mode:  '0500'
+        mode: '0500'
 
     - name: 'PROCESS | Place Manager API TLS Material (Role PKI, Not Vendor Self-Signed)'
       notify: 'wazuh-manager-config-changed'
       loop:
-        - { src: '{{ __aio_node__ }}.pem',     dest: 'server.crt', mode: '0440' }
+        - { src: '{{ __aio_node__ }}.pem', dest: 'server.crt', mode: '0440' }
         - { src: '{{ __aio_node__ }}-key.pem', dest: 'server.key', mode: '0400' }
       ansible.builtin.copy:
-        src:        "{{ __temp_dir__.path }}/{{ item.src }}"
-        dest:       "/var/ossec/api/configuration/ssl/{{ item.dest }}"
+        src: "{{ __temp_dir__.path }}/{{ item.src }}"
+        dest: "/var/ossec/api/configuration/ssl/{{ item.dest }}"
         remote_src: true
-        owner:      'wazuh'
-        group:      'wazuh'
-        mode:       "{{ item.mode }}"
+        owner: 'wazuh'
+        group: 'wazuh'
+        mode: "{{ item.mode }}"
 
     # fapolicyd's rpmdb backend silently skips the filebeat Go binary, and /var/ossec is
     # bind-mounted (its bin/ is unreachable by the rpmdb trust). Without explicit trust, exec is
@@ -878,9 +877,9 @@
       loop_control:
         loop_var: '__path__'
       ansible.builtin.lineinfile:
-        path:          '/etc/fapolicyd/fapolicyd.trust'
+        path: '/etc/fapolicyd/fapolicyd.trust'
         search_string: "{{ __path__ }}"
-        state:         'absent'
+        state: 'absent'
 
     - name: 'PROCESS | Trust filebeat + ossec Binary Paths In fapolicyd'
       register: '__fapd_mgr__'
@@ -889,7 +888,7 @@
         label: "{{ item.__path__ }}"
       when: (item.found | default(0) | int) == 0
       changed_when: __fapd_mgr__.rc == 0
-      failed_when:  __fapd_mgr__.rc not in [0, 1]
+      failed_when: __fapd_mgr__.rc not in [0, 1]
       ansible.builtin.command:
         argv: ['fapolicyd-cli', '--file', 'add', "{{ item.__path__ }}"]
 
@@ -940,11 +939,11 @@
 
     - name: 'PROCESS | Ensure /etc/filebeat/certs Exists'
       ansible.builtin.file:
-        path:  "{{ config.filebeat.certs_dir }}"
+        path: "{{ config.filebeat.certs_dir }}"
         state: 'directory'
         owner: 'root'
         group: 'root'
-        mode:  '0500'
+        mode: '0500'
 
     # Bundled filebeat.yml references /etc/filebeat/certs/{filebeat,filebeat-key,root-ca}.pem.
     # Our certs are named after the node; rename on copy. Restart filebeat when its TLS
@@ -953,22 +952,22 @@
     - name: 'PROCESS | Place Filebeat TLS Material'
       notify: 'filebeat-config-changed'
       loop:
-        - { src: 'root-ca.pem',                dest: 'root-ca.pem',      mode: '0440' }
-        - { src: '{{ __aio_node__ }}.pem',     dest: 'filebeat.pem',     mode: '0440' }
+        - { src: 'root-ca.pem', dest: 'root-ca.pem', mode: '0440' }
+        - { src: '{{ __aio_node__ }}.pem', dest: 'filebeat.pem', mode: '0440' }
         - { src: '{{ __aio_node__ }}-key.pem', dest: 'filebeat-key.pem', mode: '0400' }
       ansible.builtin.copy:
-        src:        "{{ __temp_dir__.path }}/{{ item.src }}"
-        dest:       "{{ config.filebeat.certs_dir }}/{{ item.dest }}"
+        src: "{{ __temp_dir__.path }}/{{ item.src }}"
+        dest: "{{ config.filebeat.certs_dir }}/{{ item.dest }}"
         remote_src: true
-        owner:      'root'
-        group:      'root'
-        mode:       "{{ item.mode }}"
+        owner: 'root'
+        group: 'root'
+        mode: "{{ item.mode }}"
 
     # filebeat resolves ${WAZUH_INDEXER_PASSWORD} from /var/lib/filebeat/filebeat.keystore
     # at startup. The keystore is encrypted at rest using a machine-bound key.
     - name: 'PROCESS | Create Filebeat Keystore (Idempotent)'
       ansible.builtin.command:
-        cmd:     'filebeat keystore create'
+        cmd: 'filebeat keystore create'
         creates: '/var/lib/filebeat/filebeat.keystore'
 
     # Rotation model: no fingerprint skip gate — always (re)push so a rotated password is
@@ -978,7 +977,7 @@
       changed_when: true
       notify: 'filebeat-config-changed'
       ansible.builtin.command:
-        cmd:   'filebeat keystore add WAZUH_INDEXER_PASSWORD --stdin --force'
+        cmd: 'filebeat keystore add WAZUH_INDEXER_PASSWORD --stdin --force'
         stdin: "{{ __wazuh_pw__[config.filebeat.indexer_username] }}"
 
     # Template (not in-place regex) so passwords with backref-like chars are written literally.
@@ -989,38 +988,38 @@
         __filebeat_user__: "{{ config.filebeat.indexer_username }}"
       notify: 'filebeat-config-changed'
       ansible.builtin.template:
-        src:   'filebeat.yml.j2'
-        dest:  "{{ config.filebeat.config_path }}"
+        src: 'filebeat.yml.j2'
+        dest: "{{ config.filebeat.config_path }}"
         owner: 'root'
         group: 'root'
-        mode:  '0600'
+        mode: '0600'
 
     # modules.d/wazuh.yml (below) enables the 'wazuh' filebeat module, whose CODE must be
     # installed first — extract it from the offline bundle. (Fidelity: dropped in the collapse;
     # without it filebeat errors "module wazuh not found" and never ships alerts.)
     - name: 'PROCESS | Extract Wazuh Filebeat Module'
       ansible.builtin.unarchive:
-        src:        "{{ __temp_dir__.path }}/wazuh-offline/wazuh-files/wazuh-filebeat-0.5.tar.gz"
-        dest:       "{{ config.filebeat.module_dir }}"
+        src: "{{ __temp_dir__.path }}/wazuh-offline/wazuh-files/wazuh-filebeat-0.5.tar.gz"
+        dest: "{{ config.filebeat.module_dir }}"
         remote_src: true
-        creates:    "{{ config.filebeat.module_dir }}/wazuh"
+        creates: "{{ config.filebeat.module_dir }}/wazuh"
 
     - name: 'PROCESS | Ensure Filebeat modules.d Exists'
       ansible.builtin.file:
-        path:  "{{ config.filebeat.module_config_dir }}"
+        path: "{{ config.filebeat.module_config_dir }}"
         state: 'directory'
         owner: 'root'
         group: 'root'
-        mode:  '0755'
+        mode: '0755'
 
     - name: 'PROCESS | Render Enabled Wazuh Filebeat Module'
       notify: 'filebeat-config-changed'
       ansible.builtin.template:
-        src:   'wazuh-module.yml.j2'
-        dest:  "{{ config.filebeat.module_config_path }}"
+        src: 'wazuh-module.yml.j2'
+        dest: "{{ config.filebeat.module_config_path }}"
         owner: 'root'
         group: 'root'
-        mode:  '0644'
+        mode: '0644'
 
     #endregion --- [ 06 MANAGER + FILEBEAT CONFIG ] ------------------------------------------ #
 
@@ -1040,9 +1039,9 @@
       loop_control:
         label: '{{ item.name }}'
       ansible.builtin.systemd:
-        name:    "{{ item.name }}"
+        name: "{{ item.name }}"
         enabled: "{{ item.enabled }}"
-        state:   "{{ item.state }}"
+        state: "{{ item.state }}"
 
     # Flush BEFORE waiting for the API: if manager configuration (indexer host / syscheck
     # stanza) or the keystore changed, the handler cleanly stops/starts wazuh-manager here.
@@ -1052,9 +1051,9 @@
 
     - name: 'END | Wait For Manager API On 55000'
       ansible.builtin.wait_for:
-        host:    "{{ __endpoint_host__ }}"
-        port:    55000
-        delay:   5
+        host: "{{ __endpoint_host__ }}"
+        port: 55000
+        delay: 5
         timeout: 120
 
     # Manager API users (wazuh, wazuh-wui) live in the persistent rbac.db. Their passwords are
@@ -1128,13 +1127,49 @@
             method: 'PUT'
             headers:
               Authorization: 'Bearer {{ __mgr_api_token__ }}'
-              Content-Type:  'application/json'
+              Content-Type: 'application/json'
             body_format: 'json'
             body:
               password: "{{ __wazuh_pw__[item.username] }}"
             ca_path: "{{ config.certs_dir }}/root-ca.pem"
             validate_certs: true
             status_code: [200]
+
+        # A successful PUT proves that the API accepted the rotation request, but this negative
+        # authentication check proves the running service no longer accepts any factory value.
+        # Keep both the probe and assertion no_log: a failed module result can contain request
+        # parameters, and neither bootstrap nor derived passwords may enter output.
+        - name: 'END | Probe That Manager API Rejects Every Factory Bootstrap Password'
+          no_log: true
+          changed_when: false
+          register: '__factory_password_probe__'
+          loop: "{{ config.manager.api_users }}"
+          loop_control:
+            label: '<redacted>'
+          ansible.builtin.uri:
+            url: "https://{{ __manager_host__ }}:55000/security/user/authenticate?raw=true"
+            method: 'POST'
+            url_username: "{{ item.username }}"
+            url_password: "{{ item.default_password }}"
+            force_basic_auth: true
+            ca_path: "{{ config.certs_dir }}/root-ca.pem"
+            validate_certs: true
+            return_content: false
+            status_code: [200, 401]
+
+        - name: 'END | Assert Manager API Password Rotation Is Live'
+          no_log: true
+          vars:
+            __factory_probe_statuses__: >-
+              {{ __factory_password_probe__.results | map(attribute='status') | list }}
+          ansible.builtin.assert:
+            that:
+              - (__factory_probe_statuses__ | length) == (config.manager.api_users | length)
+              - (__factory_probe_statuses__ | reject('equalto', 401) | list | length) == 0
+            quiet: true
+            fail_msg: >-
+              Manager API password rotation verification failed: at least one running API user
+              still accepts its factory bootstrap credential.
 
     - name: 'END | Verify Filebeat Is Connected To Indexer (test output)'
       register: '__fb_test__'
@@ -1152,16 +1187,16 @@
     - name: 'PROCESS | Place Dashboard TLS Material'
       notify: 'wazuh-dashboard-config-changed'
       loop:
-        - { src: 'root-ca.pem',                dest: 'root-ca.pem',       mode: '0440' }
-        - { src: '{{ __aio_node__ }}.pem',     dest: 'dashboard.pem',     mode: '0440' }
+        - { src: 'root-ca.pem', dest: 'root-ca.pem', mode: '0440' }
+        - { src: '{{ __aio_node__ }}.pem', dest: 'dashboard.pem', mode: '0440' }
         - { src: '{{ __aio_node__ }}-key.pem', dest: 'dashboard-key.pem', mode: '0400' }
       ansible.builtin.copy:
-        src:        "{{ __temp_dir__.path }}/{{ item.src }}"
-        dest:       "{{ config.dashboard.certs_dir }}/{{ item.dest }}"
+        src: "{{ __temp_dir__.path }}/{{ item.src }}"
+        dest: "{{ config.dashboard.certs_dir }}/{{ item.dest }}"
         remote_src: true
-        owner:      'wazuh-dashboard'
-        group:      'wazuh-dashboard'
-        mode:       "{{ item.mode }}"
+        owner: 'wazuh-dashboard'
+        group: 'wazuh-dashboard'
+        mode: "{{ item.mode }}"
 
     # The opensearch.password is stored in opensearch_dashboards.keystore (encrypted at rest)
     # so the plaintext never lands in opensearch_dashboards.yml. Keystore values override the
@@ -1172,11 +1207,11 @@
       vars:
         __opensearch_user__: "{{ config.dashboard.indexer_username }}"
       ansible.builtin.template:
-        src:   'opensearch_dashboards.yml.j2'
-        dest:  "{{ config.dashboard.main_config }}"
+        src: 'opensearch_dashboards.yml.j2'
+        dest: "{{ config.dashboard.main_config }}"
         owner: 'wazuh-dashboard'
         group: 'wazuh-dashboard'
-        mode:  '0640'
+        mode: '0640'
 
     # fapolicyd's rpmdb backend often skips the dnf-installed Node.js binary under
     # /usr/share/wazuh-dashboard/. Without explicit trust, node exec is DENIED on a STIG host, so
@@ -1194,9 +1229,9 @@
       loop_control:
         loop_var: '__path__'
       ansible.builtin.lineinfile:
-        path:          '/etc/fapolicyd/fapolicyd.trust'
+        path: '/etc/fapolicyd/fapolicyd.trust'
         search_string: "{{ __path__ }}"
-        state:         'absent'
+        state: 'absent'
 
     - name: 'PROCESS | Trust wazuh-dashboard Tree In fapolicyd'
       register: '__fapd_dash__'
@@ -1205,7 +1240,7 @@
         label: "{{ item.__path__ }}"
       when: (item.found | default(0) | int) == 0
       changed_when: __fapd_dash__.rc == 0
-      failed_when:  __fapd_dash__.rc not in [0, 1]
+      failed_when: __fapd_dash__.rc not in [0, 1]
       ansible.builtin.command:
         argv: ['fapolicyd-cli', '--file', 'add', "{{ item.__path__ }}"]
 
@@ -1238,7 +1273,7 @@
       delay: 2
       until: (__dash_keystore_create__.rc | default(0)) == 0
       ansible.builtin.command:
-        cmd:     'sudo -u wazuh-dashboard /usr/share/wazuh-dashboard/bin/opensearch-dashboards-keystore create'
+        cmd: 'sudo -u wazuh-dashboard /usr/share/wazuh-dashboard/bin/opensearch-dashboards-keystore create'
         creates: '/etc/wazuh-dashboard/opensearch_dashboards.keystore'
 
     # Rotation model: no fingerprint skip gate — the opensearch password is regenerated every run,
@@ -1256,16 +1291,16 @@
       delay: 2
       until: (__dash_keystore_add__.rc | default(-1)) == 0
       ansible.builtin.command:
-        cmd:   'sudo -u wazuh-dashboard /usr/share/wazuh-dashboard/bin/opensearch-dashboards-keystore add opensearch.password --stdin --force'
+        cmd: 'sudo -u wazuh-dashboard /usr/share/wazuh-dashboard/bin/opensearch-dashboards-keystore add opensearch.password --stdin --force'
         stdin: "{{ __wazuh_pw__[config.dashboard.indexer_username] }}"
 
     - name: 'PROCESS | Ensure wazuh.yml Parent Dir Exists'
       ansible.builtin.file:
-        path:  "{{ config.dashboard.wazuh_config | dirname }}"
+        path: "{{ config.dashboard.wazuh_config | dirname }}"
         state: 'directory'
         owner: 'wazuh-dashboard'
         group: 'wazuh-dashboard'
-        mode:  '0750'
+        mode: '0750'
 
     # wazuh.yml has no native keystore in Wazuh 4.14.5 — see SECURITY.md for the full
     # discussion. Best available defense: render the file with the tightest possible perms
@@ -1285,13 +1320,13 @@
       register: '__wazuh_yml_probe__'
       vars:
         __manager_user__: "{{ config.dashboard.manager_username }}"
-        __manager_pwd__:  "{{ __wazuh_pw__[config.dashboard.manager_username] }}"
+        __manager_pwd__: "{{ __wazuh_pw__[config.dashboard.manager_username] }}"
       ansible.builtin.template:
-        src:   'wazuh.yml.j2'
-        dest:  "{{ config.dashboard.wazuh_config }}"
+        src: 'wazuh.yml.j2'
+        dest: "{{ config.dashboard.wazuh_config }}"
         owner: 'wazuh-dashboard'
         group: 'wazuh-dashboard'
-        mode:  '0400'
+        mode: '0400'
 
     - name: 'PROCESS | Clear Immutable Bit On wazuh.yml (Pre-Render)'
       when:
@@ -1299,8 +1334,8 @@
         - "'immutable' in (__wazuh_yml_stat__.stat.attributes | default([]))"
         - __wazuh_yml_probe__ is changed
       ansible.builtin.file:
-        path:       "{{ config.dashboard.wazuh_config }}"
-        state:      'file'
+        path: "{{ config.dashboard.wazuh_config }}"
+        state: 'file'
         attributes: '-i'
 
     - name: 'PROCESS | Render wazuh.yml (Manager API Endpoint, Locked Down)'  # noqa: no-handler
@@ -1309,24 +1344,24 @@
       no_log: true
       vars:
         __manager_user__: "{{ config.dashboard.manager_username }}"
-        __manager_pwd__:  "{{ __wazuh_pw__[config.dashboard.manager_username] }}"
+        __manager_pwd__: "{{ __wazuh_pw__[config.dashboard.manager_username] }}"
       ansible.builtin.template:
-        src:   'wazuh.yml.j2'
-        dest:  "{{ config.dashboard.wazuh_config }}"
+        src: 'wazuh.yml.j2'
+        dest: "{{ config.dashboard.wazuh_config }}"
         owner: 'wazuh-dashboard'
         group: 'wazuh-dashboard'
-        mode:  '0400'
+        mode: '0400'
 
     - name: 'PROCESS | Lock wazuh.yml (chmod 0400 + immutable bit)'
       when: >-
         (__wazuh_yml_probe__ is changed)
         or ('immutable' not in (__wazuh_yml_stat__.stat.attributes | default([])))
       ansible.builtin.file:
-        path:       "{{ config.dashboard.wazuh_config }}"
-        state:      'file'
-        owner:      'wazuh-dashboard'
-        group:      'wazuh-dashboard'
-        mode:       '0400'
+        path: "{{ config.dashboard.wazuh_config }}"
+        state: 'file'
+        owner: 'wazuh-dashboard'
+        group: 'wazuh-dashboard'
+        mode: '0400'
         attributes: '+i'
 
     #endregion --- [ 08 DASHBOARD CONFIG ] --------------------------------------------------- #
@@ -1340,18 +1375,18 @@
     # retries 10 times over 2 minutes with 10s between, surviving any plausible sync window.
     - name: 'END | Ensure systemd Drop-In Dir Exists For wazuh-dashboard'
       ansible.builtin.file:
-        path:  '/etc/systemd/system/wazuh-dashboard.service.d'
+        path: '/etc/systemd/system/wazuh-dashboard.service.d'
         state: 'directory'
         owner: 'root'
         group: 'root'
-        mode:  '0755'
+        mode: '0755'
 
     - name: 'END | Install Restart-Tuning Drop-In For wazuh-dashboard'
       ansible.builtin.copy:
-        dest:  '/etc/systemd/system/wazuh-dashboard.service.d/restart-tuning.conf'
+        dest: '/etc/systemd/system/wazuh-dashboard.service.d/restart-tuning.conf'
         owner: 'root'
         group: 'root'
-        mode:  '0644'
+        mode: '0644'
         content: |
           [Unit]
           StartLimitIntervalSec=120
@@ -1386,9 +1421,9 @@
     - name: 'END | Enable And Start wazuh-dashboard'
       when: __wazuh_dashboard_start__
       ansible.builtin.systemd:
-        name:          'wazuh-dashboard'
-        enabled:       true
-        state:         "{{ config.dashboard.service_state }}"
+        name: 'wazuh-dashboard'
+        enabled: true
+        state: "{{ config.dashboard.service_state }}"
         daemon_reload: true
 
     # Flush the restart handler now (if a config/keystore/cert change notified it) so the 443
@@ -1401,9 +1436,9 @@
     - name: 'END | Wait For Dashboard To Listen On 443'
       when: __wazuh_dashboard_start__
       ansible.builtin.wait_for:
-        host:    "{{ __dashboard_endpoint_host__ }}"
-        port:    443
-        delay:   10
+        host: "{{ __dashboard_endpoint_host__ }}"
+        port: 443
+        delay: 10
         timeout: 240
 
     # Unauthenticated GET / on a healthy dashboard returns 302 (redirect to /login). 200 is
@@ -1420,11 +1455,11 @@
       delay: 10
       until: __dash_health__.status in [200, 302]
       ansible.builtin.uri:
-        url:              "https://{{ __dashboard_endpoint_host__ }}/"
-        method:           'GET'
-        ca_path:          "{{ config.dashboard.certs_dir }}/root-ca.pem"
-        validate_certs:   true
-        status_code:      [200, 302]
+        url: "https://{{ __dashboard_endpoint_host__ }}/"
+        method: 'GET'
+        ca_path: "{{ config.dashboard.certs_dir }}/root-ca.pem"
+        validate_certs: true
+        status_code: [200, 302]
         follow_redirects: 'none'
 
     #endregion --- [ 09 DASHBOARD VALIDATION ] ----------------------------------------------- #

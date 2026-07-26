@@ -89,7 +89,7 @@ Shape:
   `account_alias` (that touches `iam:ListAccountAliases`, which *is* deniable; `GetCallerIdentity`
   needs no IAM grant and cannot be denied).
 - **Inject via the override-dict channel** already proven for `admin_password`
-  ([`site.yml:42-47`](../../../ansible/playbooks/site.yml) per-stage `vars:`; recursive
+  ([`deploy-aws-poc.yml`](../../../ansible/playbooks/deploy-aws-poc.yml) per-stage `vars:`; recursive
   `combine` in the role loader overrides only `s3.bucket` without clobbering the SHA pins), shaped as a
   **fallback default** so an explicit hand-set bucket still wins:
   `wazuh_server.s3.bucket: "{{ _aws_account_id }}-ansible"` supplied only when not overridden.
@@ -111,7 +111,7 @@ bucket convention (the IAM `*-ansible` wildcard would tolerate it, but the org c
 go stale; one mechanism for both targets and both auth paths; self-configures the account-scoped-per-env
 bucket convention; matches the deliberately account-agnostic IAM; no loader change.
 
-**Required companion changes in the implementing piece** (named here so they are not missed):
+**Operational requirements:**
 1. **Fix the leak-once-real diagnostic.** `wazuh_server/tasks/present_redhat.yml:234-245`'s rescue block
    prints `config.s3.bucket` with `no_log: false` justified as "contains no secrets" — true *only* while
    the bucket is a placeholder. Once it resolves to a real derived value this becomes the exact
@@ -120,8 +120,8 @@ bucket convention; matches the deliberately account-agnostic IAM; no loader chan
 2. **Document the runtime STS dependency** in [`aws-iam/README.md`](../../reference/aws-iam/README.md)
    (the "authoritative record of the live IAM"): `sts:GetCallerIdentity` is now a runtime API dependency
    (no grant required, not deniable); do not use `account_alias`.
-3. **Add `boto3`/`botocore` to the CI controller install** (`deploy.yml` install steps omit it — a
-   pre-existing gap, also latent for the Windows-agent CI path).
+3. **Install `boto3`/`botocore` on the CI controller** for the delegated account lookup and
+   Windows-agent S3 path.
 4. **Normalize the three-way bucket-shape contradiction** across `redhat_int.yml`,
    `redhat_test.yml`/`redhat_prod.yml`, and the `deploy.yml` comment — the operative convention is
    account-scoped (`*-ansible`), which S1 makes automatic.
@@ -131,8 +131,8 @@ bucket convention; matches the deliberately account-agnostic IAM; no loader chan
 
 **Negative / risks.** Cross-account edge: if the deploy runs under credentials whose account differs
 from the bucket's, S1 derives the wrong bucket and fails at download — mitigated by the fallback shape
-(an explicit override wins) and by fixing the diagnostic (companion #1). Adds one controller-side AWS
-call. Unevidenced today (no cross-account deploy is recorded).
+(an explicit override wins) and by fixing the diagnostic (requirement #1). Adds one controller-side
+AWS call. Cross-account deployments therefore require the explicit bucket override.
 
 **Decommission.** RETIRE the `<account-id>`/manual-fill placeholder convention (tripwire semantics
 retained); rewrite `s3-artifacts.md` "Bucket naming" to the derivation rule; add an account-id-resolution

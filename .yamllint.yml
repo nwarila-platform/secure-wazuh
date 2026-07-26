@@ -67,18 +67,26 @@ rules:
   # ---------------------------------------------------------------------------
   # Colons & Commas
   # ---------------------------------------------------------------------------
-  # The role task code aligns values under keys and inside inline argv lists for
-  # readability (e.g. `src:          "…"`, `argv: ['a',  'b']`). Allow the extra
-  # spaces after colons/commas — a deliberate, repo-wide style. (The org permits
-  # per-repo yamllint tuning; the Terraform frameworks likewise carry their own.)
+  # Use one space after mapping separators and commas. This keeps yamllint and
+  # ansible-lint on the same formatting contract.
   # ---------------------------------------------------------------------------
   colons:
     max-spaces-before: 0
-    max-spaces-after: -1
+    max-spaces-after: 1
   commas:
     max-spaces-before: 0
     min-spaces-after: 1
-    max-spaces-after: -1
+    max-spaces-after: 1
+
+  # ---------------------------------------------------------------------------
+  # Octal Values
+  # ---------------------------------------------------------------------------
+  # File modes are quoted strings. Reject implicit and explicit YAML octal
+  # numbers so ansible-lint can safely reuse this yamllint configuration.
+  # ---------------------------------------------------------------------------
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
 
   # ---------------------------------------------------------------------------
   # Indentation

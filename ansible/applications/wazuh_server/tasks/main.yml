@@ -144,7 +144,9 @@
         # Seed '<role_name>_running' with the role's default values from defaults/main.yml.
         # These are the lowest-precedence settings; overlays and overrides merge on top.
         # Falls back to an empty dict if no defaults are defined for this role.
+        # The defaults dictionary may contain secrets; set_fact prints the entire value at -v.
         - name: 'INIT | Initialize running configuration'
+          no_log: true
           ansible.builtin.set_fact:
             "{{ role_name }}_running": "{{ lookup('vars', role_name ~ '_defaults', default={}) }}"
 
@@ -166,7 +168,9 @@
         # Note: <env>.yml alone is NOT loaded here — that is a playbook-level concern.
         # Later files override earlier ones via recursive dict merge (list_merge='replace',
         # meaning overlay lists fully replace defaults — they do not append).
+        # The cumulative config may contain secrets; set_fact prints it after each overlay at -v.
         - name: 'INIT | Loading Default Overlay(s)'
+          no_log: true
           loop: "{{ __var_candidates__ }}"
           loop_control: { loop_var: '__overlay__' }
           vars:
@@ -189,7 +193,9 @@
         # nested keys can be overridden without replacing the entire dict.
         # Skipped if no overrides exist or if the override is not a dict (prevents
         # a cryptic combine() error when someone sets e.g., `python3_pip: "string"`).
+        # The merged config can contain caller-supplied secrets; set_fact prints results at -v.
         - name: 'INIT | Loading Overrides'
+          no_log: true
           vars:
             __base__: "{{ lookup('vars', role_name ~ '_running', default={}) }}"
             __overrides__: "{{ lookup('vars', role_name, default={}) }}"

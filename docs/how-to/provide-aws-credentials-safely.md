@@ -14,16 +14,18 @@ This is not hypothetical: an access key leaked exactly this way and had to be ro
 
 Three pieces work together:
 
-1. **`playbooks/aws_runner_env.yml`** reads short-lived credentials from the **controller/runner** process environment and turns them into Ansible variables:
+1. **A per-play credential bridge in `playbooks/deploy-aws-poc.yml`** reads short-lived credentials from the **controller/runner** process environment and turns them into Ansible variables:
 
    ```yaml
    AWS_ACCESS_KEY_ID:     "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
    AWS_SECRET_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
    AWS_SESSION_TOKEN:     "{{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') }}"
-   AWS_DEFAULT_REGION:    "{{ lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION') }}"
+   AWS_DEFAULT_REGION:    "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) }}"
    ```
 
-   Each stage in `site.yml` loads it via `vars_files`.
+   These four lines are declared in the `vars:` of each play that actually invokes an `amazon.aws` module — the data-disk play, Stage 1, Stage 2, and Stage 3 — and nowhere else. They deliberately do **not** live in the inventory: the plugin disables lookups inside `compose:`, and a play var (unlike an inventory host var) is also handed to that play's `delegate_to: localhost` tasks, which is exactly where the controller-side calls need it.
+
+   **Contract:** an unset source variable resolves to an empty string `''` — never `omit`, never undefined. Each consumer applies its own `| default(omit, true)` at the point of use; centralizing that conversion here would hand every consumer a truthy `omit` placeholder string instead of `''`.
 
 2. **The role's S3 block passes those variables as module arguments**, under a block that is marked `no_log: true`:
 
@@ -35,7 +37,7 @@ Three pieces work together:
 
    The credentials reach boto3 as in-process arguments. They are not written to the target's environment, not passed on a command line, and are censored from task output.
 
-3. **The credentials never touch the target shell.** There is no `environment:` export of AWS keys onto the target. The only thing exported to the target shell is `ENV`.
+3. **The credentials never touch the target shell.** There is no `environment:` export of AWS keys onto the target. The only `environment:` exports anywhere in this deploy are non-secret paths: `TMPDIR` (Stage 1, routing the loader's staging dir onto `/mnt/data`) and the indexer's `JAVA_HOME`/`OPENSEARCH_JAVA_HOME`. Note that `ENV` is **not** among them — the role loaders consume `ENV` as an Ansible variable, never as an OS process environment variable.
 
 ## Procedure: populate the runner environment
 
@@ -43,17 +45,16 @@ Use short-lived credentials. In CI, prefer OIDC role assumption; locally, a role
 
 ### In CI
 
-Assume the deploy role via OIDC and let the standard AWS environment variables populate for the job. `aws_runner_env.yml` picks them up. Nothing further is needed.
+Assume the deploy role via OIDC and let the standard AWS environment variables populate for the job. The playbook's per-play bridge picks them up. Nothing further is needed.
 
 ### Locally, without echoing secrets to stdout
 
 Any tooling that captures process stdout — including agent tool layers — will capture credentials if you pipe them through stdout. Do **not** run the credential export in a context whose output is captured.
 
-Prefer writing the credentials to a protected vars file with direct file I/O, then pass it to `ansible-playbook`:
+The playbook takes **no `--extra-vars`**, so there is no vars-file channel to smuggle credentials through: populate the runner process environment instead, then run the single command unchanged.
 
 ```bash
-ansible-playbook -i inventory/proxmox.yml playbooks/site.yml \
-  -e env=int -e @/path/to/aws-vars.json
+ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 ```
 
 An interactive operator terminal that does not capture command output may `source` an export command directly; this is only unsafe when a tool layer records stdout into a transcript.
@@ -64,7 +65,7 @@ Confirm no credential material reached the target:
 
 ```bash
 # The S3 tasks should show "censored due to no_log" rather than any key material.
-ansible-playbook -i inventory/proxmox.yml playbooks/site.yml -e env=int -v 2>&1 \
+ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml -v 2>&1 \
   | grep -i 'no_log' | head
 
 # After a run, spot-check that no recent Wazuh alert contains AWS key patterns.

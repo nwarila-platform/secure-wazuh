@@ -9,28 +9,30 @@
 # Linux agent + Windows agent), proves 2 fresh agent-sourced FIM events (phase 1), force-replaces
 # ONLY the AIO's OS via `terraform apply -var refresh_serial=1` (its data disk survives,
 # re-attached to the new instance), redeploys, then completes the cumulative 4/4 proof — the 2
-# pre-swap survivors AND 2 new events, cumulative by construction (see wazuh_trigger_fim.yml's
-# ledger header) — before ALWAYS tearing everything down.
+# pre-swap survivors AND 2 new events, cumulative by construction (see deploy-aws-poc.yml's
+# "Cumulative FIM Proof" ledger section) — before ALWAYS tearing everything down.
 #
-# ONE Ansible command drives both phases identically (see playbooks/e2e_full.yml's own header):
-#   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/e2e_full.yml
-# ZERO -e: every input is a committed inventory/role fact; the operator secret comes from the
-# WAZUH_ADMIN_PASSWORD env below (this workflow's secret), never an extra-var.
+# ONE Ansible command drives both phases identically (see playbooks/deploy-aws-poc.yml's own
+# header):
+#   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
+# ZERO -e: the whole AWS target is two files — that playbook plus inventory/aws/aws_ec2.yml — and
+# every product deployment input is a literal in one of them. The effective Wazuh admin credential
+# is minted by the playbook's own Step 0, while the workflow-created environment value is only the
+# lower-precedence backstop described below; neither is passed as an extra var.
 #
 # Mirrors .github/workflows/deploy.yml's AWS job conventions throughout (SHA-pinned actions,
-# .framework-pin resolution, the compose/collections/creds plumbing) — see that file for shared
-# rationale not repeated here. ONE deliberate deviation: terraform_version below is "1.15.1", not
-# deploy.yml's "1.15.3" — aws-terraform-framework pins `required_version = "= 1.15.1"` EXACTLY
-# (terraform/versions.tf), which "1.15.3" does not actually satisfy; matching the framework's
-# real constraint here rather than reproducing that mismatch.
+# both framework-pin resolutions, Terraform 1.15.1, and the compose/collections/creds plumbing)
+# — see that file for shared rationale not repeated here. Both workflows use Terraform 1.15.1
+# because aws-terraform-framework pins `required_version = "= 1.15.1"` exactly
+# (terraform/versions.tf).
 #
 # -----------------------------------------------------------------------------
 # AWS CONFIGURATION MODEL — org-global secrets provide AWS_ACCOUNT_ID and
-# AWS_EC2_SSH_PRIVATE_KEY; org variables provide TF_STATE_BUCKET and optional AWS_REGION
-# (defaults to us-east-1); the repo provides WAZUH_ADMIN_PASSWORD and commits the framework pins
-# (.framework-pin + .aws-tf-framework-pin, both SHAs). Role ARN, bundle bucket, stack, and owner
-# are derived at runtime.
-# Remaining operator wiring is flagged inline with `# WIRE:`.
+# AWS_EC2_SSH_PRIVATE_KEY. TF_STATE_BUCKET is derived as <AWS_ACCOUNT_ID>-terraform; the optional
+# AWS_REGION org variable defaults to us-east-1. The repo commits both framework pins. This
+# workflow also exports a masked, run-scoped WAZUH_ADMIN_PASSWORD backstop, but the playbook's
+# Step 0 mints the effective credential in each phase and outranks that fallback. Role ARN,
+# bundle bucket, state bucket, stack, and owner are derived at runtime.
 # -----------------------------------------------------------------------------
 
 name: e2e-full
@@ -62,6 +64,7 @@ on:
       - ansible/**
       - terraform/**
       - .github/.framework-pin
+      - .github/.aws-tf-framework-pin
       - .github/workflows/e2e-full.yml
 
 # Least privilege at the workflow level; the one job elevates only what it needs.
@@ -76,7 +79,8 @@ concurrency:
 
 env:
   # Framework source repositories composed/run at deploy time — same slugs as deploy.yml.
-  # WIRE: confirm these org/repo slugs; the pinned refs are repo variables below.
+  # Their immutable refs are committed in .github/.framework-pin and
+  # .github/.aws-tf-framework-pin, then resolved with tr in the checkout steps below.
   ANSIBLE_FRAMEWORK_REPO: nwarila-platform/ansible-framework
   AWS_TF_FRAMEWORK_REPO: nwarila-platform/aws-terraform-framework
   # Controller toolchain. RHEL/Rocky 8 targets run platform-python 3.6.8, so the CONTROLLER
@@ -96,11 +100,13 @@ jobs:
   # ===========================================================================
   e2e-full:
     name: AWS (e2e-full, two-phase deploy / OS-swap / destroy)
-    # Every `pull_request` event type EXCEPT `labeled` always runs (open/reopen/ready-for-review
-    # are each a deliberate one-shot trigger). For `labeled`, only the `rerun-poc` label passes —
-    # any other label a maintainer applies must NOT spend real AWS money. workflow_dispatch
-    # (github.event_name != 'pull_request') always passes this gate.
-    if: github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'rerun-poc'
+    # Same-repository PRs run for each deliberate one-shot event. For `labeled`, only
+    # `rerun-poc` passes; fork PRs never enter this credentialed job. workflow_dispatch has no
+    # pull_request object and passes through the event-name branch without dereferencing one.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'labeled' || github.event.label.name == 'rerun-poc'))
     runs-on: ubuntu-latest
     # Bounded headroom for two deployments, Windows arming, cumulative proof, and three
     # infrastructure mutations. A job-level timeout is NOT a teardown guarantee: the durable
@@ -155,12 +161,14 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # EPHEMERAL-TARGET CREDENTIAL POLICY: this AWS PoC is created and destroyed inside this one
-      # run, so its Wazuh admin password is minted here, masked, and dies with the environment —
-      # there is no standing secret to store, rotate, or leak. Exported ONCE so both phases (the
-      # initial deploy and the post-OS-swap redeploy) configure the SAME credential; site.yml reads
-      # it from the environment, so this stays zero--e. The PERMANENT Proxmox target deliberately
-      # keeps a real managed secret instead — a live instance's password cannot be rotated on every
-      # deploy.
+      # run, so no standing Wazuh admin secret is stored, rotated, or leaked anywhere. The value
+      # exported here is a masked, run-scoped BACKSTOP only: deploy-aws-poc.yml's Step 0 mints its
+      # own password per ansible-playbook process and wins the role's precedence chain
+      # (`wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD'), true)`), so this
+      # env var is the lower-precedence fallback that keeps the chain non-empty rather than the
+      # credential the stack actually gets. Either way it stays zero--e, and each phase configures
+      # its own fresh password — deliberately safe, because the FIM proof authenticates to the
+      # indexer with the admin CLIENT CERTIFICATE, never this password.
       - name: Mint the ephemeral Wazuh admin password
         shell: bash
         run: |
@@ -192,7 +200,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.AWS_TF_FRAMEWORK_REPO }}
-          # Version-locked in .github/.aws-tf-framework-pin — a committed SHA (currently v1.1.0),
+          # Version-locked in .github/.aws-tf-framework-pin — a committed SHA,
           # reviewable in the diff and reproducible, exactly mirroring .framework-pin for the
           # ansible framework. deploy.yml's AWS job reads the same file, so both track one SHA.
           ref: ${{ steps.tfpin.outputs.sha }}
@@ -204,23 +212,20 @@ jobs:
       # AWS auth via OIDC — no long-lived credentials in the repo
       # -----------------------------------------------------------------------
       - name: Configure AWS credentials (OIDC)
-        # WIRE: verify/re-pin this SHA at wire-up time.
-        # WIRE: this workflow now also runs on `pull_request` (see the `on:` trigger above), not
-        # only push-to-main like deploy.yml — the OIDC role's trust policy, as it exists today,
-        # authorizes only `repo:nwarila-platform/secure-wazuh:ref:refs/heads/main` subjects. A
-        # PR-triggered run presents a `pull_request` subject instead, which that trust policy
-        # does NOT match, so this step will fail assume-role until the trust policy is widened
-        # to additionally allow `repo:nwarila-platform/secure-wazuh:pull_request`.
+        # The checked-in trust source authorizes this repository's main-branch and pull_request
+        # subjects with the sts.amazonaws.com audience. The job guard above excludes fork PRs
+        # before this credentialed step; the operator keeps the live role synchronized separately.
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
-          # WIRE: the role ARN is derived from the org-global AWS_ACCOUNT_ID and the
+          # The role ARN is derived from the org-global AWS_ACCOUNT_ID and the
           # github_<owner>_<repo> naming convention. Its trust must cover this repo's OIDC
           # subjects and its policy the existing EC2/EBS/VPC + S3 + Terraform-state scope.
           role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
         # configure-aws-credentials exports AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY /
-        # _SESSION_TOKEN / AWS_REGION into the runner env for every later step — read by both
-        # plain `terraform` invocations below and, via aws_runner_env.yml, by Ansible.
+        # _SESSION_TOKEN / AWS_REGION into the runner env for every later step — read by both the
+        # plain `terraform` invocations below and, via the per-play `lookup('ansible.builtin.env',
+        # ...)` credential bridge in deploy-aws-poc.yml, by Ansible.
 
       # -----------------------------------------------------------------------
       # Terraform — ONE init, reused by every apply/destroy below (see the job-level comment)
@@ -249,7 +254,7 @@ jobs:
       - name: Write target SSH key
         run: |
           set -euo pipefail
-          # WIRE: the org-global AWS_EC2_SSH_PRIVATE_KEY secret is the private half of
+          # The org-global AWS_EC2_SSH_PRIVATE_KEY secret is the private half of
           # terraform/aws.tfvars' key_name = "secure-wazuh-poc-key".
           install -d -m 0700 "$HOME/.ssh"
           install -m 0600 /dev/stdin "$HOME/.ssh/secure-wazuh-poc-key.pem" <<< "${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}"
@@ -260,16 +265,31 @@ jobs:
           terraform apply -auto-approve \
             -var-file="${{ github.workspace }}/terraform/aws.tfvars"
 
-      # Not secret (an EC2 instance-id names no account, credential, or address) — recorded now
-      # so "Render PoC evidence" can show the OS-swap's before/after without re-querying
-      # Terraform after the swap has already replaced it. aws_instances is keyed by hostname
-      # (outputs.tf); "secure-wazuh-poc" is the AIO's hostname in terraform/aws.tfvars.
-      - name: Capture pre-swap AIO instance-id
+      # Instance IDs are non-secret infrastructure identifiers. Capture Terraform's exact
+      # three-host set once so readiness checks cannot be satisfied by another SSM record.
+      # The AIO ID also supplies the before/after evidence for the OS swap.
+      - name: Capture phase-1 instance IDs
         working-directory: ${{ env.TF_DIR }}
         run: |
           set -euo pipefail
-          id="$(terraform output -json aws_instances | jq -r '."secure-wazuh-poc".instance_id')"
-          echo "PRE_SWAP_INSTANCE_ID=${id}" >> "$GITHUB_ENV"
+          instances="$(terraform output -json aws_instances)"
+          jq -e '
+            (type == "object") and
+            (keys == [
+              "secure-wazuh-poc",
+              "secure-wazuh-poc-agent-linux",
+              "secure-wazuh-poc-agent-win"
+            ]) and
+            ([.[].instance_id] |
+              (length == 3) and
+              (unique | length == 3) and
+              all(.[]; test("^i-[0-9a-f]+$")))
+          ' <<< "$instances" >/dev/null
+          {
+            echo "PRE_SWAP_INSTANCE_ID=$(jq -r '."secure-wazuh-poc".instance_id' <<< "$instances")"
+            echo "LINUX_AGENT_INSTANCE_ID=$(jq -r '."secure-wazuh-poc-agent-linux".instance_id' <<< "$instances")"
+            echo "WINDOWS_AGENT_INSTANCE_ID=$(jq -r '."secure-wazuh-poc-agent-win".instance_id' <<< "$instances")"
+          } >> "$GITHUB_ENV"
 
       # -----------------------------------------------------------------------
       # Ansible — compose the framework + this repo's roles, then run phase 1
@@ -303,7 +323,7 @@ jobs:
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
       # The AWS systems take NO inbound SSH (see docs/reference/aws-iam/README.md's zero-ingress
-      # note): inventory/aws/group_vars/all.yml tunnels every connection through
+      # note): inventory/aws/aws_ec2.yml's compose: block tunnels every connection through
       # `aws ssm start-session --document-name AWS-StartSSHSession`, and that ProxyCommand shells
       # out to the Session Manager plugin — a separate binary the AWS CLI does NOT bundle and
       # ubuntu-latest does not ship. Without it every host is UNREACHABLE with the misleading
@@ -316,43 +336,64 @@ jobs:
           sudo dpkg -i /tmp/session-manager-plugin.deb
           session-manager-plugin --version
 
-      # `terraform apply` returns when the API says the instances exist, NOT when their SSM agents
-      # have registered — and SSM is the only way in. Ansible would otherwise race a host that is
-      # still booting (Windows is the slow one). Poll until all three systems report Online.
-      - name: Wait for all three systems to register with SSM
+      # `terraform apply` returns when the API says the instances exist, not when their SSM agents
+      # have registered. The exact Terraform-emitted set proves that each intended host is Online;
+      # no unrelated or expired Environment=poc record can substitute for one.
+      - name: Wait for the three Terraform instances to register with SSM
         run: |
           set -euo pipefail
+          mapfile -t expected_set < <(
+            printf '%s\n' \
+              "$PRE_SWAP_INSTANCE_ID" \
+              "$LINUX_AGENT_INSTANCE_ID" \
+              "$WINDOWS_AGENT_INSTANCE_ID" |
+              sort -u
+          )
+          if [[ "${#expected_set[@]}" -ne 3 ]]; then
+            echo "::error::Terraform did not emit three distinct phase-1 instance IDs" >&2
+            exit 1
+          fi
+          instance_filter="${expected_set[0]},${expected_set[1]},${expected_set[2]}"
           for _ in $(seq 1 45); do
-            online="$(aws ssm describe-instance-information \
-              --filters "Key=tag:Environment,Values=poc" \
-              --query 'length(InstanceInformationList[?PingStatus==`Online`])' --output text)"
-            echo "SSM Online: ${online}/3"
-            [ "${online}" = "3" ] && exit 0
+            mapfile -t online_set < <(
+              aws ssm describe-instance-information \
+                --filters "Key=InstanceIds,Values=${instance_filter}" \
+                --query 'InstanceInformationList[?PingStatus==`Online`].InstanceId' \
+                --output json |
+                jq -r '.[]' |
+                sort -u
+            )
+            echo "SSM Online target IDs (${#online_set[@]}/3): ${online_set[*]:-none}"
+            if [[ "${#online_set[@]}" -eq "${#expected_set[@]}" ]] &&
+              cmp -s <(printf '%s\n' "${expected_set[@]}") <(printf '%s\n' "${online_set[@]}"); then
+              exit 0
+            fi
             sleep 20
           done
-          echo "::error::Only ${online:-0}/3 systems registered with SSM within 15 minutes" >&2
+          echo "::error::The exact phase-1 Terraform instance set was not Online in SSM within 15 minutes" >&2
           exit 1
 
-      - name: "PHASE 1: deploy_all.yml, then trigger/prove 2 fresh FIM events"
+      - name: "PHASE 1: deploy-aws-poc.yml, then trigger/prove 2 fresh FIM events"
         working-directory: _dev-build
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
           # Belt-and-suspenders: the OIDC step above already exports AWS_REGION for every later
-          # step, and aws_runner_env.yml prefers it over this — see deploy.yml's AWS job's
-          # identical comment on its own equivalent line for the full rationale (kept as a
-          # fallback, not redundant by accident).
+          # step, and deploy-aws-poc.yml's per-play AWS_DEFAULT_REGION bridge prefers AWS_REGION
+          # over this — see deploy.yml's AWS job's identical comment on its own equivalent line
+          # for the full rationale (kept as a fallback, not redundant by accident).
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           # WAZUH_ADMIN_PASSWORD is deliberately NOT bound here: the ephemeral password minted
           # above already reaches every later step through $GITHUB_ENV, and an explicit env: entry
-          # would OVERRIDE it (with an empty string when no such secret exists). site.yml's chain
-          # reads it straight from the environment — still zero -e.
-          # Read by wazuh_trigger_fim.yml's ledger-driven validate play (gated so a local run
+          # would OVERRIDE it (with an empty string when no such secret exists) — it is the
+          # fallback leg of Stage 1's admin_password chain, which Step 0's freshly minted value
+          # outranks. Still zero -e either way.
+          # Read by deploy-aws-poc.yml's ledger-driven validate play (gated so a local run
           # without this var stays byte-identical) — it writes the machine-readable proof JSON
           # here, controller-side, for "Render PoC evidence" below to consume.
           POC_EVIDENCE_JSON: ${{ github.workspace }}/poc-proof.json
         run: |
           set -euo pipefail
-          ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/e2e_full.yml
+          ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
           # Snapshot phase 1's proof (2 entries) before phase 2 overwrites the same path with the
           # cumulative (4-entry) state — "Render PoC evidence" needs BOTH the phase-1-only and
           # the final cumulative view, and the ledger itself doesn't record which phase produced
@@ -394,24 +435,41 @@ jobs:
             exit 1
           fi
 
-      # The swap gave the AIO a brand-new root disk, so its SSM agent is installed and started from
-      # scratch by user_data all over again — the pre-phase-1 wait says nothing about this instance.
-      # Phase 2 reaches the manager only over SSM, so without this the redeploy races the boot and
-      # dies with the misleading "Connection closed by UNKNOWN port 65535". The two agents are
-      # untouched by the swap (refresh = false) and stay registered throughout, so this still waits
-      # for 3 — a count that also proves the swap did not disturb them.
-      - name: Wait for the swapped AIO to re-register with SSM
+      # The replacement AIO has a newly booted SSM agent, while Terraform leaves both endpoint
+      # instances unchanged. Requiring exactly that new AIO ID plus the two captured endpoint IDs
+      # proves every phase-2 target is Online; a third record with the same tag proves nothing.
+      - name: Wait for the exact phase-2 instance set to be Online in SSM
         run: |
           set -euo pipefail
+          mapfile -t expected_set < <(
+            printf '%s\n' \
+              "$POST_SWAP_INSTANCE_ID" \
+              "$LINUX_AGENT_INSTANCE_ID" \
+              "$WINDOWS_AGENT_INSTANCE_ID" |
+              sort -u
+          )
+          if [[ "${#expected_set[@]}" -ne 3 ]]; then
+            echo "::error::The phase-2 targets are not three distinct instance IDs" >&2
+            exit 1
+          fi
+          instance_filter="${expected_set[0]},${expected_set[1]},${expected_set[2]}"
           for _ in $(seq 1 45); do
-            online="$(aws ssm describe-instance-information \
-              --filters "Key=tag:Environment,Values=poc" \
-              --query 'length(InstanceInformationList[?PingStatus==`Online`])' --output text)"
-            echo "SSM Online: ${online}/3"
-            [ "${online}" = "3" ] && exit 0
+            mapfile -t online_set < <(
+              aws ssm describe-instance-information \
+                --filters "Key=InstanceIds,Values=${instance_filter}" \
+                --query 'InstanceInformationList[?PingStatus==`Online`].InstanceId' \
+                --output json |
+                jq -r '.[]' |
+                sort -u
+            )
+            echo "SSM Online target IDs (${#online_set[@]}/3): ${online_set[*]:-none}"
+            if [[ "${#online_set[@]}" -eq "${#expected_set[@]}" ]] &&
+              cmp -s <(printf '%s\n' "${expected_set[@]}") <(printf '%s\n' "${online_set[@]}"); then
+              exit 0
+            fi
             sleep 20
           done
-          echo "::error::Only ${online:-0}/3 systems registered with SSM within 15 minutes of the OS-swap" >&2
+          echo "::error::The exact phase-2 Terraform instance set was not Online in SSM within 15 minutes of the OS swap" >&2
           exit 1
 
       - name: "PHASE 2: redeploy the swapped AIO, then trigger/prove ALL 4 cumulative events"
@@ -425,12 +483,12 @@ jobs:
           POC_EVIDENCE_JSON: ${{ github.workspace }}/poc-proof.json
         run: |
           set -euo pipefail
-          # SAME command as phase 1 — deploy_all.yml re-provisions the swapped AIO (its data disk
-          # already carries an "ours" GPT+label, so linux_disk_manager's mutation-safety guard
-          # skips reformatting; the wazuh_server role reinstalls the stack fresh onto the new OS)
-          # and idempotent-reconnects both untouched agents; wazuh_trigger_fim.yml then proves
-          # all 4 cumulative ledger entries — see playbooks/e2e_full.yml's own header.
-          ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/e2e_full.yml
+          # SAME command as phase 1 — the playbook's deploy plays re-provision the swapped AIO
+          # (its data disk already carries an "ours" GPT+label, so linux_disk_manager's
+          # mutation-safety guard skips reformatting; the wazuh_server role reinstalls the stack
+          # fresh onto the new OS) and idempotent-reconnect both untouched agents; its FIM proof
+          # section then proves all 4 cumulative ledger entries — see that playbook's own header.
+          ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 
       # -----------------------------------------------------------------------
       # DESTROY — always tear the environment down, pass or fail. Same state, same working dir.
@@ -531,7 +589,7 @@ jobs:
             echo "~\$1 total, torn down automatically. \$0 standing."
           } > "$out"
 
-          # Belt: the JSON this reads carries no account id (see wazuh_trigger_fim.yml's proof
+          # Belt: the JSON this reads carries no account id (see deploy-aws-poc.yml's proof
           # task), but guard the rendered file anyway. Word-bounded (\b): unbounded, this
           # corrupted 12-digit runs embedded INSIDE hex instance-ids (e.g.
           # i-0b29a5ba327a90496) — \b does not match between two word characters (a hex letter

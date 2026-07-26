@@ -14,10 +14,13 @@
 .DEFAULT_GOAL := help
 .PHONY: help install lint yamllint ansible-lint tf-fmt allowlist-check docs-layout pre-commit ci clean
 
-# Deliverable trees the allowlist guard patrols, and the intentionally-ignored
-# paths within them (state, caches, the framework-owned role composed in at runtime).
-DELIVERABLE_DIRS := ansible terraform docs .github
-GUARD_EXCLUDE    := (/\.terraform/|\.tfstate|__pycache__|\.retry$$|/linux_disk_manager/|/wazuh_agent/)
+# The dev compose helper and CI both build this framework-plus-product tree.
+# Override when a caller uses a different throwaway composition path.
+ANSIBLE_LINT_ROOT ?= _dev-build
+
+# The deny-all guard scans the whole repository. Only rooted, known local artifacts are excluded:
+# local workspaces/state, caches, and the two framework-owned roles composed in at runtime.
+GUARD_EXCLUDE := ^(_handoff/|_dev-build/|\.ansible/|\.cache/|\.env$$|terraform/\.terraform/|terraform/[^/]+\.tfstate(\.backup)?$$|terraform/\.terraform\.tfstate\.lock\.info$$|ansible/applications/(wazuh_agent|linux_disk_manager)/|([^/]+/)*(__pycache__|\.cache)/|([^/]+/)*[^/]+\.(py[co]|retry)$$)
 
 help:
 	@echo ""
@@ -43,10 +46,38 @@ lint: yamllint ansible-lint
 yamllint:
 	git ls-files -z -- '*.yml' '*.yaml' | xargs -0 -r yamllint --config-file .yamllint.yml
 
-# The product roles resolve fully only inside the composed framework tree; CI runs
-# ansible-lint there. This target lints what resolves standalone.
+# Lint the Git-cached or otherwise visible product Ansible YAML explicitly inside
+# the composed tree. CI calls this target after composing the same path, so local
+# and hosted lint cannot silently select different files.
 ansible-lint:
-	ansible-lint
+	@root="$$(cd "$(ANSIBLE_LINT_ROOT)" 2>/dev/null && pwd)" || { \
+	  printf 'ERROR: %s is not a composed Ansible tree; run the dev compose helper first\n' \
+	    "$(ANSIBLE_LINT_ROOT)" >&2; \
+	  exit 1; \
+	}; \
+	test -f "$$root/ansible.cfg" || { \
+	  printf 'ERROR: %s/ansible.cfg is missing; rebuild the composed Ansible tree\n' \
+	    "$$root" >&2; \
+	  exit 1; \
+	}; \
+	install -m 0644 "$(CURDIR)/.yamllint.yml" "$$root/.yamllint.yml"; \
+	files=$$(git ls-files --cached --others --exclude-standard -- ansible \
+	  | grep -E '\.ya?ml$$' | sed 's|^ansible/||' | sort -u); \
+	test -n "$$files" || { \
+	  printf 'ERROR: no cached or visible product Ansible YAML files found\n' >&2; \
+	  exit 1; \
+	}; \
+	missing=$$(printf '%s\n' "$$files" | while read -r file; do \
+	  test -f "$$root/$$file" || printf '%s\n' "$$file"; \
+	done); \
+	test -z "$$missing" || { \
+	  printf 'ERROR: composed tree is missing product lint inputs:\n%s\n' "$$missing" >&2; \
+	  exit 1; \
+	}; \
+	printf 'ansible-lint: %s explicit product YAML inputs in %s\n' \
+	  "$$(printf '%s\n' "$$files" | wc -l)" "$$root"; \
+	cd "$$root" && ANSIBLE_CONFIG="$$root/ansible.cfg" \
+	  ansible-lint --config-file="$(CURDIR)/.ansible-lint" $$files
 
 tf-fmt:
 	@if command -v terraform >/dev/null 2>&1; then \
@@ -55,27 +86,34 @@ tf-fmt:
 	  echo "tf-fmt: terraform not installed — skipped" ; \
 	fi
 
-# Deny-all allowlist guard: a deliverable-area file that is ignored means someone
-# added a file but forgot the matching `!/<path>` line in .gitignore — it would be
-# silently dropped from the repo. Fail loudly.
+# Deny-all allowlist guard: a repository file that is ignored means someone added a file but
+# forgot the matching `!/<path>` line in .gitignore — it would be silently dropped. Fail loudly.
 allowlist-check:
-	@ignored=$$(git ls-files --others --ignored --exclude-standard -- $(DELIVERABLE_DIRS) 2>/dev/null \
+	@ignored=$$(git ls-files --others --ignored --exclude-standard -- . 2>/dev/null \
 	  | grep -vE '$(GUARD_EXCLUDE)' || true); \
 	if [ -n "$$ignored" ]; then \
-	  printf 'ERROR: deliverable-area files are NOT allowlisted in .gitignore:\n'; \
+	  printf 'ERROR: repository files are NOT allowlisted in .gitignore:\n'; \
 	  printf '%s\n' "$$ignored" | sed 's/^/  /'; \
-	  printf 'Add an explicit "!/<path>" line to .gitignore, or move it out of the deliverable tree.\n'; \
+	  printf 'Add an explicit "!/<path>" line to .gitignore, or remove the non-deliverable artifact.\n'; \
 	  exit 1; \
 	else \
-	  printf 'allowlist-check: OK — every deliverable file is explicitly allowlisted\n'; \
+	  printf 'allowlist-check: OK — every repository file is explicitly allowlisted\n'; \
 	fi
+	@# This reverse check intentionally polices only rooted !/ entries.
 	@orphans=$$(grep '^!/' .gitignore | sed 's|^!/||; s|/\*\*$$||' | while read -r p; do \
 	  case "$$p" in \
-	    */) [ -d "$${p%/}" ] || echo "$$p" ;; \
+	    */) git ls-files --cached --others --exclude-standard -- "$${p%/}" | grep -q . \
+	          || echo "$$p" ;; \
 	    *)  git ls-files --error-unmatch "$$p" >/dev/null 2>&1 || echo "$$p" ;; \
-	  esac; done); \
-	if [ -n "$$orphans" ]; then printf 'ERROR: .gitignore allowlists paths not in the tracked set:\n'; \
-	  printf '%s\n' "$$orphans" | sed 's|^|  !/|'; exit 1; fi
+	  esac; \
+	done); \
+	if [ -n "$$orphans" ]; then \
+	  printf 'ERROR: .gitignore allowlists paths not in the tracked set:\n'; \
+	  printf '%s\n' "$$orphans" | sed 's|^|  !/|'; \
+	  exit 1; \
+	else \
+	  printf 'allowlist-check: OK — every rooted allowlist entry resolves\n'; \
+	fi
 
 # Diátaxis layout gate: every Markdown file must live in a quadrant subtree, ADRs under
 # decision-records/{org,template,repo}/, and docs/README.md is the only doc-root Markdown file.

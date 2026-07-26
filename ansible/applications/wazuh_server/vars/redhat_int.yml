@@ -8,8 +8,8 @@
 # are chosen per environment. The org convention is an account-scoped `<account-id>-ansible`
 # bucket, not env-suffixed (see docs/reference/s3-artifacts.md).
 #
-# s3.bucket below is RUNTIME-SUBSTITUTED (ADR-0004) — playbooks/site.yml derives the caller's
-# AWS account id (amazon.aws.aws_caller_info, controller-side) and injects it as a fallback
+# s3.bucket below is RUNTIME-SUBSTITUTED (ADR-0004) — playbooks/deploy-aws-poc.yml derives the
+# caller's AWS account id (amazon.aws.aws_caller_info, controller-side) and injects it as a fallback
 # default via the wazuh_server override dict, so this literal `<account-id>` is never actually
 # used. Do NOT hand-edit it: it is a deliberate fail-fast TRIPWIRE — if it ever reaches a real
 # AWS call, that call fails immediately on an unresolvable bucket name instead of silently
@@ -17,7 +17,7 @@
 # =========================================================================================== #
 
 s3:
-  bucket:        '<account-id>-ansible'
-  bundle_key:    'functions/wazuh/4.14.5/wazuh-offline.tar.gz'
+  bucket: '<account-id>-ansible'
+  bundle_key: 'functions/wazuh/4.14.5/wazuh-offline.tar.gz'
   bundle_sha256: '1a60b8c407a56ed45a1e431256f6c49cba083a329874be7b532ec48a56069bea'
-  certs_prefix:  'functions/wazuh/certs'
+  certs_prefix: 'functions/wazuh/certs'

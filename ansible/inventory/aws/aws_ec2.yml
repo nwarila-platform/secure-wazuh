@@ -9,24 +9,27 @@
 # environment (below); only the Function auto-tag -> group mapping is Wazuh-product-specific and
 # intentionally NOT genericized (see groups:).
 #
-# This does not replace `.github/workflows/deploy.yml`'s "Generate ephemeral inventory from
-# Terraform outputs" step — that generator stays as the CI job's own inline inventory (a
-# `terraform output` one-shot script, self-flagged FIRST CUT in that workflow's header). This
-# file is the equivalent for driving `ansible-playbook`/`ansible-inventory` directly against a
-# live PoC stack. ADR-0002 (docs/decision-records/repo/0002-combined-terraform-ansible-delivery.md)
+# THE ONLY AWS INVENTORY. Both workflows and local operators pass
+# `-i inventory/aws/aws_ec2.yml`, so automation and manual runs share this committed,
+# reviewable source instead of generating an ephemeral inventory from Terraform output.
+# ADR-0002 (docs/decision-records/repo/0002-combined-terraform-ansible-delivery.md)
 # governs the Terraform layer (data-only) and the Ansible composition (loader + shared roles from
 # ansible-framework); it does not mandate that Terraform output be the inventory source.
 #
-# WHY THIS LIVES IN ITS OWN 'aws/' BASEDIR (not flat under ansible/inventory/, alongside
-# proxmox.yml): Ansible discovers group_vars/host_vars as siblings of each inventory SOURCE's own
-# directory. A prior revision put this file's group_vars/ directly under ansible/inventory/, which
-# meant EVERY run — including `-i inventory/proxmox.yml` against the PERMANENT target — silently
-# picked up the SSM ProxyCommand + user + PoC key, and CI's `rsync -a ansible/ _dev-build/`
-# (deploy.yml) put the same group_vars/ beside the CI-generated `_dev-build/inventory/aws.yml`,
-# where inventory group_vars (precedence 4) would have silently overridden that file's own
-# ec2-user/CI-key vars (precedence 3). Isolating this plugin + its group_vars in their own
-# directory scopes them to ONLY `-i inventory/aws/aws_ec2.yml` runs. The basename still ends in
-# `aws_ec2.yml`, which is all the plugin's own filename check requires
+# WHY THERE IS NO group_vars/ HERE, AND WHY THIS KEEPS ITS OWN 'aws/' BASEDIR (not flat under
+# ansible/inventory/, alongside proxmox.yml): every connection/identity fact this target needs now
+# rides compose: below, and every deployment input lives in playbooks/deploy-aws-poc.yml, so the
+# AWS target is exactly two files and there is no sibling vars directory at all. That is the fix
+# for a real hazard, not tidiness: Ansible discovers group_vars/host_vars as siblings of each
+# inventory SOURCE's own directory, so a prior revision's group_vars/ sitting directly under
+# ansible/inventory/ was silently picked up by EVERY run — including `-i inventory/proxmox.yml`
+# against the PERMANENT target — and CI's `rsync -a ansible/ _dev-build/` (deploy.yml) dropped the
+# same directory beside the then CI-generated `_dev-build/inventory/aws.yml`, where inventory
+# group_vars (precedence 4) would have overridden that file's own ec2-user/CI-key host vars
+# (precedence 3). That generator is gone now, but the mechanic that made it dangerous is not:
+# compose: cannot leak that way — it applies only to hosts THIS plugin returns. Keeping the plugin
+# in its own basedir keeps a future vars file from re-introducing the leak. The basename still ends
+# in `aws_ec2.yml`, which is all the plugin's own filename check requires
 # (INVENTORY_FILE_SUFFIXES = ("aws_ec2.yml", "aws_ec2.yaml"), amazon.aws.aws_ec2 plugin source).
 #
 # TEMPLATING: regions/filters below use Jinja + `lookup('ansible.builtin.env', ...)`. This is NOT
@@ -62,8 +65,8 @@
 #
 # Connection: SSH-over-SSM, not a direct IP. The PoC security group has zero inbound rules
 # (docs/reference/aws-iam/README.md, "Permanent networking"), so there is no network path to any
-# instance except through SSM. ansible_host is therefore the INSTANCE-ID (compose below); the
-# ProxyCommand in group_vars/all.yml tunnels every ssh/sftp/scp call through
+# instance except through SSM. ansible_host is therefore the INSTANCE-ID and the SSM ProxyCommand
+# is set in compose: below (ansible_ssh_common_args), tunnelling every ssh/sftp/scp call through
 # `aws ssm start-session` using the exact `AWS-StartSSHSession` document the deploy policy grants
 # (secure-wazuh_deploy.json, "SsmSessionDocumentAndTeardown").
 #
@@ -75,10 +78,10 @@
 # inventories (the AIO role runs entirely off wazuh_servers; inventory-and-topology.md), and the
 # CI-generated AWS inventory in deploy.yml drops them too.
 #
-# NOTE: terraform/aws.tfvars today declares only ONE all_systems entry (tags.Function=wazuh-aio);
-# no Function=wazuh-agent host exists yet, so wazuh_agents/wazuh_agents_windows are structurally
-# EMPTY until an agent entry is added there. That is unchanged by dynamic vs. static inventory —
-# this file only reflects whatever the tfvars stand up — and is out of this file's scope.
+# NOTE: terraform/aws.tfvars declares three all_systems entries: one tags.Function=wazuh-aio AIO
+# and two tags.Function=wazuh-agent endpoints, one Linux and one Windows. The groups: block splits
+# those agents on AWS's platform hostvar into wazuh_agents and wazuh_agents_windows. As before,
+# this file only reflects whatever the tfvars stand up; dynamic inventory does not invent topology.
 # =========================================================================================== #
 
 plugin: amazon.aws.aws_ec2
@@ -105,19 +108,108 @@ filters:
 hostnames:
   - tag:Name
 
+# compose values are JINJA EXPRESSIONS, not strings — the plugin wraps each one in `{{ }}` itself
+# (Constructable._compose), so a literal needs its OWN inner quotes ("'ssh'") and writing `{{ }}`
+# here would double-wrap and fail. Two consequences worth internalizing before editing this block:
+#
+#   1. LOOKUPS ARE DISABLED. Constructable._compose passes disable_lookups=True, so the templar
+#      swaps in _fail_lookup — a `lookup('ansible.builtin.env', ...)` entry RAISES. Combined with
+#      `strict: false` above (which is there deliberately, to skip stray non-Wazuh instances) that
+#      error is SWALLOWED and the variable is silently never set: no warning, no failure, just a
+#      host missing its tunnel or its interpreter. That is why the AWS credential bridge lives in
+#      playbooks/deploy-aws-poc.yml's play vars and why --region below reads placement, not env.
+#      Every expression here is TOTAL by construction (literals, plus `platform`/`placement` behind
+#      `default()`), so the silent-skip path cannot fire; keep it that way.
+#   2. `platform | default('')` IS MANDATORY in every platform-conditional entry. EC2 sets the
+#      `platform` hostvar ONLY on Windows instances and leaves it ABSENT on Linux — without the
+#      default the expression raises Undefined and (per 1) the var vanishes for every LINUX host.
+#      Same idiom the groups: block below already uses.
+#
+# WHY CONNECTION IDENTITY LIVES HERE and not in the playbook's plays: a play-level `vars:` entry is
+# ALSO handed to that play's `delegate_to: localhost` tasks (VariableManager builds the delegated
+# stack from the play, so play vars are in it and inventory host vars are not — verified on the
+# pinned core: a play-var ansible_python_interpreter overrode a delegated task's interpreter, the
+# same value as an inventory host var did not). FIVE of deploy-aws-poc.yml's eleven plays delegate
+# to the controller: the data-disk play (linux_disk_manager's ec2_vol_info Function-tag resolver),
+# Stage 1, Stage 2 and Stage 3 (the ADR-0004 STS derive in each, plus Stage 3's Windows MSI fetch),
+# and the cumulative-proof play (the POC_EVIDENCE_JSON evidence writer). From a play var these
+# would try to reach the CONTROLLER as ec2-user through an SSM tunnel targeting "localhost" as an
+# instance-id. Inventory host vars are never copied into a delegated task's variable stack, so they
+# stay on the EC2 hosts where they belong.
 compose:
-  # SSH-over-SSM dials the instance by ID, never by IP — see group_vars/all.yml's ProxyCommand.
+  # SSH-over-SSM dials the instance by ID, never by IP — ansible_ssh_common_args below is the
+  # tunnel that makes an instance-id dialable.
   ansible_host: instance_id
   # The plugin snake-cases describe-instances straight into hostvars, so every host also gets a
   # bare `state` hostvar — the INSTANCE-STATE dict (e.g. {code: 16, name: running}), NOT an
   # ansible role-state string. Every framework role loader reads `state | default('present')`
-  # (linux_disk_manager tasks/main.yml) to select present/absent/clean, and that dict silently
-  # beats the default — hence the `-e state=present` stopgap this fixes at the source. This
-  # inventory's standing intent IS present (teardown here is terraform-destroy, never
+  # (linux_disk_manager tasks/main.yml) to select present/absent/clean, and that dict would
+  # silently beat the loader default. This inventory's standing intent IS present (teardown
+  # here is terraform-destroy, never
   # ansible-absent), so pin a literal string 'present' (nested quotes: compose values are Jinja
   # expressions, not auto-quoted strings). An operator `-e state=absent` still overrides —
   # extra-vars outrank inventory hostvars in Ansible's precedence order.
   state: "'present'"
+
+  # Explicit rather than implied: the whole zero-ingress design (the ProxyCommand below plus the
+  # ControlPersist mux the Windows DefaultShell flip depends on) needs the OpenSSH client
+  # specifically. Same value as ansible-core's own DEFAULT_TRANSPORT default, so this is
+  # documentation with teeth rather than a behavioural change. It applies to the Windows endpoints
+  # too — they are Ansible-over-SSH, not WinRM/PSRP, which is the non-obvious part.
+  ansible_connection: "'ssh'"
+
+  # Matches terraform/aws.tfvars all_systems[].key_name = "secure-wazuh-poc-key". The '~' is left
+  # UNEXPANDED here and expanded by the ssh connection plugin itself at connect time, so it follows
+  # the controller user's home — /root for the local root harness, /home/runner for the non-root
+  # GitHub runner. ansible/inventory/proxmox.yml keeps its separate permanent-inventory path.
+  ansible_ssh_private_key_file: "'~/.ssh/secure-wazuh-poc-key.pem'"
+
+  # RHEL/Rocky 8 STIG images ship only platform-python — see ansible/ansible.cfg's interpreter
+  # note. Set unconditionally: it is inert on the Windows endpoints (nothing there runs a Python
+  # module — the agent role's Windows entry is all win_*/raw), and every task that needs a
+  # different interpreter overrides it at block/task level (the roles' /opt/ansible/venv s3_object
+  # blocks, and `{{ ansible_playbook_python }}` on the controller-delegated calls), which outranks
+  # an inventory host var.
+  ansible_python_interpreter: "'/usr/libexec/platform-python'"
+
+  # PER-PLATFORM, off the same discriminator the groups: block below uses. The Linux branches are
+  # the values already in force: ec2-user is the CIS/DISA RHEL 8 STIG marketplace image's default
+  # login (= terraform/aws.tfvars readiness_user, and NOT "rocky" — that is the on-prem/Proxmox
+  # image), and 'sh' is exactly what ansible-core already selects when no shell type is set
+  # (get_shell_plugin falls back to 'sh', and /bin/sh basenames to the same plugin). Administrator
+  # is the Windows endpoint's SSH login. NOTE the outer parentheses: `|` binds tighter than `==`,
+  # so without them Jinja parses this as `platform == ('windows' | ternary(...))`.
+  ansible_user: "((platform | default('') | lower) == 'windows') | ternary('Administrator', 'ec2-user')"
+  # Load-bearing: Stage 3 and the Windows FIM trigger play in deploy-aws-poc.yml declare no shell
+  # type of their own and depend on this. The Windows OpenSSH bootstrap play deliberately overrides
+  # it to `cmd` for itself (play vars, precedence 12) and its final verify task back to powershell
+  # (task vars, 17) — both still outrank this (inventory host vars, 8).
+  ansible_shell_type: "((platform | default('') | lower) == 'windows') | ternary('powershell', 'sh')"
+
+  # The PoC security group has zero inbound rules (docs/reference/aws-iam/README.md, "Permanent
+  # networking") — there is no direct network path to any instance, so every ssh/sftp/scp call must
+  # tunnel through SSM, dialing ansible_host (the instance-id) above rather than an IP.
+  # `host_key_checking = False` is already set project-wide in ansible/ansible.cfg (these instances
+  # are destroyed and recreated every deploy cycle, so host keys never persist), so it is not
+  # repeated here. The tunnel is OS-agnostic — the Windows endpoints use it unchanged.
+  #
+  # NO AWS PROFILE IS HARDCODED here, or anywhere else in this target. The `aws` CLI this
+  # ProxyCommand shells out to inherits whatever ambient AWS_PROFILE / credential chain the
+  # operator's shell (or CI's OIDC session) already has — only `--region` is pinned below, and
+  # only because it must match the region the plugin actually queried. Same for account isolation:
+  # no account id is ever read, filtered on, or hardcoded in this file.
+  #
+  # --region comes from the host's OWN placement (the plugin derives placement.region from the
+  # instance's AZ) and NOT from an env lookup, because lookups are disabled here (see 1. above) and
+  # under `strict: false` the failure would be silent — no tunnel, every host UNREACHABLE, no
+  # error. Sourcing it from placement is equivalent BY CONSTRUCTION: the templated `regions:` list
+  # above resolves exactly one region and the plugin queries only that one, so every host it can
+  # return is in it. The `| default('us-east-1', true)` preserves the same documented fallback the
+  # env chain had, and guarantees a missing `placement` degrades to that default instead of
+  # dropping the tunnel entirely.
+  ansible_ssh_common_args: >-
+    '-o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession
+    --parameters portNumber=%p --region ' ~ (placement.region | default('us-east-1', true)) ~ '"'
 
 groups:
   # `tags` (NOT `ec2_tags`) deliberately: ansible/requirements.yml pins amazon.aws to

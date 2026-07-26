@@ -4,9 +4,9 @@
 # assets emit `from __future__ import annotations` (Python 3.7+) and fail on 3.6 with
 # "SyntaxError: future feature annotations is not defined". So both the CONTROLLER ansible-core
 # AND these collections must stay on the last releases that still support Python 3.6 targets:
-#   - ansible-core  >=2.16,<2.17   (2.21 — the wsus framework pin — CANNOT manage RHEL 8; see
-#                                    _handoff/REARCH-PLAN.md toolchain note. Not set here; it is
-#                                    a controller install, not a collection.)
+#   - ansible-core  >=2.16,<2.17   (newer controller lines cannot manage the target's Python 3.6;
+#                                    see docs/explanation/toolchain-rhel8.md. Not set here because
+#                                    ansible-core is a controller install, not a collection.)
 #   - community.general <8         (>=8 / 13.x use future-annotations -> break on 3.6)
 #   - ansible.posix     <2         (2.x uses future-annotations -> breaks on 3.6)
 collections:

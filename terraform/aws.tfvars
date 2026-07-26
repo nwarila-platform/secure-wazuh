@@ -22,6 +22,12 @@
 #   - MANAGED, framework-CREATED per system: managed_security_groups below, e.g. the AIO's own
 #     inbound Wazuh mesh (1514/1515) from the deploy subnet. See that block's own comment for why
 #     this is per-system, not a shared cross-system rule.
+#
+# The framework's inline per-system managed_security_group attribute is deliberately not used:
+# its derived "<hostname>-sg" name would make the AIO group "secure-wazuh-poc-sg", colliding with
+# the permanent standing group of that name in this VPC. Adopting the inline attribute requires
+# either an explicit framework name override or re-stamping the standing group under a
+# non-colliding name.
 
 environment = "poc"
 
@@ -49,7 +55,7 @@ all_systems = [
     # public subnet secure-wazuh-public-use1a (IGW-routed, auto-assign public IP — see
     # docs/reference/aws-iam/README.md "Permanent networking")
     subnet_id            = "subnet-0e1c8aae192deff26"
-    key_name             = "secure-wazuh-poc-key"     # must match a readiness_private_key_paths key
+    key_name             = "secure-wazuh-poc-key" # must match a readiness_private_key_paths key
     iam_instance_profile = "secure-wazuh-poc-profile"
     # aws/ebs = the AWS-managed default EBS key (satisfies encrypted-at-rest for STIG/FIPS). A
     # customer-managed CMK is an optional hardening upgrade (key control/rotation/audit), not required.
