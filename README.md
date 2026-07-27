@@ -54,7 +54,7 @@ Terraform frameworks; the generic Ansible loader and shared roles live in the pi
 | **All-in-one** | Indexer + manager + Filebeat + dashboard on one node (fail-fast on unsupported multi-node) |
 | **File Integrity Monitoring** | Realtime (inotify) FIM that emits change **events** with **zero audit records** (`whodata="no"`) |
 | **Secrets** | Each playbook invocation resolves one dashboard-admin password, normally minting it; service credentials rotate per run, while guarded recovery converges persistent manager RBAC state |
-| **TLS** | OpenSearch/Filebeat/dashboard TLS from SHA-256-verified S3 cert PEMs today; a two-tier on-target PKI is the **tracked target** (see [ADR&nbsp;0001](docs/decision-records/repo/0001-secrets-and-tls.md), which carries its implementation-status banner) |
+| **TLS** | Rotate-every-run internal PKI minted on the target; the role reads only the dashboard listener pair from S3, with legacy internal fallback objects pending removal after deployment validation (see [ADR&nbsp;0001](docs/decision-records/repo/0001-secrets-and-tls.md)) |
 | **Supply chain** | Offline package bundle + pinned SHA256; deny-all explicit `.gitignore`; org security workflows (CodeQL, Scorecard, IaC scan) |
 | **Reproducibility** | Pinned `ansible-framework` commit (`.github/.framework-pin`); pinned RHEL-8 ansible-core 2.16 toolchain |
 
@@ -63,7 +63,7 @@ Terraform frameworks; the generic Ansible loader and shared roles live in the pi
 - A Linux control host (WSL Ubuntu on Windows) with the dev toolchain: `make install`.
 - The persistent data volume provisioned at `/mnt/data` (handled by the framework's
   `linux_disk_manager` role — disk selected by stable WWN, mounted by UUID).
-- The Wazuh **offline bundle** and the **dashboard public cert** uploaded to S3 (keys in
+- The Wazuh **offline bundle** and the **dashboard listener pair + digest sidecars** uploaded to S3 (keys in
   [docs/reference/s3-artifacts.md](docs/reference/s3-artifacts.md)).
 - AWS credentials supplied to the runner **only** as module args — never exported into the
   target shell (Wazuh logs sudo argv). See

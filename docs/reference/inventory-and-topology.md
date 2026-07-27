@@ -72,14 +72,15 @@ addresses and connection details differ between the two inventories.
 
 ## Naming and certificate coupling
 
-Three things key off the inventory hostname, so change them together:
+The internal node identity defaults to the inventory hostname:
 
-1. **Keep `ansible_host` set to the IP** unless the inventory FQDN resolves both from the controller and on the target itself. The role's on-target reachability and TLS-validated health checks use `endpoint_host` (falling back to `ansible_host`, then the inventory name).
-2. **Cert object names follow `cert_name`, which defaults to `inventory_hostname`.** Renaming the host makes the role fetch PEMs under the new name. Either upload PEMs under the new name (with the FQDN in the SANs) or pin `wazuh_server.cert_name` to the original name the PEMs carry.
-3. **Health checks validate certificates.** Whatever host the checks dial must appear in the node cert's SANs. Loopback (`127.0.0.1`) is always in the SANs, so the login smoke test never trips on a missing external-IP SAN.
+1. **Keep `ansible_host` set to the IP** unless the inventory FQDN resolves both from the controller and on the target itself. The role's reachability checks use `endpoint_host` (falling back to `ansible_host`, then the inventory name).
+2. **`node_name` defaults to `inventory_hostname`.** Every run mints the internal node certificate with that name plus `localhost` and `127.0.0.1` in its SANs. Renaming the inventory host therefore rotates the OpenSearch identity automatically; set `wazuh_server.node_name` only when OpenSearch needs a stable explicit name.
+3. **Internal TLS health checks use loopback.** Loopback is always in the minted node SANs. The dashboard login check validates the distinct S3-custodied listener certificate, whose SANs must cover the address used for that check.
 
 ## Related
 
 - [`explanation/architecture.md`](../explanation/architecture.md) — what the AIO host contains and why it collapsed.
-- [`reference/s3-artifacts.md`](s3-artifacts.md) — cert object names derived from `cert_name`.
+- [`reference/s3-artifacts.md`](s3-artifacts.md) — the dashboard listener pair and package objects
+  held in S3.
 - [`how-to/deploy-the-stack.md`](../how-to/deploy-the-stack.md) — deploying against this topology.

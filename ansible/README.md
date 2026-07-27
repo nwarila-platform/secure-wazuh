@@ -3,8 +3,10 @@
 Deploys a STIG- and FIPS-hardened Wazuh 4.14.5 all-in-one SIEM onto RHEL/Rocky 8, plus
 Linux and Windows endpoint agents. The central stack (indexer + manager + Filebeat +
 dashboard) is **one role on one host** (`wazuh_server`). S3 is the source of truth for the
-offline bundle, the cert PEMs, and the per-version agent RPM/MSI — each verified against a
-SHA-256 pin after download. See [`../docs/explanation/architecture.md`](../docs/explanation/architecture.md).
+offline bundle, the dashboard listener pair, and the per-version agent RPM/MSI. The internal PKI
+is minted on the AIO target every run and is not read from S3; legacy internal fallback objects
+remain pending removal after deployment validation. See
+[`../docs/explanation/architecture.md`](../docs/explanation/architecture.md).
 
 ## Layout
 

@@ -33,8 +33,8 @@ mounts, service state). User overrides go in the `wazuh_server:` extra-var dict.
   indexer/manager/dashboard state onto subdirectories of `/mnt/data/wazuh`; it does not
   partition or format raw disks.
 - The bootstrap venv (`deploy-aws-poc.yml`'s Linux Bootstrap section) — the S3 download borrows its boto3.
-- The offline bundle + cert PEMs in S3 at the keys pinned in the env overlay, each verified
-  against a SHA-256 pin after download. See
+- The offline bundle plus `dashboard.pem` / `dashboard-key.pem` and their SHA-256 sidecars in S3
+  at the keys pinned in the env overlay. See
   [`../../../docs/reference/s3-artifacts.md`](../../../docs/reference/s3-artifacts.md).
 
 ## Secrets and TLS
@@ -42,9 +42,13 @@ mounts, service state). User overrides go in the `wazuh_server:` extra-var dict.
 The playbook resolves exactly one admin password per invocation, normally minting it when no
 explicit environment override is supplied. OpenSearch internal service users are generated fresh
 each run and exist only as bcrypt hashes; manager-API users are derived from that invocation's
-admin password, with guarded `rbac.db` recovery when prior state holds another value. TLS material
-is currently fetched from S3 and verified; the target two-tier PKI is
-tracked in [ADR-0001](../../../docs/decision-records/repo/0001-secrets-and-tls.md).
+admin password, with guarded `rbac.db` recovery when prior state holds another value. Every run
+mints an RSA-3072/SHA-256 internal CA and separate indexer-node, securityadmin, and manager-API
+certificates on the target, then shreds the CA key after issuance. Filebeat, the manager indexer
+connector, and the dashboard backend authenticate from their keystores and verify the internal CA;
+the role reads only the separate dashboard 443 listener pair from S3. Legacy internal fallback
+objects remain pending removal after deployment validation.
+See [ADR-0001](../../../docs/decision-records/repo/0001-secrets-and-tls.md).
 
 ## Example
 

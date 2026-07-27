@@ -21,9 +21,10 @@ The four components on an all-in-one box only ever talk to each other over loopb
 
 ```text
 00 guards -> 01 secrets -> 02 host prep -> 03 S3 (one deduped block)
--> 04 package install (4 RPMs from one bundle) -> 05 indexer config + CLUSTER-GREEN GATE
--> 06 manager + Filebeat config (owned FIM stanza) -> 07 manager validation
--> 08 dashboard config -> 09 dashboard validation -> 10 FIM realtime verify
+-> 04 package install (4 RPMs from one bundle) -> 05 on-target PKI mint
+-> 06 indexer config + CLUSTER-GREEN GATE -> 07 manager + Filebeat config
+-> 08 manager validation -> 09 dashboard config -> 10 dashboard validation
+-> 11 FIM realtime verify
 ```
 
 Everything internal resolves to `127.0.0.1`, so there is no group dereferencing and no split-host endpoint configuration to keep consistent. Split-host topology is intentionally dropped rather than carried as dead complexity — see [`reference/inventory-and-topology.md`](../reference/inventory-and-topology.md).
@@ -55,14 +56,17 @@ This keeps indexer data, manager state, and dashboard state on the durable disk 
 
 ## Trust and hardening posture
 
-- **Artifacts are verified before use.** The offline bundle and agent RPM are checked against PR-reviewed SHA-256 pins after download; a mismatch aborts the install.
+- **Artifacts are verified before use.** The offline bundle and agent packages are checked against
+  configured SHA-256 pins after download. The dashboard certificate pair is checked against its
+  S3 sidecars before installation.
+- **Internal PKI rotates every run.** The internal CA and separate indexer-node, securityadmin, and manager-API certificates are minted on the target with RSA-3072/SHA-256. The CA private key is shredded after issuance. The role reads only the dashboard listener pair from S3; legacy internal fallback objects remain pending removal after deployment validation.
 - **Secrets rotate every run.** The playbook resolves one password per invocation (the `admin` superuser / dashboard login), normally minting it when no explicit environment override is supplied. Every OpenSearch internal service user is generated fresh and exists only as a bcrypt hash; manager API users are derived from that invocation's admin password, and the guarded authentication ladder converges prior `rbac.db` state.
-- **Minimal external surface.** The indexer HTTP API (9200) is deliberately not opened in the firewall — on an AIO box every consumer reaches it over loopback. Only agent comms (1514), enrollment (1515), the manager API (55000), and the dashboard (443) are exposed.
+- **Minimal external surface.** The AWS AIO interface permits agent comms/enrollment (1514-1515) and dashboard HTTPS (443) from the deploy subnet. The manager API (55000) and indexer HTTP API (9200) stay closed at the interface; their AIO consumers use loopback.
 - **File integrity monitoring is realtime.** The role replaces the vendor's 12-hour scheduled scan with an inotify realtime `<syscheck>` stanza on `/etc`, `/usr/bin`, `/usr/sbin`, so changes emit events immediately rather than only surfacing as periodic inventory diffs.
 
 ## External dependencies
 
-- **S3** — the source of truth for the offline bundle, cert PEMs, and the agent RPM. Downloads run on the target; see [`reference/s3-artifacts.md`](../reference/s3-artifacts.md).
+- **S3** — the source of truth for the offline bundle, dashboard listener certificate pair, and agent packages. Fresh internal PKI is neither downloaded nor uploaded by the role; the live bucket still retains the legacy fallback set described in [`reference/s3-artifacts.md`](../reference/s3-artifacts.md).
 - **The pinned Ansible and Terraform frameworks** — the loader, shared roles, and all Terraform resource logic are composed in at run time from pinned framework commits; see [`explanation/composition-model.md`](composition-model.md).
 
 ## Related

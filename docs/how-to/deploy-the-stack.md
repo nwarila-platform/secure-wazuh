@@ -24,8 +24,9 @@ The permanent Proxmox target is **parked**: its job in [`deploy.yml`](../../.git
   `aws ssm start-session`; that ProxyCommand shells out to a separate binary the AWS CLI does not
   bundle.
 - **Artifacts staged in S3.** Upload the `wazuh-offline.tar.gz` bundle and record its SHA-256 in
-  `s3.bundle_sha256`; upload the node cert PEMs under `s3.certs_prefix`; upload the agent RPM/MSI
-  and record their SHA pins. Object names and pins are catalogued in
+  `s3.bundle_sha256`; upload `dashboard.pem`, `dashboard-key.pem`, and each PEM's `.sha256`
+  sidecar under `s3.certs_prefix`; upload the agent RPM/MSI and record their SHA pins. The
+  internal PKI is minted on the AIO target and needs no S3 objects. Object names and pins are catalogued in
   [`reference/s3-artifacts.md`](../reference/s3-artifacts.md). The bucket itself is never
   committed; workflows export `ANSIBLE_S3_BUCKET` from their existing account-id-derived value,
   and local operators export the bucket name explicitly (ADR-0004).
@@ -116,7 +117,13 @@ Run the same command a second time after `terraform apply -var refresh_serial=1`
 The playbook gates itself during the run (it fails the play rather than leaving a half-configured stack), but confirm the headline signals afterward:
 
 - **Indexer cluster is green or yellow.** The play asserts this before Filebeat starts. A single-node AIO box reports green once shards allocate.
-- **Dashboard answers on 443.** A TLS-validated login smoke test runs at the end of the role against `127.0.0.1` (always in the node cert SANs).
+- **Dashboard answers on 443.** A TLS-validated login smoke test runs at the end of the role
+  against `127.0.0.1`, validating the distinct dashboard listener certificate. The current
+  self-signed dev placeholder is trusted only when its exact configured SHA-256 fingerprint
+  matches; an issued replacement must chain through the target's normal CA store.
+- **The manager indexer connector initializes.** The role requires a fresh post-start success
+  record proving that the manager's own connector authenticated, connected, and initialized its
+  `wazuh-states-*` index path. Filebeat's separate output test cannot satisfy this gate.
 - **Agents enrolled.** Each endpoint in the all-agent `wazuh_agents` group should show as active;
   `wazuh_agents_linux` and `wazuh_agents_windows` classify those endpoints for the platform FIM
   trigger stages. The local manager also runs agent `000` for on-box FIM.

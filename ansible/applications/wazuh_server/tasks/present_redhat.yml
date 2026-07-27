@@ -6,10 +6,10 @@
 # design (ratified): #region banners, NO sub-includes.
 #
 # ORDER (load-bearing): 00 guards -> 01 secrets -> 02 host prep -> 03 S3 (one deduped block) ->
-# 04 package install (4 RPMs from the one bundle + indexer fapolicyd/JNA) -> 05 indexer config +
-# security init + CLUSTER-GREEN GATE -> 06 manager+filebeat config (incl. the owned FIM syscheck
-# stanza, folded in BEFORE first manager start for a single restart) + 07 manager validation ->
-# 08 dashboard config + 09 dashboard validation -> 10 FIM realtime verify.
+# 04 package install (4 RPMs from the one bundle + indexer fapolicyd/JNA) -> 05 on-target PKI ->
+# 06 indexer config + security init + CLUSTER-GREEN GATE -> 07 manager+filebeat config (incl. the
+# owned FIM syscheck stanza, folded in BEFORE first manager start for a single restart) +
+# 08 manager validation -> 09 dashboard config + 10 dashboard validation -> 11 FIM verify.
 #
 # GUARD PHILOSOPHY: LEAN (trust CI/CD). Keep TARGETING/functional logic; TRIM defensive input
 # re-validation and mutation-safety asserts. Do NOT add new guards.
@@ -21,25 +21,23 @@
 - name: 'INFO | Entering OS Tasks (present_redhat - wazuh_server)'
   become: true
   vars:
-    __aio_node__: "{{ config.cert_name | default(inventory_hostname, true) }}"
-    __node_name__: "{{ config.node_name | default(__aio_node__, true) }}"
+    __node_name__: "{{ config.node_name | default(inventory_hostname, true) }}"
     __endpoint_host__: "{{ config.endpoint_host | default(ansible_host | default(inventory_hostname), true) }}"
     __indexer_host__: "{{ config.indexer_host | default('127.0.0.1', true) }}"
     __manager_host__: "{{ config.manager_host | default('127.0.0.1', true) }}"
     # Where the post-deploy 443 login smoke-test connects (validate_certs: true). A wildcard
-    # bind can't be dialed, so fall back to loopback — 127.0.0.1 is ALWAYS in every node cert's
-    # SAN (the cert issuer includes loopback in its IP-SAN set), so validation never trips on a
-    # missing external-IP SAN. An explicit bind_address is the operator's cert responsibility.
+    # bind can't be dialed, so fall back to loopback. The S3-custodied dashboard listener
+    # certificate must cover this address; the current dev placeholder includes 127.0.0.1.
+    # An explicit bind_address is likewise the dashboard certificate issuer's responsibility.
     __dashboard_endpoint_host__: >-
       {{ config.dashboard.bind_address
          if config.dashboard.bind_address not in ['0.0.0.0', '::']
          else '127.0.0.1' }}
-    __cert_files__:
-      - 'root-ca.pem'
-      - 'admin.pem'
-      - 'admin-key.pem'
-      - "{{ __aio_node__ }}.pem"
-      - "{{ __aio_node__ }}-key.pem"
+    __dashboard_cert_objects__:
+      - 'dashboard.pem'
+      - 'dashboard.pem.sha256'
+      - 'dashboard-key.pem'
+      - 'dashboard-key.pem.sha256'
   block:
 
     #region ------ [ 00 INIT / GUARDS (LEAN) ] ----------------------------------------------- #
@@ -53,11 +51,14 @@
     # admin_password non-empty/length/complexity is now validated at loader INIT — see
     # tasks/validate.yml — before this file even starts, so it is not re-asserted here.
 
-    # Freeze the intended dashboard service state for the play-end restart handler. A dedicated
-    # fact keeps handler behavior independent of later variable lookups at flush time.
-    - name: 'BEGIN | Record Dashboard Intended State'
+    # Reset handler preconditions on every invocation so force_handlers cannot start a dependent
+    # from a prior invocation's fact after this run stops it for fresh trust/key/config changes.
+    - name: 'BEGIN | Reset Dependent Service Handler Preconditions'
       ansible.builtin.set_fact:
         __wazuh_dashboard_start__: "{{ (config.dashboard.service_state | default('started')) == 'started' }}"
+        __wazuh_manager_fully_converged__: false
+        __wazuh_filebeat_fully_converged__: false
+        __wazuh_dashboard_fully_converged__: false
 
     #endregion --- [ 00 INIT / GUARDS (LEAN) ] ----------------------------------------------- #
 
@@ -207,6 +208,26 @@
         permanent: true
         immediate: true
 
+    # Private-key staging must not inherit the playbook's persistent-volume TMPDIR. /run is a
+    # root-only tmpfs on the target, so a lost control connection cannot strand recoverable key
+    # blocks on the OS-swap-persistent data disk. The task-file always section destroys this tree.
+    - name: 'PROCESS | Create Root-Only tmpfs Staging For Private Keys'
+      changed_when: false
+      register: '__pki_temp_dir__'
+      ansible.builtin.tempfile:
+        state: 'directory'
+        path: '/run'
+        prefix: 'secure-wazuh-pki-'
+
+    - name: 'PROCESS | Lock tmpfs Private-Key Staging To Root'
+      changed_when: false
+      ansible.builtin.file:
+        path: "{{ __pki_temp_dir__.path }}"
+        state: 'directory'
+        owner: 'root'
+        group: 'root'
+        mode: '0700'
+
     #endregion --- [ 02 HOST PREPARATION ] -------------------------------------------------- #
 
     #region ------ [ 03 S3 STAGING (one deduped block) ] ------------------------------------ #
@@ -215,13 +236,13 @@
     # amazon.aws.s3_object so they never enter the target's shell environment; this prevents
     # sudo/audit/Wazuh-alert logs from capturing them. boto3 transfer checksums cover object
     # movement, the bundle is still verified against the pinned config.s3.bundle_sha256 below,
-    # and PEMs rely on IAM/S3 checksum metadata rather than separate sidecar objects.
+    # and the dashboard certificate pair is verified against its downloaded SHA-256 sidecars.
     #
     # The block-level `ansible_python_interpreter` override forces these tasks onto the
     # bootstrap venv (Python 3.12) because the current amazon.aws collection's boto3 floor is
     # above what RHEL 8 platform-python (3.6) can install. Every other task in the role uses
     # platform-python — see ansible.cfg's interpreter_python note.
-    - name: 'S3 | Fetch bundle + cert PEMs from S3 to target temp dir'
+    - name: 'S3 | Fetch Bundle + Dashboard Certificate Pair From S3'
       no_log: true
       vars:
         ansible_python_interpreter: '/opt/ansible/venv/bin/python'
@@ -249,16 +270,16 @@
             object: "{{ config.s3.bundle_key }}"
             dest: "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
 
-        - name: 'S3 | Download Cert PEMs'
+        - name: 'S3 | Download Dashboard Certificate Pair + SHA-256 Sidecars'
           changed_when: false
-          loop: "{{ __cert_files__ }}"
+          loop: "{{ __dashboard_cert_objects__ }}"
           amazon.aws.s3_object:
             object: "{{ config.s3.certs_prefix }}/{{ item }}"
-            dest: "{{ __temp_dir__.path }}/{{ item }}"
+            dest: "{{ __pki_temp_dir__.path }}/{{ item }}"
 
       # The block above is no_log (module args carry AWS creds), so a failed download is
       # censored and undiagnosable. Re-fail here with the secret-free facts an operator
-      # needs: which objects were expected and why the names might not match.
+      # needs: the fixed object keys that were expected.
       # ADR-0004: the workflow/local environment supplies an account-id-shaped bucket; see the
       # inline pointer below.
       rescue:
@@ -275,11 +296,10 @@
               account-id-shaped)
               contains these objects:
               {{ config.s3.bundle_key }},
-              {{ __cert_files__ | map('regex_replace', '^', config.s3.certs_prefix ~ '/') | join(', ') }}.
-              Cert object names derive from cert_name (default: inventory_hostname) — an
-              inventory rename (e.g. short name to FQDN) changes them. Either upload PEMs
-              under the new name or set wazuh_server.cert_name to the name used to generate the
-              PEMs. Also confirm AWS credentials/region in the runner env.
+              {{ __dashboard_cert_objects__
+                 | map('regex_replace', '^', config.s3.certs_prefix ~ '/')
+                 | join(', ') }}.
+              Also confirm AWS credentials/region in the runner env.
 
     # Trust-on-first-use: the SHA256 in defaults is the operator's PR-reviewed known-good
     # hash. Mismatch = S3 bundle was tampered with → abort install.
@@ -289,6 +309,97 @@
         checksum_algorithm: 'sha256'
       register: '__bundle_verify__'
       failed_when: (__bundle_verify__.stat.checksum | lower) != (config.s3.bundle_sha256 | lower)
+
+    # Sidecars in this prefix use both digest-only and standard `sha256sum` records. Consume the
+    # first whitespace-delimited token, validate that it is a SHA-256 digest, and compare it with
+    # an independently calculated checksum of the downloaded object.
+    - name: 'S3 | Read Dashboard SHA-256 Sidecars'
+      loop:
+        - 'dashboard.pem'
+        - 'dashboard-key.pem'
+      register: '__dashboard_sidecars__'
+      ansible.builtin.slurp:
+        src: "{{ __pki_temp_dir__.path }}/{{ item }}.sha256"
+
+    - name: 'S3 | Calculate Dashboard Object SHA-256 Digests'
+      loop:
+        - 'dashboard.pem'
+        - 'dashboard-key.pem'
+      register: '__dashboard_object_digests__'
+      ansible.builtin.stat:
+        path: "{{ __pki_temp_dir__.path }}/{{ item }}"
+        checksum_algorithm: 'sha256'
+
+    - name: 'S3 | Verify Dashboard Objects Match Published SHA-256 Digests'
+      loop: >-
+        {{ __dashboard_sidecars__.results
+           | zip(__dashboard_object_digests__.results)
+           | list }}
+      loop_control:
+        label: "{{ item.0.item }}"
+      vars:
+        __published_digest__: >-
+          {{ ((item.0.content | b64decode | regex_findall('\S+'))
+              | first | default('')) | lower }}
+      ansible.builtin.assert:
+        that:
+          - __published_digest__ is match('^[0-9a-f]{64}$')
+          - (__published_digest__ | lower) == (item.1.stat.checksum | lower)
+        quiet: true
+        fail_msg: >-
+          {{ 'Invalid SHA-256 sidecar for ' ~ item.0.item ~
+             ': the first whitespace-delimited token is not a 64-character hexadecimal digest.'
+             if not (__published_digest__ is match('^[0-9a-f]{64}$'))
+             else 'SHA-256 mismatch for ' ~ item.0.item ~
+             ': the downloaded object does not match its published sidecar digest.' }}
+
+    - name: 'S3 | Inspect Dashboard Certificate Subject And Issuer'
+      register: '__dashboard_cert_identity__'
+      changed_when: false
+      loop:
+        - '-subject'
+        - '-issuer'
+      ansible.builtin.command:
+        argv:
+          - 'openssl'
+          - 'x509'
+          - '-in'
+          - "{{ __pki_temp_dir__.path }}/dashboard.pem"
+          - '-noout'
+          - "{{ item }}"
+          - '-nameopt'
+          - 'RFC2253'
+
+    - name: 'S3 | Read Dashboard Certificate SHA-256 Fingerprint'
+      register: '__dashboard_cert_fingerprint__'
+      changed_when: false
+      ansible.builtin.command:
+        argv:
+          - 'openssl'
+          - 'x509'
+          - '-in'
+          - "{{ __pki_temp_dir__.path }}/dashboard.pem"
+          - '-noout'
+          - '-fingerprint'
+          - '-sha256'
+
+    # Pin the exception to the exact configured dev placeholder. Same-subject issuer matching alone
+    # would treat every future self-signed certificate as the placeholder and silently trust it.
+    - name: 'S3 | Record Whether Dashboard Certificate Is Exact Dev Placeholder'
+      changed_when: false
+      ansible.builtin.set_fact:
+        __dashboard_cert_dev_placeholder__: >-
+          {{ (__dashboard_cert_identity__.results[0].stdout
+              | regex_replace('^subject=', ''))
+             ==
+             (__dashboard_cert_identity__.results[1].stdout
+              | regex_replace('^issuer=', ''))
+             and (config.dashboard.dev_placeholder_fingerprint | length > 0)
+             and ((__dashboard_cert_fingerprint__.stdout
+                   | regex_replace('^[^=]+=', '')
+                   | upper)
+                  ==
+                  (config.dashboard.dev_placeholder_fingerprint | upper)) }}
 
     # `changed_when: false` because the loader's per-run tempfile path means every run extracts
     # into a fresh staging dir — the resulting changed=True would be noise on every play.
@@ -464,7 +575,7 @@
     # Order matters:
     #   1. Trust the JDK tree FIRST. The extraction below execs no JDK binary — it uses python's
     #      zipfile module, not `jar xf` (see 'PROCESS | Extract libjnidispatch.so...' below for
-    #      why) — but securityadmin.sh (region 05, 'PROCESS | Push Security Config Via
+    #      why) — but securityadmin.sh (region 06, 'PROCESS | Push Security Config Via
     #      securityadmin') runs under OPENSEARCH_JAVA_HOME/JAVA_HOME pointed at this same tree,
     #      so it must already be trusted before that call (and the indexer's own JVM) exec java
     #      from it.
@@ -577,178 +688,571 @@
 
     #endregion --- [ 04 PACKAGE INSTALLATION ] ---------------------------------------------- #
 
-    #region ------ [ 05 INDEXER CONFIG + SECURITY INIT + CLUSTER-GREEN GATE ] --------------- #
+    #region ------ [ 05 ON-TARGET INTERNAL PKI ] --------------------------------------------- #
 
-    # opensearch.yml is templated by this role, but with the canonical 'indexer.pem' filenames:
-    # per-node certs are named after `cert_name` (defaults to inventory_hostname) and renamed on
-    # copy so the config and the securityadmin arguments stay identical across hosts.
-    - name: 'PROCESS | Place TLS Material'
-      register: '__tls_material__'
-      loop:
-        - { src: 'root-ca.pem', dest: 'root-ca.pem', mode: '0440' }
-        - { src: 'admin.pem', dest: 'admin.pem', mode: '0440' }
-        - { src: 'admin-key.pem', dest: 'admin-key.pem', mode: '0400' }
-        - { src: '{{ __aio_node__ }}.pem', dest: 'indexer.pem', mode: '0440' }
-        - { src: '{{ __aio_node__ }}-key.pem', dest: 'indexer-key.pem', mode: '0400' }
-      ansible.builtin.copy:
-        src: "{{ __temp_dir__.path }}/{{ item.src }}"
-        dest: "{{ config.certs_dir }}/{{ item.dest }}"
-        remote_src: true
-        owner: 'wazuh-indexer'
-        group: 'wazuh-indexer'
-        mode: "{{ item.mode }}"
+    # The internal CA, indexer node, securityadmin, and manager-API identities rotate on EVERY
+    # invocation. All generated keys live under root-only /run staging. This block's always section
+    # conditionally shreds every generated key whether issuance, validation, or installation fails.
+    - name: 'PKI | Mint And Install Fresh Internal Identities'
+      block:
 
-    - name: 'PROCESS | Read Admin Certificate DN'
-      register: '__admin_dn_cmd__'
-      changed_when: false
-      ansible.builtin.command:
-        argv:
-          - 'openssl'
-          - 'x509'
-          - '-in'
-          - "{{ config.certs_dir }}/admin.pem"
-          - '-noout'
-          - '-subject'
-          - '-nameopt'
-          - 'RFC2253'
+        # RSA-3072 and SHA-256 are approved primitives on the target's RHEL 8 FIPS provider. The
+        # openssl CLI uses that provider directly and avoids community.crypto's dependency on a
+        # newer Python cryptography package than platform-python 3.6 can supply.
+        - name: 'PKI | Generate Fresh RSA-3072 Private Keys On Target'
+          no_log: true
+          changed_when: true
+          loop:
+            - 'internal-ca-key.pem'
+            - 'indexer-key.pem'
+            - 'admin-key.pem'
+            - 'manager-api-key.pem'
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'genpkey'
+              - '-algorithm'
+              - 'RSA'
+              - '-pkeyopt'
+              - 'rsa_keygen_bits:3072'
+              - '-out'
+              - "{{ __pki_temp_dir__.path }}/{{ item }}"
 
-    - name: 'PROCESS | Read Indexer Node Certificate DN'
-      register: '__indexer_dn_cmd__'
-      changed_when: false
-      ansible.builtin.command:
-        argv:
-          - 'openssl'
-          - 'x509'
-          - '-in'
-          - "{{ config.certs_dir }}/indexer.pem"
-          - '-noout'
-          - '-subject'
-          - '-nameopt'
-          - 'RFC2253'
+        - name: 'PKI | Lock Staged Private Keys To Root'
+          no_log: true
+          loop:
+            - 'internal-ca-key.pem'
+            - 'indexer-key.pem'
+            - 'admin-key.pem'
+            - 'manager-api-key.pem'
+          ansible.builtin.file:
+            path: "{{ __pki_temp_dir__.path }}/{{ item }}"
+            owner: 'root'
+            group: 'root'
+            mode: '0600'
 
-    # Full-file template (not in-place regex) so node identity, bind address, cluster name, TLS
-    # policy, and the DN allowlists all come from role variables. The DN values are still read
-    # from the actual installed certs above — never guessed from defaults.
-    - name: 'PROCESS | Render opensearch.yml From Template (DNs From Actual Certs)'
-      register: '__opensearch_config__'
-      vars:
-        __admin_dn__: "{{ __admin_dn_cmd__.stdout | split('subject=') | last }}"
-        __indexer_dn__: "{{ __indexer_dn_cmd__.stdout | split('subject=') | last }}"
-      ansible.builtin.template:
-        src: 'opensearch.yml.j2'
-        dest: '/etc/wazuh-indexer/opensearch.yml'
-        owner: 'wazuh-indexer'
-        group: 'wazuh-indexer'
-        mode: '0640'
+        - name: 'PKI | Mint Fresh Self-Signed Internal Root CA'
+          no_log: true
+          changed_when: true
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'req'
+              - '-new'
+              - '-x509'
+              - '-key'
+              - "{{ __pki_temp_dir__.path }}/internal-ca-key.pem"
+              - '-sha256'
+              - '-days'
+              - '365'
+              - '-subj'
+              - '/CN=secure-wazuh-internal-root'
+              - '-addext'
+              - 'basicConstraints=critical,CA:TRUE,pathlen:0'
+              - '-addext'
+              - 'keyUsage=critical,keyCertSign,cRLSign'
+              - '-out'
+              - "{{ __pki_temp_dir__.path }}/root-ca.pem"
 
-    # Restart on a cert change too, not only an opensearch.yml change: a same-DN cert renewal
-    # rewrites indexer.pem/-key.pem (and root-ca.pem) without moving the templated DN allowlist,
-    # so gating only on __opensearch_config__ would leave the daemon serving the old in-memory
-    # cert until expiry. __tls_material__ registers the cert copy above.
-    - name: 'PROCESS | Restart Indexer If opensearch.yml Or TLS Material Changed'
-      when: __opensearch_config__ is changed or __tls_material__ is changed
-      ansible.builtin.systemd:
-        name: 'wazuh-indexer'
-        state: 'restarted'
+        - name: 'PKI | Write Leaf Certificate Extension Policy'
+          ansible.builtin.copy:
+            dest: "{{ __pki_temp_dir__.path }}/internal-pki-extensions.cnf"
+            owner: 'root'
+            group: 'root'
+            mode: '0600'
+            content: |
+              [v3_node]
+              basicConstraints = critical,CA:FALSE
+              keyUsage = critical,digitalSignature,keyEncipherment
+              extendedKeyUsage = serverAuth,clientAuth
+              subjectKeyIdentifier = hash
+              authorityKeyIdentifier = keyid,issuer
+              subjectAltName = DNS:localhost,DNS:{{ __node_name__ }},IP:127.0.0.1
 
-    - name: 'PROCESS | Enable And Start wazuh-indexer'
-      ansible.builtin.systemd:
-        name: 'wazuh-indexer'
-        enabled: true
-        state: 'started'
-        daemon_reload: true
+              [v3_admin]
+              basicConstraints = critical,CA:FALSE
+              keyUsage = critical,digitalSignature,keyEncipherment
+              extendedKeyUsage = clientAuth
+              subjectKeyIdentifier = hash
+              authorityKeyIdentifier = keyid,issuer
 
-    - name: 'PROCESS | Wait For Indexer To Listen On 9200'
-      ansible.builtin.wait_for:
-        host: "{{ __indexer_host__ }}"
-        port: 9200
-        delay: 5
-        timeout: 240
+              [v3_manager_api]
+              basicConstraints = critical,CA:FALSE
+              keyUsage = critical,digitalSignature,keyEncipherment
+              extendedKeyUsage = serverAuth
+              subjectKeyIdentifier = hash
+              authorityKeyIdentifier = keyid,issuer
+              subjectAltName = DNS:localhost,IP:127.0.0.1
 
-    # The role is intentionally narrow: write-only access to Wazuh's alert and archive indices,
-    # plus the minimum cluster perms a bulk-ingest client needs (`cluster_monitor` for health
-    # probes, `cluster_composite_ops` for `_bulk` against multiple indices). Template management
-    # lives on the indexer side. The Filebeat user no longer needs cluster-wide
-    # `indices:admin/template/put`; ingest-pipeline admin is still required.
-    - name: 'PROCESS | Ensure Filebeat Wazuh Index Writer Role Exists'
-      ansible.builtin.blockinfile:
-        path: '/etc/wazuh-indexer/opensearch-security/roles.yml'
-        marker: '# {mark} ANSIBLE MANAGED WAZUH FILEBEAT WRITER ROLE'
-        insertafter: EOF
-        owner: 'wazuh-indexer'
-        group: 'wazuh-indexer'
-        mode: '0640'
-        block: |
-          wazuh_filebeat_writer:
-            reserved: false
-            hidden: false
-            cluster_permissions:
-              - 'cluster_monitor'
-              - 'cluster_composite_ops'
-              - 'cluster:admin/ingest/pipeline/*'
-            index_permissions:
-              - index_patterns:
-                  - 'wazuh-alerts-4.x-*'
-                  - 'wazuh-archives-4.x-*'
-                allowed_actions:
-                  - 'indices:admin/create'
-                  - 'indices:admin/mapping/put'
-                  - 'indices:data/write/bulk*'
-                  - 'indices:data/write/index'
-                  - 'indices:data/write/create'
-                  - 'indices:data/write/update'
-            tenant_permissions: []
+        - name: 'PKI | Create Fresh Leaf Certificate Requests'
+          no_log: true
+          changed_when: true
+          loop:
+            - { name: 'indexer', subject: '/CN={{ __node_name__ }}' }
+            - { name: 'admin', subject: '/CN=secure-wazuh-admin' }
+            - { name: 'manager-api', subject: '/CN=secure-wazuh-manager-api' }
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'req'
+              - '-new'
+              - '-sha256'
+              - '-key'
+              - "{{ __pki_temp_dir__.path }}/{{ item.name }}-key.pem"
+              - '-subj'
+              - "{{ item.subject }}"
+              - '-out'
+              - "{{ __pki_temp_dir__.path }}/{{ item.name }}.csr"
 
-    - name: 'PROCESS | Ensure Filebeat Wazuh Index Writer Mapping Exists'
-      ansible.builtin.blockinfile:
-        path: '/etc/wazuh-indexer/opensearch-security/roles_mapping.yml'
-        marker: '# {mark} ANSIBLE MANAGED WAZUH FILEBEAT WRITER MAPPING'
-        insertafter: EOF
-        owner: 'wazuh-indexer'
-        group: 'wazuh-indexer'
-        mode: '0640'
-        block: |
-          wazuh_filebeat_writer:
-            reserved: false
-            hidden: false
-            backend_roles:
-              - 'wazuh_filebeat_writer'
-            hosts: []
-            users: []
-            and_backend_roles: []
+        - name: 'PKI | Issue Fresh Indexer Node Certificate'
+          no_log: true
+          changed_when: true
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'x509'
+              - '-req'
+              - '-in'
+              - "{{ __pki_temp_dir__.path }}/indexer.csr"
+              - '-CA'
+              - "{{ __pki_temp_dir__.path }}/root-ca.pem"
+              - '-CAkey'
+              - "{{ __pki_temp_dir__.path }}/internal-ca-key.pem"
+              - '-CAcreateserial'
+              - '-sha256'
+              - '-days'
+              - '365'
+              - '-extfile'
+              - "{{ __pki_temp_dir__.path }}/internal-pki-extensions.cnf"
+              - '-extensions'
+              - 'v3_node'
+              - '-out'
+              - "{{ __pki_temp_dir__.path }}/indexer.pem"
 
-    # Secrets rotate every run, so the security config is ALWAYS re-rendered and re-pushed —
-    # there is no fingerprint gate (it would always miss). This is the accepted non-idempotency
-    # of rotation.
-    - name: 'PROCESS | Render internal_users.yml From Rotating Passwords'
-      no_log: true
-      ansible.builtin.template:
-        src: 'internal_users.yml.j2'
-        dest: '/etc/wazuh-indexer/opensearch-security/internal_users.yml'
-        owner: 'wazuh-indexer'
-        group: 'wazuh-indexer'
-        mode: '0640'
+        - name: 'PKI | Issue Fresh Admin And Manager API Certificates'
+          no_log: true
+          changed_when: true
+          loop:
+            - { name: 'admin', extensions: 'v3_admin' }
+            - { name: 'manager-api', extensions: 'v3_manager_api' }
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'x509'
+              - '-req'
+              - '-in'
+              - "{{ __pki_temp_dir__.path }}/{{ item.name }}.csr"
+              - '-CA'
+              - "{{ __pki_temp_dir__.path }}/root-ca.pem"
+              - '-CAkey'
+              - "{{ __pki_temp_dir__.path }}/internal-ca-key.pem"
+              - '-CAserial'
+              - "{{ __pki_temp_dir__.path }}/root-ca.srl"
+              - '-sha256'
+              - '-days'
+              - '365'
+              - '-extfile'
+              - "{{ __pki_temp_dir__.path }}/internal-pki-extensions.cnf"
+              - '-extensions'
+              - "{{ item.extensions }}"
+              - '-out'
+              - "{{ __pki_temp_dir__.path }}/{{ item.name }}.pem"
 
-    - name: 'PROCESS | Push Security Config Via securityadmin'
-      environment:
-        OPENSEARCH_JAVA_HOME: '/usr/share/wazuh-indexer/jdk'
-        JAVA_HOME: '/usr/share/wazuh-indexer/jdk'
-      changed_when: true
-      ansible.builtin.command:
-        argv:
-          - '/usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh'
-          - '-cd'
-          - '/etc/wazuh-indexer/opensearch-security/'
-          - '-nhnv'
-          - '-cacert'
-          - "{{ config.certs_dir }}/root-ca.pem"
-          - '-cert'
-          - "{{ config.certs_dir }}/admin.pem"
-          - '-key'
-          - "{{ config.certs_dir }}/admin-key.pem"
-          - '-p'
-          - '9200'
-          - '-icl'
+        # All required leaves now exist. The always path remains a second, idempotent destruction
+        # guarantee if this immediate shred fails or any later PKI task aborts.
+        - name: 'PKI | Shred Internal CA Private Key After Issuance'
+          no_log: true
+          changed_when: true
+          ansible.builtin.command:
+            argv:
+              - 'shred'
+              - '--remove'
+              - '--zero'
+              - '--'
+              - "{{ __pki_temp_dir__.path }}/internal-ca-key.pem"
+
+        - name: 'PKI | Verify Issued Certificates Chain To Fresh Internal CA'
+          changed_when: false
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'verify'
+              - '-CAfile'
+              - "{{ __pki_temp_dir__.path }}/root-ca.pem"
+              - "{{ __pki_temp_dir__.path }}/indexer.pem"
+              - "{{ __pki_temp_dir__.path }}/admin.pem"
+              - "{{ __pki_temp_dir__.path }}/manager-api.pem"
+
+        - name: 'PKI | Verify Indexer Node Certificate DNS SANs'
+          changed_when: false
+          loop:
+            - 'localhost'
+            - "{{ __node_name__ }}"
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'x509'
+              - '-in'
+              - "{{ __pki_temp_dir__.path }}/indexer.pem"
+              - '-noout'
+              - '-checkhost'
+              - "{{ item }}"
+
+        - name: 'PKI | Verify Indexer Node Certificate Loopback IP SAN'
+          changed_when: false
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'x509'
+              - '-in'
+              - "{{ __pki_temp_dir__.path }}/indexer.pem"
+              - '-noout'
+              - '-checkip'
+              - '127.0.0.1'
+
+        - name: 'PKI | Verify Manager API Certificate Loopback SANs'
+          changed_when: false
+          loop:
+            - { option: '-checkhost', value: 'localhost' }
+            - { option: '-checkip', value: '127.0.0.1' }
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'x509'
+              - '-in'
+              - "{{ __pki_temp_dir__.path }}/manager-api.pem"
+              - '-noout'
+              - "{{ item.option }}"
+              - "{{ item.value }}"
+
+        # Read the exact staged subjects before touching the live tree. The resulting facts feed
+        # opensearch.yml after the controlled stop, so no subject is guessed from defaults.
+        - name: 'PKI | Read Fresh Admin Certificate DN'
+          register: '__admin_dn_cmd__'
+          changed_when: false
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'x509'
+              - '-in'
+              - "{{ __pki_temp_dir__.path }}/admin.pem"
+              - '-noout'
+              - '-subject'
+              - '-nameopt'
+              - 'RFC2253'
+
+        - name: 'PKI | Read Fresh Indexer Node Certificate DN'
+          register: '__indexer_dn_cmd__'
+          changed_when: false
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'x509'
+              - '-in'
+              - "{{ __pki_temp_dir__.path }}/indexer.pem"
+              - '-noout'
+              - '-subject'
+              - '-nameopt'
+              - 'RFC2253'
+
+        # Stop every process that consumes the indexer's CA before replacing it. The manager stop
+        # also stops its separate indexer connector. None is restarted until securityadmin succeeds.
+        - name: 'PKI | Rotate Live Trust Material With Dependents Stopped'
+          block:
+
+            - name: 'PKI | Stop Indexer-Dependent Services Before CA Rotation'
+              loop:
+                - 'wazuh-manager'
+                - 'filebeat'
+                - 'wazuh-dashboard'
+              ansible.builtin.systemd:
+                name: "{{ item }}"
+                state: 'stopped'
+
+            - name: 'PKI | Stop Indexer Before Replacing Live Trust Material'
+              ansible.builtin.systemd:
+                name: 'wazuh-indexer'
+                state: 'stopped'
+
+            - name: 'PKI | Ensure Manager API ssl Directory Exists'
+              ansible.builtin.file:
+                path: '/var/ossec/api/configuration/ssl'
+                state: 'directory'
+                owner: 'wazuh'
+                group: 'wazuh'
+                mode: '0500'
+
+            - name: 'PKI | Inspect Existing Live Internal Private Keys'
+              no_log: true
+              register: '__live_internal_keys__'
+              loop:
+                - "{{ config.certs_dir }}/admin-key.pem"
+                - "{{ config.certs_dir }}/indexer-key.pem"
+                - '/var/ossec/api/configuration/ssl/server.key'
+              ansible.builtin.stat:
+                path: "{{ item }}"
+                get_checksum: false
+
+            - name: 'PKI | Shred Existing Live Internal Private Keys Before Replacement'
+              when: item.stat.isreg | default(false)
+              no_log: true
+              changed_when: true
+              loop: "{{ __live_internal_keys__.results }}"
+              ansible.builtin.command:
+                argv:
+                  - 'shred'
+                  - '--remove'
+                  - '--zero'
+                  - '--'
+                  - "{{ item.item }}"
+
+            - name: 'PKI | Install Fresh Internal Public Certificates'
+              loop:
+                - { src: 'root-ca.pem', dest: '{{ config.certs_dir }}/root-ca.pem', owner: 'root', group: 'wazuh-indexer' }
+                - { src: 'admin.pem', dest: '{{ config.certs_dir }}/admin.pem', owner: 'root', group: 'wazuh-indexer' }
+                - { src: 'indexer.pem', dest: '{{ config.certs_dir }}/indexer.pem', owner: 'root', group: 'wazuh-indexer' }
+                - { src: 'manager-api.pem', dest: '/var/ossec/api/configuration/ssl/server.crt', owner: 'wazuh', group: 'wazuh' }
+              ansible.builtin.copy:
+                src: "{{ __pki_temp_dir__.path }}/{{ item.src }}"
+                dest: "{{ item.dest }}"
+                remote_src: true
+                owner: "{{ item.owner }}"
+                group: "{{ item.group }}"
+                mode: '0440'
+
+            # Private keys use direct install while all consumers are stopped. This avoids
+            # ansible.builtin.copy's destination-local atomic temporary and its failure remnants.
+            - name: 'PKI | Install Fresh Internal Private Keys Without Atomic Copy Temporaries'
+              no_log: true
+              changed_when: true
+              loop:
+                - { src: 'admin-key.pem', dest: '{{ config.certs_dir }}/admin-key.pem', owner: 'root', group: 'wazuh-indexer' }
+                - { src: 'indexer-key.pem', dest: '{{ config.certs_dir }}/indexer-key.pem', owner: 'wazuh-indexer', group: 'wazuh-indexer' }
+                - { src: 'manager-api-key.pem', dest: '/var/ossec/api/configuration/ssl/server.key', owner: 'wazuh', group: 'wazuh' }
+              ansible.builtin.command:
+                argv:
+                  - 'install'
+                  - '-o'
+                  - "{{ item.owner }}"
+                  - '-g'
+                  - "{{ item.group }}"
+                  - '-m'
+                  - '0600'
+                  - "{{ __pki_temp_dir__.path }}/{{ item.src }}"
+                  - "{{ item.dest }}"
+
+          rescue:
+
+            - name: 'PKI | Keep Indexer Dependents Stopped After Incomplete TLS Installation'
+              failed_when: false
+              loop:
+                - 'wazuh-manager'
+                - 'filebeat'
+                - 'wazuh-dashboard'
+              ansible.builtin.systemd:
+                name: "{{ item }}"
+                state: 'stopped'
+
+            - name: 'PKI | Read Indexer State After Incomplete TLS Installation'
+              changed_when: false
+              failed_when: false
+              register: '__indexer_rotation_failure_state__'
+              ansible.builtin.command:
+                argv: ['systemctl', 'is-active', 'wazuh-indexer']
+
+            - name: 'PKI | Stop After Incomplete TLS Installation'
+              ansible.builtin.fail:
+                msg: >-
+                  Internal TLS installation did not finish. wazuh-manager, Filebeat, and
+                  wazuh-dashboard were ordered stopped; wazuh-indexer is
+                  {{ __indexer_rotation_failure_state__.stdout | default('unknown') }} and its
+                  live TLS files may be incomplete. Correct the preceding failure and rerun this
+                  role; do not start dependent services against the partial trust set.
+
+      always:
+
+        - name: 'PKI | Find Any Staged Generated Private Keys'
+          no_log: true
+          register: '__staged_generated_private_keys__'
+          ansible.builtin.find:
+            paths: "{{ __pki_temp_dir__.path }}"
+            recurse: false
+            file_type: 'file'
+            patterns:
+              - 'internal-ca-key.pem'
+              - 'indexer-key.pem'
+              - 'admin-key.pem'
+              - 'manager-api-key.pem'
+
+        - name: 'PKI | Always Shred Every Staged Generated Private Key'
+          no_log: true
+          changed_when: true
+          loop: "{{ __staged_generated_private_keys__.files | default([]) }}"
+          ansible.builtin.command:
+            argv:
+              - 'shred'
+              - '--remove'
+              - '--zero'
+              - '--'
+              - "{{ item.path }}"
+
+    #endregion --- [ 05 ON-TARGET INTERNAL PKI ] --------------------------------------------- #
+
+    #region ------ [ 06 INDEXER CONFIG + SECURITY INIT + CLUSTER-GREEN GATE ] --------------- #
+
+    # From the first on-disk DN change through securityadmin, any failure leaves all dependent
+    # clients stopped and reports the indexer's actual service state. This is deliberately a
+    # stop/repair/rerun contract, not an unsafe attempt to mix old and new trust anchors.
+    - name: 'PROCESS | Complete Controlled Indexer PKI Rotation'
+      block:
+
+        # Full-file template (not in-place regex) so node identity, bind address, cluster name, TLS
+        # policy, and the DN allowlists all come from role variables. The DN values were read from
+        # the exact staged certs installed during the controlled stop — never guessed from defaults.
+        - name: 'PROCESS | Render opensearch.yml From Template (DNs From Actual Certs)'
+          register: '__opensearch_config__'
+          vars:
+            __admin_dn__: "{{ __admin_dn_cmd__.stdout | split('subject=') | last }}"
+            __indexer_dn__: "{{ __indexer_dn_cmd__.stdout | split('subject=') | last }}"
+          ansible.builtin.template:
+            src: 'opensearch.yml.j2'
+            dest: '/etc/wazuh-indexer/opensearch.yml'
+            owner: 'wazuh-indexer'
+            group: 'wazuh-indexer'
+            mode: '0640'
+
+        # This is the second half of the controlled rotation stop/start. The process can now load the
+        # fresh keypair, CA, and matching DN allowlists together. securityadmin remains strictly later.
+        - name: 'PROCESS | Enable And Start Indexer With Fresh PKI And Matching DNs'
+          ansible.builtin.systemd:
+            name: 'wazuh-indexer'
+            enabled: true
+            state: 'started'
+            daemon_reload: true
+
+        - name: 'PROCESS | Wait For Indexer To Listen On 9200'
+          ansible.builtin.wait_for:
+            host: "{{ __indexer_host__ }}"
+            port: 9200
+            delay: 5
+            timeout: 240
+
+        # The role is intentionally narrow: write-only access to Wazuh's alert and archive indices,
+        # plus the minimum cluster perms a bulk-ingest client needs (`cluster_monitor` for health
+        # probes, `cluster_composite_ops` for `_bulk` against multiple indices). Template management
+        # lives on the indexer side. The Filebeat user no longer needs cluster-wide
+        # `indices:admin/template/put`; ingest-pipeline admin is still required.
+        - name: 'PROCESS | Ensure Filebeat Wazuh Index Writer Role Exists'
+          ansible.builtin.blockinfile:
+            path: '/etc/wazuh-indexer/opensearch-security/roles.yml'
+            marker: '# {mark} ANSIBLE MANAGED WAZUH FILEBEAT WRITER ROLE'
+            insertafter: EOF
+            owner: 'wazuh-indexer'
+            group: 'wazuh-indexer'
+            mode: '0640'
+            block: |
+              wazuh_filebeat_writer:
+                reserved: false
+                hidden: false
+                cluster_permissions:
+                  - 'cluster_monitor'
+                  - 'cluster_composite_ops'
+                  - 'cluster:admin/ingest/pipeline/*'
+                index_permissions:
+                  - index_patterns:
+                      - 'wazuh-alerts-4.x-*'
+                      - 'wazuh-archives-4.x-*'
+                    allowed_actions:
+                      - 'indices:admin/create'
+                      - 'indices:admin/mapping/put'
+                      - 'indices:data/write/bulk*'
+                      - 'indices:data/write/index'
+                      - 'indices:data/write/create'
+                      - 'indices:data/write/update'
+                tenant_permissions: []
+
+        - name: 'PROCESS | Ensure Filebeat Wazuh Index Writer Mapping Exists'
+          ansible.builtin.blockinfile:
+            path: '/etc/wazuh-indexer/opensearch-security/roles_mapping.yml'
+            marker: '# {mark} ANSIBLE MANAGED WAZUH FILEBEAT WRITER MAPPING'
+            insertafter: EOF
+            owner: 'wazuh-indexer'
+            group: 'wazuh-indexer'
+            mode: '0640'
+            block: |
+              wazuh_filebeat_writer:
+                reserved: false
+                hidden: false
+                backend_roles:
+                  - 'wazuh_filebeat_writer'
+                hosts: []
+                users: []
+                and_backend_roles: []
+
+        # Secrets rotate every run, so the security config is ALWAYS re-rendered and re-pushed —
+        # there is no fingerprint gate (it would always miss). This is the accepted non-idempotency
+        # of rotation.
+        - name: 'PROCESS | Render internal_users.yml From Rotating Passwords'
+          no_log: true
+          ansible.builtin.template:
+            src: 'internal_users.yml.j2'
+            dest: '/etc/wazuh-indexer/opensearch-security/internal_users.yml'
+            owner: 'wazuh-indexer'
+            group: 'wazuh-indexer'
+            mode: '0640'
+
+        - name: 'PROCESS | Push Security Config Via securityadmin'
+          environment:
+            OPENSEARCH_JAVA_HOME: '/usr/share/wazuh-indexer/jdk'
+            JAVA_HOME: '/usr/share/wazuh-indexer/jdk'
+          register: '__securityadmin__'
+          retries: 24
+          delay: 5
+          until: __securityadmin__.rc == 0
+          changed_when: true
+          ansible.builtin.command:
+            argv:
+              - '/usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh'
+              - '-cd'
+              - '/etc/wazuh-indexer/opensearch-security/'
+              - '-nhnv'
+              - '-cacert'
+              - "{{ config.certs_dir }}/root-ca.pem"
+              - '-cert'
+              - "{{ config.certs_dir }}/admin.pem"
+              - '-key'
+              - "{{ config.certs_dir }}/admin-key.pem"
+              - '-p'
+              - '9200'
+              - '-icl'
+
+      rescue:
+
+        - name: 'PROCESS | Keep Indexer Dependents Stopped After Rotation Failure'
+          failed_when: false
+          loop:
+            - 'wazuh-manager'
+            - 'filebeat'
+            - 'wazuh-dashboard'
+          ansible.builtin.systemd:
+            name: "{{ item }}"
+            state: 'stopped'
+
+        - name: 'PROCESS | Read Indexer State After Rotation Failure'
+          changed_when: false
+          failed_when: false
+          register: '__indexer_security_failure_state__'
+          ansible.builtin.command:
+            argv: ['systemctl', 'is-active', 'wazuh-indexer']
+
+        - name: 'PROCESS | Stop After Incomplete Indexer Security Initialization'
+          ansible.builtin.fail:
+            msg: >-
+              Fresh internal TLS material is on disk, but matching DN/security configuration may
+              be incomplete and securityadmin did not complete. wazuh-manager, Filebeat, and
+              wazuh-dashboard were ordered stopped; wazuh-indexer is
+              {{ __indexer_security_failure_state__.stdout | default('unknown') }}. Correct the
+              preceding failure and rerun this role before starting dependent services.
 
     - name: 'END | Cluster Health Check'
       register: '__health__'
@@ -794,21 +1298,31 @@
         body: "{{ __wazuh_template__.content | b64decode | from_json }}"
         status_code: [200, 201]
 
-    #endregion --- [ 05 INDEXER CONFIG + SECURITY INIT + CLUSTER-GREEN GATE ] --------------- #
+    #endregion --- [ 06 INDEXER CONFIG + SECURITY INIT + CLUSTER-GREEN GATE ] --------------- #
 
-    #region ------ [ 06 MANAGER + FILEBEAT CONFIG ] ------------------------------------------ #
+    #region ------ [ 07 MANAGER + FILEBEAT CONFIG ] ------------------------------------------ #
 
 
-    # The RPM ships ossec.conf with <indexer><host>https://0.0.0.0:9200</host></indexer>.
-    # Substitute the real indexer host so the indexer-connector writes wazuh-states-* there.
-    # Match ANY current https URL inside <host>…</host> (not just the RPM placeholder) so a
-    # later change of indexer host (e.g. IP → FQDN) is repaired instead of silently kept.
-    - name: 'PROCESS | Substitute Indexer Host In ossec.conf'
+    # Own the complete manager indexer-connector region. The connector authenticates with its
+    # manager-keystore username/password and verifies the indexer through the rotating internal CA;
+    # it does not present the retired Filebeat client certificate or key.
+    - name: 'PROCESS | Own Manager Indexer Connector Stanza (Password + CA Verification)'
       notify: 'wazuh-manager-config-changed'
       ansible.builtin.replace:
         path: "{{ config.manager.config_path }}"
-        regexp: '(?<=<host>)https://[^<]+(?=</host>)'
-        replace: "https://{{ __indexer_host__ }}:9200"
+        regexp: '(?s)<indexer>.*?</indexer>'
+        replace: |2
+            <indexer>
+              <enabled>yes</enabled>
+              <hosts>
+                <host>https://{{ __indexer_host__ }}:9200</host>
+              </hosts>
+              <ssl>
+                <certificate_authorities>
+                  <ca>{{ config.filebeat.certs_dir }}/root-ca.pem</ca>
+                </certificate_authorities>
+              </ssl>
+            </indexer>
 
     # FIM fix folded in here (BEFORE the first manager start) so the same
     # 'wazuh-manager-config-changed' handler flush restarts the manager exactly once with
@@ -832,36 +1346,6 @@
         path: "{{ config.manager.config_path }}"
         marker: '    <!-- {mark} ANSIBLE MANAGED WAZUH AUTHD FORCE-REPLACEMENT -->'
         state: 'absent'
-
-    # The manager REST API (55000) is served by a separate process (wazuh_apid.py) that ships
-    # its OWN vendor-generated self-signed pair at
-    # /var/ossec/api/configuration/ssl/{server.crt,server.key} (CN=<hostname>, no relation to
-    # root-ca.pem) — independent of every other TLS surface this role owns. Overwrite it with
-    # the same per-node cert already issued to the indexer/dashboard (regions 05/08) so the
-    # API's identity chains to config.certs_dir/root-ca.pem like everything else, letting the
-    # END-stage calls below verify it for real instead of opting out of TLS verification.
-    # notify the existing stop/kill-stale-child/drain/start handler so wazuh_apid.py is
-    # respawned reading the new files before anything below dials it.
-    - name: 'PROCESS | Ensure Manager API ssl Directory Exists'
-      ansible.builtin.file:
-        path: '/var/ossec/api/configuration/ssl'
-        state: 'directory'
-        owner: 'wazuh'
-        group: 'wazuh'
-        mode: '0500'
-
-    - name: 'PROCESS | Place Manager API TLS Material (Role PKI, Not Vendor Self-Signed)'
-      notify: 'wazuh-manager-config-changed'
-      loop:
-        - { src: '{{ __aio_node__ }}.pem', dest: 'server.crt', mode: '0440' }
-        - { src: '{{ __aio_node__ }}-key.pem', dest: 'server.key', mode: '0400' }
-      ansible.builtin.copy:
-        src: "{{ __temp_dir__.path }}/{{ item.src }}"
-        dest: "/var/ossec/api/configuration/ssl/{{ item.dest }}"
-        remote_src: true
-        owner: 'wazuh'
-        group: 'wazuh'
-        mode: "{{ item.mode }}"
 
     # fapolicyd's rpmdb backend silently skips the filebeat Go binary, and /var/ossec is
     # bind-mounted (its bin/ is unreachable by the rpmdb trust). Without explicit trust, exec is
@@ -947,23 +1431,51 @@
         group: 'root'
         mode: '0500'
 
-    # Bundled filebeat.yml references /etc/filebeat/certs/{filebeat,filebeat-key,root-ca}.pem.
-    # Our certs are named after the node; rename on copy. Restart filebeat when its TLS
-    # material changes (same-DN renewal that does not move filebeat.yml) so the running
-    # process reloads the new cert. The 'filebeat-config-changed' handler restarts the unit.
-    - name: 'PROCESS | Place Filebeat TLS Material'
+    # Filebeat authenticates with its keystore-held writer password and verifies only the indexer
+    # server chain. The rotating internal CA is the sole TLS file it needs.
+    - name: 'PROCESS | Place Internal CA For Filebeat Server Verification'
       notify: 'filebeat-config-changed'
-      loop:
-        - { src: 'root-ca.pem', dest: 'root-ca.pem', mode: '0440' }
-        - { src: '{{ __aio_node__ }}.pem', dest: 'filebeat.pem', mode: '0440' }
-        - { src: '{{ __aio_node__ }}-key.pem', dest: 'filebeat-key.pem', mode: '0400' }
       ansible.builtin.copy:
-        src: "{{ __temp_dir__.path }}/{{ item.src }}"
-        dest: "{{ config.filebeat.certs_dir }}/{{ item.dest }}"
+        src: "{{ config.certs_dir }}/root-ca.pem"
+        dest: "{{ config.filebeat.certs_dir }}/root-ca.pem"
         remote_src: true
         owner: 'root'
         group: 'root'
-        mode: "{{ item.mode }}"
+        mode: '0440'
+
+    # The manager's API pair, connector configuration, keystore values, and connector CA are now
+    # complete. A forced handler may safely restore this dependent after this point.
+    - name: 'PROCESS | Mark Manager Fully Converged For Restart Handler'
+      ansible.builtin.set_fact:
+        __wazuh_manager_fully_converged__: true
+
+    - name: 'PROCESS | Inspect Retired Filebeat Client Private Key'
+      no_log: true
+      register: '__retired_filebeat_key__'
+      ansible.builtin.stat:
+        path: "{{ config.filebeat.certs_dir }}/filebeat-key.pem"
+        get_checksum: false
+
+    # The legacy file was a persistent copy of the old node identity. Overwrite it before unlinking
+    # so the first migration does not leave its former blocks recoverable through normal disk reuse.
+    - name: 'PROCESS | Shred Retired Filebeat Client Private Key'
+      when: __retired_filebeat_key__.stat.isreg | default(false)
+      no_log: true
+      changed_when: true
+      notify: 'filebeat-config-changed'
+      ansible.builtin.command:
+        argv:
+          - 'shred'
+          - '--remove'
+          - '--zero'
+          - '--'
+          - "{{ config.filebeat.certs_dir }}/filebeat-key.pem"
+
+    - name: 'PROCESS | Remove Retired Filebeat Client Certificate'
+      notify: 'filebeat-config-changed'
+      ansible.builtin.file:
+        path: "{{ config.filebeat.certs_dir }}/filebeat.pem"
+        state: 'absent'
 
     # filebeat resolves ${WAZUH_INDEXER_PASSWORD} from /var/lib/filebeat/filebeat.keystore
     # at startup. The keystore is encrypted at rest using a machine-bound key.
@@ -1023,16 +1535,22 @@
         group: 'root'
         mode: '0644'
 
-    #endregion --- [ 06 MANAGER + FILEBEAT CONFIG ] ------------------------------------------ #
+    # Filebeat's trust, retired identity cleanup, keystore, main config, and module config are now
+    # complete. A forced handler may safely restore this dependent after this point.
+    - name: 'PROCESS | Mark Filebeat Fully Converged For Restart Handler'
+      ansible.builtin.set_fact:
+        __wazuh_filebeat_fully_converged__: true
 
-    #region ------ [ 07 MANAGER + FILEBEAT VALIDATION ] -------------------------------------- #
+    #endregion --- [ 07 MANAGER + FILEBEAT CONFIG ] ------------------------------------------ #
+
+    #region ------ [ 08 MANAGER + FILEBEAT VALIDATION ] -------------------------------------- #
 
 
     - name: 'END | Reload systemd Unit Cache'
       ansible.builtin.systemd:
         daemon_reload: true
 
-    # ONLY manager + filebeat here. The indexer is already started+green (region 05); the
+    # ONLY manager + filebeat here. The indexer is already started+green (region 06); the
     # dashboard starts later in its own region (gated on __wazuh_dashboard_start__ and after its
     # config/certs exist). Iterating the full config.services list here would prematurely start
     # wazuh-dashboard against missing config and ignore a declared service_state: stopped.
@@ -1080,11 +1598,9 @@
           # (become: true, no delegate_to) dialing its own co-located API — the same
           # loopback-by-default host wazuh.yml.j2 already uses for the dashboard->API link
           # (config.manager_host, default '127.0.0.1'). __endpoint_host__ is the routable
-          # address; the just-placed API cert is the same per-node PEM whose SAN coverage of
-          # a routable address is "the operator's cert responsibility" (see
-          # __dashboard_endpoint_host__ above) — only loopback is guaranteed, so validating
-          # against it is what makes validate_certs: true pass for real instead of landmining
-          # the next deploy on a hostname mismatch.
+          # address; the dedicated manager-API certificate deliberately covers only the local
+          # clients' guaranteed localhost/loopback names, so validating against manager_host is
+          # what makes validate_certs: true pass without cloning the indexer node identity.
           ansible.builtin.uri:
             url: "https://{{ __manager_host__ }}:55000/security/user/authenticate?raw=true"
             method: 'POST'
@@ -1291,32 +1807,135 @@
               Manager API password rotation verification failed: at least one running API user
               still accepts its factory bootstrap credential.
 
+    # API database recovery above can replace the manager instance used for credential sync.
+    # Stop and drain that instance before capturing the boundary, then start exactly one final
+    # instance. No prior instance can emit after the boundary, and no later task starts the manager.
+    - name: 'END | Stop Manager Before Final Connector-Gated Start'
+      ansible.builtin.systemd:
+        name: 'wazuh-manager'
+        state: 'stopped'
+
+    - name: 'END | Terminate Stale Manager API Child Before Final Connector-Gated Start'
+      ansible.builtin.include_tasks: "{{ role_path }}/tasks/terminate_stale_wazuh_apid.yml"
+
+    - name: 'END | Wait For Manager API Port To Drain Before Final Connector-Gated Start'
+      ansible.builtin.wait_for:
+        host: "{{ __endpoint_host__ }}"
+        port: 55000
+        state: 'stopped'
+        timeout: 60
+
+    - name: 'END | Inspect Manager Log Before Final Connector-Gated Start'
+      register: '__manager_log_before_start__'
+      ansible.builtin.stat:
+        path: '/var/ossec/logs/ossec.log'
+        get_checksum: false
+
+    - name: 'END | Count Existing Manager Log Lines Before Final Connector-Gated Start'
+      when: __manager_log_before_start__.stat.isreg | default(false)
+      changed_when: false
+      register: '__manager_log_line_count__'
+      ansible.builtin.command:
+        argv: ['wc', '-l', '/var/ossec/logs/ossec.log']
+
+    - name: 'END | Record Final Manager Connector Log Boundary'
+      ansible.builtin.set_fact:
+        __manager_connector_log_start_line__: >-
+          {{ (((__manager_log_line_count__.stdout | default('0')) | split | first) | int) + 1 }}
+
+    - name: 'END | Start Final Manager For Connector Gate'
+      ansible.builtin.systemd:
+        name: 'wazuh-manager'
+        state: 'started'
+
+    - name: 'END | Wait For Final Manager API On 55000'
+      ansible.builtin.wait_for:
+        host: "{{ __endpoint_host__ }}"
+        port: 55000
+        delay: 5
+        timeout: 120
+
+    # This success record is emitted only after the final manager's own connector connects,
+    # authenticates, and initializes its wazuh-states index/template. Filebeat cannot emit it.
+    - name: 'END | Verify Final Manager Indexer Connector Initialized Against Fresh PKI'
+      changed_when: false
+      register: '__manager_connector_gate__'
+      retries: 60
+      delay: 5
+      until: >-
+        'indexer-connector: INFO: IndexerConnector initialized successfully for index:'
+        in (__manager_connector_gate__.stdout | default(''))
+      ansible.builtin.command:
+        argv:
+          - 'tail'
+          - '-n'
+          - "+{{ __manager_connector_log_start_line__ }}"
+          - '/var/ossec/logs/ossec.log'
+
     - name: 'END | Verify Filebeat Is Connected To Indexer (test output)'
       register: '__fb_test__'
       changed_when: false
       ansible.builtin.command:
         argv: ['/usr/bin/filebeat', 'test', 'output']
 
-    #endregion --- [ 07 MANAGER + FILEBEAT VALIDATION ] -------------------------------------- #
+    #endregion --- [ 08 MANAGER + FILEBEAT VALIDATION ] -------------------------------------- #
 
-    #region ------ [ 08 DASHBOARD CONFIG ] --------------------------------------------------- #
+    #region ------ [ 09 DASHBOARD CONFIG ] --------------------------------------------------- #
 
 
-    # Per-node certs are named after `cert_name` (defaults to inventory_hostname); rename on
-    # copy to the canonical filename the dashboard config expects.
-    - name: 'PROCESS | Place Dashboard TLS Material'
+    # The backend verifies the indexer's minted chain with root-ca.pem. The 443 listener uses
+    # only the separately custodied dashboard pair downloaded and sidecar-verified in region 03.
+    - name: 'PROCESS | Place Dashboard Backend CA + Public Listener Pair'
+      no_log: true
       notify: 'wazuh-dashboard-config-changed'
       loop:
-        - { src: 'root-ca.pem', dest: 'root-ca.pem', mode: '0440' }
-        - { src: '{{ __aio_node__ }}.pem', dest: 'dashboard.pem', mode: '0440' }
-        - { src: '{{ __aio_node__ }}-key.pem', dest: 'dashboard-key.pem', mode: '0400' }
+        - { src: '{{ config.certs_dir }}/root-ca.pem', dest: 'root-ca.pem', mode: '0440' }
+        - { src: '{{ __pki_temp_dir__.path }}/dashboard.pem', dest: 'dashboard.pem', mode: '0440' }
       ansible.builtin.copy:
-        src: "{{ __temp_dir__.path }}/{{ item.src }}"
+        src: "{{ item.src }}"
         dest: "{{ config.dashboard.certs_dir }}/{{ item.dest }}"
         remote_src: true
         owner: 'wazuh-dashboard'
         group: 'wazuh-dashboard'
         mode: "{{ item.mode }}"
+
+    # Avoid ansible.builtin.copy's destination-local atomic temporary for the private key. The
+    # dashboard is still stopped from the controlled PKI rotation, so replace the live key
+    # directly and leave no second destination-side key copy if the transfer is interrupted.
+    - name: 'PROCESS | Inspect Existing Dashboard Listener Private Key'
+      no_log: true
+      register: '__dashboard_live_key__'
+      ansible.builtin.stat:
+        path: "{{ config.dashboard.certs_dir }}/dashboard-key.pem"
+        get_checksum: false
+
+    - name: 'PROCESS | Shred Existing Dashboard Listener Private Key Before Replacement'
+      when: __dashboard_live_key__.stat.isreg | default(false)
+      no_log: true
+      changed_when: true
+      ansible.builtin.command:
+        argv:
+          - 'shred'
+          - '--remove'
+          - '--zero'
+          - '--'
+          - "{{ config.dashboard.certs_dir }}/dashboard-key.pem"
+
+    - name: 'PROCESS | Install Dashboard Listener Private Key Without Atomic Copy Temporary'
+      no_log: true
+      changed_when: true
+      notify: 'wazuh-dashboard-config-changed'
+      ansible.builtin.command:
+        argv:
+          - 'install'
+          - '-o'
+          - 'wazuh-dashboard'
+          - '-g'
+          - 'wazuh-dashboard'
+          - '-m'
+          - '0600'
+          - "{{ __pki_temp_dir__.path }}/dashboard-key.pem"
+          - "{{ config.dashboard.certs_dir }}/dashboard-key.pem"
 
     # The opensearch.password is stored in opensearch_dashboards.keystore (encrypted at rest)
     # so the plaintext never lands in opensearch_dashboards.yml. Keystore values override the
@@ -1484,9 +2103,9 @@
         mode: '0400'
         attributes: '+i'
 
-    #endregion --- [ 08 DASHBOARD CONFIG ] --------------------------------------------------- #
+    #endregion --- [ 09 DASHBOARD CONFIG ] --------------------------------------------------- #
 
-    #region ------ [ 09 DASHBOARD VALIDATION ] ----------------------------------------------- #
+    #region ------ [ 10 DASHBOARD VALIDATION ] ----------------------------------------------- #
 
     # Drop-in to outlast fapolicyd's async trust-DB sync (30-60s window during which exec of
     # trusted files is denied). The shipped unit has RestartSec=100ms + Restart=always;
@@ -1538,6 +2157,12 @@
           - '/usr/share/wazuh-dashboard/node/fallback/bin/node'
           - '--version'
 
+    # Listener trust/key material, both configuration files, the encrypted backend credential,
+    # systemd tuning, and the executable readiness check are complete.
+    - name: 'END | Mark Dashboard Fully Converged For Restart Handler'
+      ansible.builtin.set_fact:
+        __wazuh_dashboard_fully_converged__: true
+
     - name: 'END | Enable And Start wazuh-dashboard'
       when: __wazuh_dashboard_start__
       ansible.builtin.systemd:
@@ -1577,14 +2202,19 @@
       ansible.builtin.uri:
         url: "https://{{ __dashboard_endpoint_host__ }}/"
         method: 'GET'
-        ca_path: "{{ config.dashboard.certs_dir }}/root-ca.pem"
+        # Trust the exact current dev placeholder only while it is self-signed. An issued
+        # replacement omits ca_path and must chain through the target's normal trusted CA store.
+        ca_path: >-
+          {{ config.dashboard.certs_dir ~ '/dashboard.pem'
+             if __dashboard_cert_dev_placeholder__
+             else omit }}
         validate_certs: true
         status_code: [200, 302]
         follow_redirects: 'none'
 
-    #endregion --- [ 09 DASHBOARD VALIDATION ] ----------------------------------------------- #
+    #endregion --- [ 10 DASHBOARD VALIDATION ] ----------------------------------------------- #
 
-    #region ------ [ 10 FIM REALTIME VALIDATION ] -------------------------------------------- #
+    #region ------ [ 11 FIM REALTIME VALIDATION ] -------------------------------------------- #
 
     # The syscheck stanza itself was owned in the Manager Configuration region (single
     # handler-deduped restart). Here we only CONFIRM the manager actually brought the
@@ -1605,6 +2235,45 @@
           - 'Real-time file integrity monitoring started|real ?time file monitoring engine|Monitoring real ?time'
           - '/var/ossec/logs/ossec.log'
 
-    #endregion --- [ 10 FIM REALTIME VALIDATION ] -------------------------------------------- #
+    #endregion --- [ 11 FIM REALTIME VALIDATION ] -------------------------------------------- #
+
+  # The internal-PKI block has its own immediate generated-key cleanup. This outer guarantee also
+  # covers the S3-custodied dashboard listener key and any generated key left if inner cleanup
+  # itself fails. On a hard interruption the directory remains only in /run tmpfs until reboot.
+  always:
+
+    - name: 'Cleanup | Destroy Root-Only tmpfs Private-Key Staging'
+      when: ((__pki_temp_dir__ is defined) and (__pki_temp_dir__.path is defined))
+      block:
+
+        - name: 'Cleanup | Find Every Remaining Staged Private Key'
+          no_log: true
+          register: '__all_staged_private_keys__'
+          ansible.builtin.find:
+            paths: "{{ __pki_temp_dir__.path }}"
+            recurse: false
+            file_type: 'file'
+            patterns:
+              - '*-key.pem'
+
+        - name: 'Cleanup | Shred Every Remaining Staged Private Key'
+          no_log: true
+          changed_when: true
+          loop: "{{ __all_staged_private_keys__.files | default([]) }}"
+          ansible.builtin.command:
+            argv:
+              - 'shred'
+              - '--remove'
+              - '--zero'
+              - '--'
+              - "{{ item.path }}"
+
+      always:
+
+        - name: 'Cleanup | Remove tmpfs PKI Staging Directory'
+          changed_when: false
+          ansible.builtin.file:
+            path: "{{ __pki_temp_dir__.path }}"
+            state: 'absent'
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #

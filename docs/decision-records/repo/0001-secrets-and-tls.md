@@ -11,15 +11,12 @@
 | Reversibility  | Medium                                      |
 | Review-by      | N/A (Accepted)                              |
 
-> **⚠️ Implementation status.** The **secrets model** (decisions 2 & 3 below — one resolved admin
-> password, rotate-every-run internal service users as bcrypt-only, manager-API users derived
-> from the admin password, plaintext-off-disk mitigations) **is implemented** in the
-> `wazuh_server` role today. The **two-tier PKI** (decision 1 — internal CA/node/admin certs
-> minted *on the target*, client certs dropped, only a distinct dashboard cert from S3) is the
-> **target design and is NOT yet implemented**: the role currently downloads `root-ca.pem` /
-> `admin.pem` / node PEMs from S3 and reuses the node cert for the indexer, Filebeat, and
-> dashboard (the pre-decision flow documented in [`reference/s3-artifacts.md`](../../reference/s3-artifacts.md)).
-> The PKI rework is tracked, not shipped — read decision 1 below as the intended end state.
+> **Implementation status.** The `wazuh_server` role implements the runtime design and reads only
+> the dashboard listener pair and its digest sidecars from the certificate prefix. Every run mints
+> a fresh internal CA plus separate indexer-node, securityadmin, and manager-API identities on the
+> target, then shreds the CA key. Legacy internal-PKI objects remain in S3 as first-run fallback,
+> and the current read policy still grants the whole function prefix. Remove those legacy objects
+> and narrow the policy only after a successful deployment proves the on-target mint.
 
 ## TL;DR
 
@@ -28,9 +25,10 @@
 ADR records three linked decisions about how that stack gets its TLS material and
 its secrets:
 
-1. **Two-tier certificates.** A self-signed **internal PKI** (CA + node + admin
-   certificate) is minted **on the target at deploy time** and used only for the
-   OpenSearch transport, HTTP/REST, and `securityadmin` layers. Those layers are
+1. **Two-tier certificates.** A self-signed **internal PKI** (CA + indexer node +
+   securityadmin + manager-API certificates) is minted **on the target at deploy time**.
+   The first two leaves serve the OpenSearch transport, HTTP/REST, and `securityadmin` layers.
+   Those layers are
    loopback / backend-only on an all-in-one and are never browser-facing. A single
    **dashboard public certificate/key** is **pulled from S3** so that browser
    consumers of the dashboard reach a service whose certificate chains to a CA they
@@ -56,11 +54,13 @@ Wazuh's all-in-one topology co-locates four TLS-bearing surfaces on one host:
 
 - The **OpenSearch transport** layer (node-to-node, tcp/9300).
 - The **OpenSearch HTTP/REST** layer (tcp/9200), which on an all-in-one is reached
-  only over the loopback interface by two local clients: Filebeat and the dashboard
-  backend.
+  only over the loopback interface by three local clients: Filebeat, the manager's
+  indexer connector, and the dashboard backend.
 - **`securityadmin`**, the tool that initializes the OpenSearch security index from
   `internal_users.yml`, `roles.yml`, and `roles_mapping.yml`. It authenticates with
   an admin certificate against the PKI.
+- The **manager API** (tcp/55000), whose dedicated server certificate is consumed by
+  local dashboard and deployment clients over loopback.
 - The **dashboard's browser listener** (tcp/443), the only surface a human ever
   points a web browser at.
 
@@ -133,19 +133,21 @@ a rotate-every-run model with two deterministic exceptions.**
 ### Part A — Two-tier certificates
 
 **Internal PKI (self-signed, minted on the target at deploy time).** The deploy mints,
-on the host, a self-signed root CA and, from it, a node certificate and an admin
-certificate, using FIPS-approved key types and SHA-2 digests. The node certificate's
-SANs cover `localhost`, `127.0.0.1`, and the node's own name. These certificates serve:
+on the host, a self-signed root CA and, from it, an indexer-node certificate, an admin
+certificate, and a manager-API server certificate, using FIPS-approved key types and SHA-2
+digests. The node certificate's SANs cover `localhost`, `127.0.0.1`, and the node's own name.
+The manager-API certificate has only the server EKU and loopback SANs. These certificates serve:
 
 - OpenSearch **transport** (tcp/9300) node identity and node-to-node mutual TLS;
 - OpenSearch **HTTP/REST** (tcp/9200) server identity, reached only over loopback by
   co-located clients;
 - **`securityadmin`**, which uses the admin certificate to initialize and re-apply the
   security index.
+- The manager's local HTTPS API, using its own server identity rather than a copy of the
+  OpenSearch node identity.
 
-Private keys never leave the host. The CA key is either discarded after the node and
-admin certificates are issued or retained `0600` root-owned solely to re-mint on the
-next run; because the model rotates every run (Part C), retention is optional.
+Newly minted private keys never leave the host. The CA key is shredded after all three
+leaf certificates are issued; a future invocation creates an unrelated CA.
 
 **Dashboard public certificate/key (pulled from S3).** The dashboard's 443 listener
 (`opensearch_dashboards.yml` `server.ssl.certificate` / `server.ssl.key`) uses a
@@ -155,23 +157,25 @@ internal issuing CA or a public CA. It is pulled from S3 at deploy time. This is
 trusted chain. It is also the **only** private key any external system (S3 + IAM) needs
 to custody.
 
-**Drop per-component client certs → password + CA-verify.** The two remaining internal
+**Drop per-component client certs → password + CA-verify.** The remaining internal
 hops stop presenting client certificates:
 
 - **Filebeat → indexer.** Filebeat authenticates as the internal writer user
   (bcrypt-hashed in `internal_users.yml` on the indexer; the plaintext lives only in
   the Filebeat keystore) and sets `output.elasticsearch.ssl.certificate_authorities` to
   the internal CA to verify the server. No client certificate.
+- **Manager indexer connector → indexer.** The connector authenticates with its
+  manager-keystore username/password and its owned `<indexer><ssl>` block names only the
+  internal CA. No client certificate.
 - **Dashboard backend → indexer.** The dashboard authenticates as the `kibanaserver`
   internal user, with the password held in the dashboard keystore (not plaintext YAML)
   and `opensearch.ssl.certificateAuthorities` set to the internal CA. No client
   certificate.
 
-Net effect: `admin-key.pem`, the node key, and the former `filebeat-key.pem` and
-dashboard client key are all either minted-and-kept-on-target or eliminated. The
-per-object IAM gymnastics the prior model needed (deny the dashboard host read on
-`admin-key.pem`, etc.) disappear, because the only object under IAM scope is the
-dashboard public key.
+Net effect: the role reads no internal-PKI private key from S3. Legacy internal keys and
+certificates remain under the current prefix-wide read grant only as fallback until the first
+successful on-target mint; removing those objects and narrowing the grant are explicit follow-up
+work.
 
 ### Part B — Plaintext off disk, best-effort
 
@@ -213,7 +217,7 @@ dashboard public key.
 
 Each playbook invocation resolves one `admin_password`. When no non-empty environment
 override is supplied, the playbook mints a fresh strong value; it is never committed to
-the repository (see [ADR-0003](0003-deny-all-explicit-gitignore.md)). From it, the run
+the repository (see [ADR-0003](0003-deny-all-explicit-gitignore.md)). Independently, the run
 mints fresh internal-PKI key material and fresh indexer internal-user passwords.
 `securityadmin` re-initializes the OpenSearch security index wholesale on each run, and
 the matching keystore values (dashboard `kibanaserver`, Filebeat writer) are rewritten
@@ -290,11 +294,12 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
    key from object storage.
 2. **Single external key.** The dashboard 443 certificate/key MUST be the only PKI
    object pulled from S3, and the S3/IAM policy SHOULD grant read on no other private
-   key.
-3. **No client certs on internal hops.** Filebeat's indexer output and the dashboard's
-   `opensearch.*` backend config MUST authenticate with a keystore-held password and MUST
-   set `ssl.certificate_authorities` / `ssl.certificateAuthorities` to the internal CA.
-   Neither MAY present a client certificate.
+   key. The role meets the read-path requirement now; legacy object removal and policy
+   narrowing remain pending until the minted PKI succeeds in deployment.
+3. **No client certs on internal hops.** Filebeat's indexer output, the manager indexer
+   connector, and the dashboard's `opensearch.*` backend config MUST authenticate with a
+   keystore-held password and MUST set their CA-verification setting to the internal CA.
+   None MAY present a client certificate.
 4. **FIPS primitives.** On-target minting MUST use FIPS-approved key types and SHA-2
    digests. A reviewer SHOULD reject MD5/SHA-1 or non-approved key parameters.
 5. **Hashes and keystores.** Indexer internal-user passwords MUST be bcrypt-hashed in
@@ -317,8 +322,8 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
 
 ### Positive
 
-- The externally-custodied key surface shrinks to exactly one object: the dashboard
-  public key. Per-object IAM scoping for internal keys is eliminated.
+- The role's S3 read path contains only the dashboard listener key; legacy external custody
+  remains until the post-validation object and IAM cleanup.
 - Browser consumers reach a trusted dashboard; operators are never trained to accept
   certificate warnings.
 - More secrets sit at rest as bcrypt hashes or in keystores; the irreducible plaintext
@@ -346,9 +351,8 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
 
 ### Neutral
 
-- The internal CA key may be discarded or retained `0600` root-owned depending on
-  whether the operator wants local re-mint versus strict minimization; both are
-  compatible with the model.
+- The internal CA key exists only in root-only tmpfs staging while leaves are issued and
+  is then shredded.
 - Endpoint agents are outside this ADR's TLS scope; they enroll via `client.keys`
   (optionally gated by an enrollment password) rather than through the indexer PKI.
 
@@ -380,14 +384,13 @@ None (current).
 
 ## Implementing PRs
 
-**Landed**: the secrets/rotation model (decisions 2 & 3 — bcrypt/keystore-first plaintext
-containment and the rotate-every-run model, including the deterministic manager-API user
-derivation), implemented in the `wazuh_server` role.
+**Landed**: the two-tier on-target PKI and dashboard-only certificate read path, password +
+CA-verify internal clients, bcrypt/keystore-first plaintext containment, and the rotate-every-run
+model with deterministic manager-API users.
 
-**Pending**: the two-tier on-target PKI (decision 1) — the on-target internal-PKI mint, the
-removal of the Filebeat and dashboard client-cert paths in favor of keystore password +
-CA-verify, the dashboard public-cert S3 pull, and the 4.14.5 dashboard-keystore verification
-for the API password.
+**Pending after successful deployment validation**: remove every legacy internal-PKI object and
+retained version from S3, then narrow the deployed read policy from the whole function prefix to
+the exact artifacts each role consumes.
 
 ## Related ADRs
 
