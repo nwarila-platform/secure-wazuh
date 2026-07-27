@@ -1059,11 +1059,11 @@
         timeout: 120
 
     # Manager API users (wazuh, wazuh-wui) live in the persistent rbac.db. Their passwords are
-    # DERIVED from admin_password (region 01), so the desired value is STABLE across runs. The
-    # token loop below tries the vendor default first (fresh install) then the derived value
-    # (rerun against a persisted rbac.db that already holds the derived password) — so this is
-    # re-runnable, not just revert-to-snapshot-runnable. No skip gate: always PUT the derived
-    # password so drift is repaired.
+    # DERIVED from admin_password (region 01), so the desired value is STABLE across runs. Try the
+    # derived value first (rerun), then the vendor default (fresh install). If both are rejected
+    # specifically as unauthorized, rebuild only rbac.db from Wazuh's packaged defaults and
+    # immediately rotate it. No PUT skip gate: always PUT the derived password so drift in any
+    # configured user is repaired.
     - name: 'END | Sync Manager RBAC API User Passwords (Always — Derived, Stable)'
       no_log: true
       block:
@@ -1071,17 +1071,12 @@
         # IMPORTANT iteration order: changing the password of the user that issued our JWT
         # invalidates the token mid-loop. Iterate over all OTHER users first, then update the
         # auth user's password LAST.
-        - name: 'END | Acquire Manager API Token (default or synced password)'
+        - name: 'END | Acquire Manager API Token With Current Password'
           no_log: true
           changed_when: false
-          register: '__token_attempt__'
+          register: '__current_token_attempt__'
           vars:
             __wazuh_api_user__: "{{ config.manager.api_users | selectattr('username', 'equalto', 'wazuh') | first }}"
-          loop:
-            - "{{ __wazuh_api_user__.default_password }}"
-            - "{{ __wazuh_pw__[__wazuh_api_user__.username] }}"
-          loop_control:
-            label: '<redacted>'
           # __manager_host__ (not __endpoint_host__): this task runs ON the AIO box itself
           # (become: true, no delegate_to) dialing its own co-located API — the same
           # loopback-by-default host wazuh.yml.j2 already uses for the dashboard->API link
@@ -1095,26 +1090,133 @@
             url: "https://{{ __manager_host__ }}:55000/security/user/authenticate?raw=true"
             method: 'POST'
             url_username: 'wazuh'
-            url_password: "{{ item }}"
+            url_password: "{{ __wazuh_pw__[__wazuh_api_user__.username] }}"
             force_basic_auth: true
             ca_path: "{{ config.certs_dir }}/root-ca.pem"
             validate_certs: true
             return_content: true
             status_code: [200, 401]
 
+        # A non-401 failure above or below (TLS, transport, timeout, 5xx, rate limit, or any
+        # unexpected HTTP status) fails in ansible.builtin.uri and can never reach the destructive
+        # recovery guard. Only an explicit current-password 401 advances to the factory rung.
+        - name: 'END | Acquire Manager API Token With Factory Password'
+          when: __current_token_attempt__.status == 401
+          no_log: true
+          changed_when: false
+          register: '__factory_token_attempt__'
+          vars:
+            __wazuh_api_user__: "{{ config.manager.api_users | selectattr('username', 'equalto', 'wazuh') | first }}"
+          ansible.builtin.uri:
+            url: "https://{{ __manager_host__ }}:55000/security/user/authenticate?raw=true"
+            method: 'POST'
+            url_username: 'wazuh'
+            url_password: "{{ __wazuh_api_user__.default_password }}"
+            force_basic_auth: true
+            ca_path: "{{ config.certs_dir }}/root-ca.pem"
+            validate_certs: true
+            return_content: true
+            status_code: [200, 401]
+
+        # OWNERSHIP CONTRACT: config.manager.api_users declares the COMPLETE manager-API user set
+        # this role owns and PUTs every run. That full ownership is what makes a factory rebuild
+        # safe here. Any API user hand-created outside this role will be destroyed by recovery and
+        # will not be recreated; consumers that need unmanaged API users cannot use this contract.
+        #
+        # Wazuh 4.14.5's packaged rbac_db_factory_reset removes only this file, and wazuh-apid's
+        # startup integrity check recreates it from the packaged default RBAC resources. Keep
+        # security.yaml and installation_uid by removing neither the parent directory nor any
+        # sibling. wazuh-apid belongs to the single wazuh-manager systemd unit, so stop/start that
+        # managed unit rather than killing a child process behind systemd's back.
+        - name: 'END | Recover Manager API Security Database After Two Unauthorized Responses'
+          when:
+            - __current_token_attempt__.status == 401
+            - (__factory_token_attempt__.status | default(0)) == 401
+          block:
+
+            - name: 'END | Stop Manager For API Security Database Recovery'
+              ansible.builtin.systemd:
+                name: 'wazuh-manager'
+                state: 'stopped'
+
+            # wazuh-apid can leave 55000 bound after systemd reports stopped.
+            - name: 'END | Wait For Manager API Port To Drain Before Recovery'
+              ansible.builtin.wait_for:
+                host: "{{ __endpoint_host__ }}"
+                port: 55000
+                state: 'stopped'
+                timeout: 60
+
+            - name: 'END | Remove Only Manager API RBAC Database'
+              ansible.builtin.file:
+                path: '/var/ossec/api/configuration/security/rbac.db'
+                state: 'absent'
+
+          always:
+
+            # Always restore the managed service even if file removal fails. The original failure
+            # still propagates after this section; this only avoids leaving unrelated manager
+            # functions down because a recovery operation could not complete.
+            - name: 'END | Start Manager After API Security Database Recovery'
+              ansible.builtin.systemd:
+                name: 'wazuh-manager'
+                state: 'started'
+
+            - name: 'END | Wait For Recovered Manager API On 55000'
+              ansible.builtin.wait_for:
+                host: "{{ __endpoint_host__ }}"
+                port: 55000
+                timeout: 120
+
+        - name: 'END | Log Manager API Security Database Recovery'
+          when:
+            - __current_token_attempt__.status == 401
+            - (__factory_token_attempt__.status | default(0)) == 401
+          no_log: false
+          ansible.builtin.debug:
+            msg: 'Manager API credential recovery was performed; factory state will now be rotated.'
+
+        - name: 'END | Acquire Manager API Token After Security Database Recovery'
+          when:
+            - __current_token_attempt__.status == 401
+            - (__factory_token_attempt__.status | default(0)) == 401
+          no_log: true
+          changed_when: false
+          register: '__recovered_token_attempt__'
+          vars:
+            __wazuh_api_user__: "{{ config.manager.api_users | selectattr('username', 'equalto', 'wazuh') | first }}"
+          ansible.builtin.uri:
+            url: "https://{{ __manager_host__ }}:55000/security/user/authenticate?raw=true"
+            method: 'POST'
+            url_username: 'wazuh'
+            url_password: "{{ __wazuh_api_user__.default_password }}"
+            force_basic_auth: true
+            ca_path: "{{ config.certs_dir }}/root-ca.pem"
+            validate_certs: true
+            return_content: true
+            status_code: [200]
+
         - name: 'END | Assert At Least One Token Acquisition Succeeded'
           ansible.builtin.assert:
             that:
-              - __token_attempt__.results | selectattr('status', 'eq', 200) | list | length >= 1
+              - >-
+                (__current_token_attempt__.status == 200)
+                or ((__factory_token_attempt__.status | default(0)) == 200)
+                or ((__recovered_token_attempt__.status | default(0)) == 200)
             fail_msg: >-
-              Could not authenticate to the manager API as 'wazuh' with the default OR the
-              synced password. rbac.db may be in an unexpected state.
+              Could not authenticate to the manager API as 'wazuh' with the current, factory, or
+              recovered-factory password.
             quiet: true
 
         - name: 'END | PUT Synced Password For Each Manager API User'
           no_log: true
           vars:
-            __mgr_api_token__: "{{ (__token_attempt__.results | selectattr('status', 'eq', 200) | first).content }}"
+            __mgr_api_token__: >-
+              {{ __current_token_attempt__.content
+                 if __current_token_attempt__.status == 200
+                 else __factory_token_attempt__.content
+                 if (__factory_token_attempt__.status | default(0)) == 200
+                 else __recovered_token_attempt__.content }}
             __auth_user__: 'wazuh'
             __others__: "{{ config.manager.api_users | rejectattr('username', 'eq', __auth_user__) | list }}"
             __auth_last__: "{{ config.manager.api_users | selectattr('username', 'eq', __auth_user__) | list }}"
