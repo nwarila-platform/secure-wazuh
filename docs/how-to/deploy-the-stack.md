@@ -35,7 +35,8 @@ The permanent Proxmox target is **parked**: its job in [`deploy.yml`](../../.git
   export them into the target shell — see
   [`how-to/provide-aws-credentials-safely.md`](provide-aws-credentials-safely.md).
 - **No operator secret.** This target needs none: Stage 1 mints the OpenSearch/dashboard `admin`
-  password for the run, and every other credential is generated fresh and never persisted.
+  password for each invocation. Other credentials rotate with it, and the guarded manager-API
+  ladder converges values already stored in persistent `rbac.db`.
 
 ## Procedure: deploy
 
@@ -123,7 +124,10 @@ The playbook gates itself during the run (it fails the play rather than leaving 
 
 ## Verification: idempotency
 
-Immediately rerun the playbook. A healthy second run reports `changed=0` for everything **except** the rotate-every-run credential tasks (fresh secrets each run, nothing persisted) and the FIM trigger, which writes a new uniquely-named marker by design. Treat any other unexpected `changed` count as a review item before promotion.
+Immediately rerun the playbook. A healthy second run reports `changed=0` for everything **except**
+the rotate-every-run credential path (including guarded manager RBAC recovery) and the FIM trigger,
+which writes a new uniquely named marker by design. Investigate any other unexpected `changed`
+count before promotion.
 
 ## Related
 

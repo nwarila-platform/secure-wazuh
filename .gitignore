@@ -144,6 +144,7 @@
 !/ansible/applications/wazuh_server/tasks/clean_redhat.yml
 !/ansible/applications/wazuh_server/tasks/main.yml
 !/ansible/applications/wazuh_server/tasks/present_redhat.yml
+!/ansible/applications/wazuh_server/tasks/terminate_stale_wazuh_apid.yml
 !/ansible/applications/wazuh_server/tasks/validate.yml
 !/ansible/applications/wazuh_server/templates/
 !/ansible/applications/wazuh_server/templates/.gitkeep

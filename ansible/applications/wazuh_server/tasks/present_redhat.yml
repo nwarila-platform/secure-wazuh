@@ -13,7 +13,7 @@
 #
 # GUARD PHILOSOPHY: LEAN (trust CI/CD). Keep TARGETING/functional logic; TRIM defensive input
 # re-validation and mutation-safety asserts. Do NOT add new guards.
-# SECRETS: rotate-every-run, nothing persisted (see #region 01).
+# SECRETS: rotate every invocation, with no controller persistence (see #region 01).
 # =========================================================================================== #
 
 #region ------ [ Script ] -------------------------------------------------------------------- #
@@ -61,12 +61,12 @@
 
     #endregion --- [ 00 INIT / GUARDS (LEAN) ] ----------------------------------------------- #
 
-    #region ------ [ 01 SECRETS (rotate-every-run, nothing persisted) ] ---------------------- #
+    #region ------ [ 01 SECRETS (rotate every invocation; no controller persistence) ] ------ #
 
-    # Build the run's password map: the operator-provided admin password, fresh per-run passwords
-    # for generated_users, and deterministic manager API passwords that remain stable across
-    # same-admin-password reruns. The `Wz9.` prefix supplies the API-required password classes.
-    # See SECURITY.md for the credential persistence boundary and derivation rationale.
+    # Build the run's password map: the resolved admin password, fresh per-run passwords for
+    # generated_users, and manager API passwords derived deterministically from this invocation's
+    # admin value. A later invocation may resolve a new root; the guarded auth ladder below then
+    # converges persistent rbac.db state. The `Wz9.` prefix supplies the required password classes.
     #
     # The lookup reads /dev/null (no file written); set_fact freezes the values for the run so
     # every consumer sees the SAME value. This is a SEPARATE fact `__wazuh_pw__`, NOT a
@@ -1058,13 +1058,12 @@
         delay: 5
         timeout: 120
 
-    # Manager API users (wazuh, wazuh-wui) live in the persistent rbac.db. Their passwords are
-    # DERIVED from admin_password (region 01), so the desired value is STABLE across runs. Try the
-    # derived value first (rerun), then the vendor default (fresh install). If both are rejected
+    # Manager API users (wazuh, wazuh-wui) live in persistent rbac.db. Try this invocation's
+    # derived value first, then the vendor default for a fresh database. If both are rejected
     # specifically as unauthorized, rebuild only rbac.db from Wazuh's packaged defaults and
     # immediately rotate it. No PUT skip gate: always PUT the derived password so drift in any
     # configured user is repaired.
-    - name: 'END | Sync Manager RBAC API User Passwords (Always — Derived, Stable)'
+    - name: 'END | Sync Manager RBAC API User Passwords (Always — Derived)'
       no_log: true
       block:
 
@@ -1126,8 +1125,8 @@
         # Wazuh 4.14.5's packaged rbac_db_factory_reset removes only this file, and wazuh-apid's
         # startup integrity check recreates it from the packaged default RBAC resources. Keep
         # security.yaml and installation_uid by removing neither the parent directory nor any
-        # sibling. wazuh-apid belongs to the single wazuh-manager systemd unit, so stop/start that
-        # managed unit rather than killing a child process behind systemd's back.
+        # sibling. wazuh-apid belongs to the single wazuh-manager systemd unit, so stop that
+        # managed unit before terminating only a stale child, then restore the unit in always.
         - name: 'END | Recover Manager API Security Database After Two Unauthorized Responses'
           when:
             - __current_token_attempt__.status == 401
@@ -1139,7 +1138,9 @@
                 name: 'wazuh-manager'
                 state: 'stopped'
 
-            # wazuh-apid can leave 55000 bound after systemd reports stopped.
+            - name: 'END | Terminate Stale Manager API Child Before Recovery'
+              ansible.builtin.include_tasks: "{{ role_path }}/tasks/terminate_stale_wazuh_apid.yml"
+
             - name: 'END | Wait For Manager API Port To Drain Before Recovery'
               ansible.builtin.wait_for:
                 host: "{{ __endpoint_host__ }}"
@@ -1198,7 +1199,7 @@
 
         # This controller-side marker is reachable only after both unauthorized responses, the
         # rbac.db removal, the manager restart, and successful factory authentication. The e2e
-        # workflow supplies a fresh path for phase 2 and asserts both its required and absent cases.
+        # workflow supplies a fresh path for phase 2 and requires this marker.
         - name: 'END | Write Manager API Recovery Proof Marker'
           when:
             - __current_token_attempt__.status == 401

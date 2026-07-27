@@ -9,9 +9,9 @@
 #   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 #
 # SELF-CONTAINED: it takes no --extra-vars and requires no operator-provided Wazuh secret. AWS
-# credentials and the required ANSIBLE_S3_BUCKET come from the controller environment. A supplied
-# WAZUH_ADMIN_PASSWORD is retained; when it is absent or empty, the playbook mints the one
-# credential the stack needs.
+# credentials and the required ANSIBLE_S3_BUCKET come from the controller environment. Each
+# invocation mints the credential the stack needs when WAZUH_ADMIN_PASSWORD is absent or empty;
+# an explicitly supplied non-empty value remains supported as an override.
 # Step 0 fails closed unless the run-scoped inventory resolves the exact three-system topology.
 #
 # TWO-PHASE USAGE (the cumulative 4/4 proof):
@@ -89,10 +89,10 @@
 - name: 'Stage 1 - Deploy Wazuh All-In-One Stack'
   hosts: 'wazuh_servers'
   pre_tasks:
-    # The environment must win: an OS-swap preserves /var/ossec (including rbac.db) on the data
-    # disk, so a second invocation against that surviving state must derive the SAME manager API
-    # password. A fresh mint cannot re-authenticate. Local runs remain self-contained by minting
-    # only when WAZUH_ADMIN_PASSWORD is absent or empty; either result is frozen exactly once.
+    # Resolve exactly once for this invocation. Normal workflow and production runs leave
+    # WAZUH_ADMIN_PASSWORD unset and mint a fresh value; if the persistent rbac.db holds a prior
+    # invocation's derived manager-API password, the role's guarded auth ladder recovers it.
+    # An explicit non-empty environment value remains supported and is frozen for this run.
     - name: 'INIT | Resolve A Strong Ephemeral admin_password For This Run'
       run_once: true
       no_log: true

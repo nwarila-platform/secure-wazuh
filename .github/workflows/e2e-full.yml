@@ -16,10 +16,11 @@
 # header):
 #   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 # ZERO -e: the whole AWS target is two files — that playbook plus inventory/aws/aws_ec2.yml — and
-# product inputs come from those files plus the controller environment. By default this workflow
-# mints the effective Wazuh admin credential once and the playbook retains it in both phases. A
-# manual recovery-proof run can withhold it from phase 2 so the playbook mints a fresh value and
-# exercises the recovery ladder. Neither path uses an extra var.
+# product inputs come from those files plus the controller environment. This workflow leaves
+# WAZUH_ADMIN_PASSWORD unset, so each playbook invocation independently resolves its own
+# credential. Except for a negligible collision between random draws, phase 2 presents a value the
+# surviving rbac.db does not hold and exercises the normal recovery ladder. Its marker is required
+# as evidence that recovery occurred. Neither phase uses an extra var.
 #
 # Mirrors .github/workflows/deploy.yml's AWS job conventions throughout (SHA-pinned actions,
 # both framework-pin resolutions, Terraform 1.15.1, and the compose/collections/creds plumbing)
@@ -30,10 +31,11 @@
 # -----------------------------------------------------------------------------
 # AWS CONFIGURATION MODEL — org-global secrets provide AWS_ACCOUNT_ID and
 # AWS_EC2_SSH_PRIVATE_KEY. TF_STATE_BUCKET is derived as <AWS_ACCOUNT_ID>-terraform; the optional
-# AWS_REGION org variable defaults to us-east-1. The repo commits both framework pins. This
-# workflow exports one masked, run-scoped WAZUH_ADMIN_PASSWORD for cross-phase continuity by
-# default. The opt-in manual recovery proof withholds it only from phase 2. Role ARN, artifact
-# bucket, state bucket, stack, and owner are derived at runtime.
+# AWS_REGION org variable defaults to us-east-1. The repo commits both framework pins. Each
+# Ansible invocation independently resolves its own Wazuh admin password. Except for a negligible
+# collision between random draws, phase 2 therefore presents a value absent from the surviving
+# rbac.db; its required marker proves the recovery rung ran. Role ARN, artifact bucket, state
+# bucket, stack, and owner are derived at runtime.
 # -----------------------------------------------------------------------------
 
 name: e2e-full
@@ -59,12 +61,6 @@ name: e2e-full
 # push-triggered.
 on:
   workflow_dispatch:
-    inputs:
-      prove_password_recovery:
-        description: Force phase 2 through manager API password recovery and require rung evidence
-        required: false
-        type: boolean
-        default: false
   pull_request:
     types: [opened, reopened, ready_for_review, labeled]
     paths:
@@ -173,23 +169,6 @@ jobs:
               --arg commit_sha "$commit_sha" --arg run_id "$GH_RUN_ID" \
               '{repository:$repository,repository_id:$repository_id,stack:$stack,owner:$owner,commit_sha:$commit_sha,run_id:$run_id}')"
           } >> "$GITHUB_ENV"
-
-      # EPHEMERAL-TARGET CREDENTIAL POLICY: this AWS PoC is created and destroyed inside this one
-      # run, so no standing Wazuh admin secret is stored or leaked. Export ONE masked value here:
-      # both phase steps inherit it through GITHUB_ENV, and deploy-aws-poc.yml retains it instead
-      # of minting again. That continuity is required because the OS-swap preserves /var/ossec and
-      # its manager API credential state on the data disk. The manual recovery-proof input makes
-      # phase 2 unset this value locally so the playbook mints a fresh credential and exercises the
-      # recovery ladder; every default and automatic run keeps the cross-phase value.
-      - name: Mint the ephemeral Wazuh admin password
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Character-class coverage (upper/lower/digit/symbol) is explicit rather than left to
-          # chance in the random segment, so the value always satisfies the stack's password policy.
-          pw="Wz9-$(openssl rand -hex 16)-Aa!"
-          echo "::add-mask::${pw}"
-          echo "WAZUH_ADMIN_PASSWORD=${pw}" >> "$GITHUB_ENV"
 
       - name: Resolve ansible-framework pin
         id: pin
@@ -398,11 +377,8 @@ jobs:
           # over this — see deploy.yml's AWS job's identical comment on its own equivalent line
           # for the full rationale (kept as a fallback, not redundant by accident).
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-          # WAZUH_ADMIN_PASSWORD is deliberately NOT bound here: the ephemeral password minted
-          # above already reaches every later step through $GITHUB_ENV, and an explicit env: entry
-          # would OVERRIDE it (with an empty string when no such secret exists). Stage 1 retains
-          # this run-scoped value, so phase 1 and phase 2 derive the same manager API passwords.
-          # Still zero -e either way.
+          # WAZUH_ADMIN_PASSWORD is deliberately not bound: the playbook mints a fresh value for
+          # this invocation. Phase 2 does the same independently. Still zero -e.
           # Read by deploy-aws-poc.yml's inline Stage 5 evidence block (gated so a local run
           # without this var writes no evidence) — it writes the machine-readable proof JSON
           # here, controller-side, for "Render PoC evidence" below to consume.
@@ -493,9 +469,6 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-          # Default and automatic runs retain the GITHUB_ENV password used by phase 1. An opted-in
-          # dispatch unsets it inside this step so the playbook mints a new phase-2 value.
-          PROVE_PASSWORD_RECOVERY: ${{ inputs.prove_password_recovery && 'true' || 'false' }}
           # The role writes this controller-side marker only after both 401 responses, rbac.db
           # recovery, the manager restart, and recovered factory authentication.
           WAZUH_PASSWORD_RECOVERY_PROOF_PATH: >-
@@ -508,36 +481,18 @@ jobs:
           set -euo pipefail
           recovery_proof="${WAZUH_PASSWORD_RECOVERY_PROOF_PATH}"
           rm -f -- "${recovery_proof}"
-          case "${PROVE_PASSWORD_RECOVERY}" in
-            true)
-              unset WAZUH_ADMIN_PASSWORD
-              ;;
-            false)
-              ;;
-            *)
-              echo "Invalid prove_password_recovery value: ${PROVE_PASSWORD_RECOVERY}" >&2
-              exit 1
-              ;;
-          esac
           # SAME command as phase 1 — the playbook's deploy plays re-provision the swapped AIO
           # (its data disk already carries an "ours" GPT+label, so linux_disk_manager's
           # mutation-safety guard skips reformatting; the wazuh_server role reinstalls the stack
           # fresh onto the new OS) and idempotent-reconnect both untouched agents; its FIM proof
           # section then proves all 4 cumulative ledger entries — see that playbook's own header.
           ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
-          if [[ "${PROVE_PASSWORD_RECOVERY}" == "true" ]]; then
-            if [[ ! -f "${recovery_proof}" ]] ||
-              ! grep -Fqx 'manager-api-rbac-recovery' "${recovery_proof}"; then
-              echo "Phase 2 did not produce the required password-recovery rung evidence" >&2
-              exit 1
-            fi
-            echo "Phase 2 password-recovery rung evidence verified"
-          elif [[ -e "${recovery_proof}" ]]; then
-            echo "Password-recovery rung ran even though prove_password_recovery was false" >&2
+          if [[ ! -f "${recovery_proof}" ]] ||
+            ! grep -Fqx 'manager-api-rbac-recovery' "${recovery_proof}"; then
+            echo "Phase 2 did not produce the required password-recovery rung evidence" >&2
             exit 1
-          else
-            echo "Password-recovery rung evidence is absent with the opt-in disabled"
           fi
+          echo "Phase 2 password-recovery rung evidence verified"
 
       # -----------------------------------------------------------------------
       # DESTROY — always tear the environment down, pass or fail. Same state, same working dir.
