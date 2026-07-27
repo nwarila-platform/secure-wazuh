@@ -37,7 +37,8 @@
       "Resource": "arn:aws:ec2:us-east-1:*:volume/*",
       "Condition": {
         "StringEquals": {
-          "ec2:VolumeType": "gp3"
+          "ec2:VolumeType": "gp3",
+          "aws:RequestTag/nwarila:management:repository-id": "1307854438"
         },
         "NumericLessThanEquals": {
           "ec2:VolumeSize": "100"
@@ -49,13 +50,25 @@
       }
     },
     {
-      "Sid": "RunInstancesSupportingResources",
+      "Sid": "RunInstancesNetworkResourcesInDeployVpc",
       "Effect": "Allow",
       "Action": "ec2:RunInstances",
       "Resource": [
         "arn:aws:ec2:us-east-1:*:network-interface/*",
-        "arn:aws:ec2:us-east-1:*:subnet/*",
-        "arn:aws:ec2:us-east-1:*:security-group/*",
+        "arn:aws:ec2:us-east-1:*:subnet/subnet-0e1c8aae192deff26",
+        "arn:aws:ec2:us-east-1:*:security-group/*"
+      ],
+      "Condition": {
+        "ArnLike": {
+          "ec2:Vpc": "arn:aws:ec2:us-east-1:*:vpc/vpc-03c38504869c1c9bb"
+        }
+      }
+    },
+    {
+      "Sid": "RunInstancesOtherSupportingResources",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
         "arn:aws:ec2:us-east-1:*:key-pair/*",
         "arn:aws:ec2:us-east-1:*:image/*",
         "arn:aws:ec2:us-east-1::image/*"
@@ -175,12 +188,15 @@
       "Effect": "Allow",
       "Action": "ec2:CreateNetworkInterface",
       "Resource": [
-        "arn:aws:ec2:us-east-1:*:subnet/*",
+        "arn:aws:ec2:us-east-1:*:subnet/subnet-0e1c8aae192deff26",
         "arn:aws:ec2:us-east-1:*:security-group/*"
       ],
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "us-east-1"
+        },
+        "ArnLike": {
+          "ec2:Vpc": "arn:aws:ec2:us-east-1:*:vpc/vpc-03c38504869c1c9bb"
         }
       }
     },
