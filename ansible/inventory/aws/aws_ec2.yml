@@ -67,12 +67,13 @@
 # Account isolation rides the ambient AWS credentials/profile — no account id is ever read,
 # filtered on, or hardcoded here.
 #
-# Connection: SSH-over-SSM, not a direct IP. The PoC security group has zero inbound rules
-# (docs/reference/aws-iam/README.md, "Permanent networking"), so there is no network path to any
-# instance except through SSM. ansible_host is therefore the INSTANCE-ID and the SSM ProxyCommand
-# is set in compose: below (ansible_ssh_common_args), tunnelling every ssh/sftp/scp call through
-# `aws ssm start-session` using the exact `AWS-StartSSHSession` document the deploy policy grants
-# (secure-wazuh_deploy-sg-ssm-kms.json, `SsmStartSshSessionDocument`).
+# Connection: SSH-over-SSM, not a direct IP. None of the interface-owned security groups permits
+# inbound SSH (docs/reference/aws-iam/README.md, "PoC networking"), so there is no administrative
+# network path to any instance except through SSM. ansible_host is therefore the INSTANCE-ID and
+# the SSM ProxyCommand is set in compose: below (ansible_ssh_common_args), tunnelling every
+# ssh/sftp/scp call through `aws ssm start-session` using the exact `AWS-StartSSHSession` document
+# the deploy policy grants (secure-wazuh_deploy-sg-ssm-kms.json,
+# `SsmStartSshSessionDocument`).
 #
 # Groups reproduce the proven contract (ansible/inventory/proxmox.yml, docs/reference/
 # inventory-and-topology.md): wazuh_servers / wazuh_agents (all endpoints) plus the
@@ -155,7 +156,7 @@ compose:
   # extra-vars outrank inventory hostvars in Ansible's precedence order.
   state: "'present'"
 
-  # Explicit rather than implied: the whole zero-ingress design (the ProxyCommand below plus the
+  # Explicit rather than implied: the no-inbound-SSH design (the ProxyCommand below plus the
   # ControlPersist mux the Windows DefaultShell flip depends on) needs the OpenSSH client
   # specifically. Same value as ansible-core's own DEFAULT_TRANSPORT default, so this is
   # documentation with teeth rather than a behavioural change. It applies to the Windows endpoints
@@ -190,9 +191,9 @@ compose:
   # host vars.
   ansible_shell_type: "((platform | default('') | lower) == 'windows') | ternary('powershell', 'sh')"
 
-  # The PoC security group has zero inbound rules (docs/reference/aws-iam/README.md, "Permanent
-  # networking") — there is no direct network path to any instance, so every ssh/sftp/scp call must
-  # tunnel through SSM, dialing ansible_host (the instance-id) above rather than an IP.
+  # None of the interface-owned groups permits inbound SSH (docs/reference/aws-iam/README.md,
+  # "PoC networking"), so every ssh/sftp/scp call must tunnel through SSM, dialing ansible_host
+  # (the instance-id) above rather than an IP.
   # `host_key_checking = False` is already set project-wide in ansible/ansible.cfg (these instances
   # are destroyed and recreated every deploy cycle, so host keys never persist), so it is not
   # repeated here. The tunnel is OS-agnostic — the Windows endpoints use it unchanged.

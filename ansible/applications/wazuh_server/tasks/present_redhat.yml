@@ -1196,6 +1196,21 @@
             return_content: true
             status_code: [200]
 
+        # This controller-side marker is reachable only after both unauthorized responses, the
+        # rbac.db removal, the manager restart, and successful factory authentication. The e2e
+        # workflow supplies a fresh path for phase 2 and asserts both its required and absent cases.
+        - name: 'END | Write Manager API Recovery Proof Marker'
+          when:
+            - __current_token_attempt__.status == 401
+            - (__factory_token_attempt__.status | default(0)) == 401
+            - lookup('ansible.builtin.env', 'WAZUH_PASSWORD_RECOVERY_PROOF_PATH') | length > 0
+          delegate_to: 'localhost'
+          become: false
+          ansible.builtin.copy:
+            content: "manager-api-rbac-recovery\n"
+            dest: "{{ lookup('ansible.builtin.env', 'WAZUH_PASSWORD_RECOVERY_PROOF_PATH') }}"
+            mode: '0600'
+
         - name: 'END | Assert At Least One Token Acquisition Succeeded'
           ansible.builtin.assert:
             that:
@@ -1358,7 +1373,7 @@
     #
     # Native become_user requires a remote tmpdir that BOTH root (the connection user) and
     # the target become user (wazuh-dashboard) can write. Our STIG-tuned ANSIBLE_REMOTE_TMP
-    # is `/opt/wazuh-deploy/.tmp` (root:root 0700) because /tmp, /var/tmp, /home are noexec
+    # is `/opt/ansible/tmp` (root:root 0700) because /tmp, /var/tmp, /home are noexec
     # on STIG. To use become_user idiomatically we'd have to pre-create a
     # wazuh-dashboard-writable exec-OK scratch dir, override ansible_remote_tmp for these
     # tasks only, and own the cleanup story for that dir — all real work and drift risk.

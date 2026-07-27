@@ -19,7 +19,10 @@ The permanent Proxmox target is **parked**: its job in [`deploy.yml`](../../.git
 - **`boto3`/`botocore` on the controller.** The dynamic inventory plugin and the
   controller-delegated Windows MSI fetch and `linux_disk_manager` EBS Function-tag resolver run
   `amazon.aws` modules under the controller's own interpreter.
-- **The SSM Session Manager plugin on the controller.** The PoC security group has zero inbound rules, so every SSH/SFTP/SCP call is tunnelled through `aws ssm start-session`; that ProxyCommand shells out to a separate binary the AWS CLI does not bundle.
+- **The SSM Session Manager plugin on the controller.** None of the interface-owned security
+  groups permits inbound SSH, so every SSH/SFTP/SCP call is tunnelled through
+  `aws ssm start-session`; that ProxyCommand shells out to a separate binary the AWS CLI does not
+  bundle.
 - **Artifacts staged in S3.** Upload the `wazuh-offline.tar.gz` bundle and record its SHA-256 in
   `s3.bundle_sha256`; upload the node cert PEMs under `s3.certs_prefix`; upload the agent RPM/MSI
   and record their SHA pins. Object names and pins are catalogued in

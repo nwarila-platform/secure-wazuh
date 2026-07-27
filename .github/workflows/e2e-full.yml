@@ -16,9 +16,10 @@
 # header):
 #   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 # ZERO -e: the whole AWS target is two files — that playbook plus inventory/aws/aws_ec2.yml — and
-# product inputs come from those files plus the controller environment. This workflow mints the
-# effective Wazuh admin credential once for the run, and the playbook retains it in both phases;
-# a local invocation with no supplied value mints its own fallback. Neither uses an extra var.
+# product inputs come from those files plus the controller environment. By default this workflow
+# mints the effective Wazuh admin credential once and the playbook retains it in both phases. A
+# manual recovery-proof run can withhold it from phase 2 so the playbook mints a fresh value and
+# exercises the recovery ladder. Neither path uses an extra var.
 #
 # Mirrors .github/workflows/deploy.yml's AWS job conventions throughout (SHA-pinned actions,
 # both framework-pin resolutions, Terraform 1.15.1, and the compose/collections/creds plumbing)
@@ -30,9 +31,9 @@
 # AWS CONFIGURATION MODEL — org-global secrets provide AWS_ACCOUNT_ID and
 # AWS_EC2_SSH_PRIVATE_KEY. TF_STATE_BUCKET is derived as <AWS_ACCOUNT_ID>-terraform; the optional
 # AWS_REGION org variable defaults to us-east-1. The repo commits both framework pins. This
-# workflow exports one masked, run-scoped WAZUH_ADMIN_PASSWORD for cross-phase continuity; the
-# playbook consumes it and mints only when no value is supplied. Role ARN, artifact bucket, state
-# bucket, stack, and owner are derived at runtime.
+# workflow exports one masked, run-scoped WAZUH_ADMIN_PASSWORD for cross-phase continuity by
+# default. The opt-in manual recovery proof withholds it only from phase 2. Role ARN, artifact
+# bucket, state bucket, stack, and owner are derived at runtime.
 # -----------------------------------------------------------------------------
 
 name: e2e-full
@@ -58,6 +59,12 @@ name: e2e-full
 # push-triggered.
 on:
   workflow_dispatch:
+    inputs:
+      prove_password_recovery:
+        description: Force phase 2 through manager API password recovery and require rung evidence
+        required: false
+        type: boolean
+        default: false
   pull_request:
     types: [opened, reopened, ready_for_review, labeled]
     paths:
@@ -171,9 +178,9 @@ jobs:
       # run, so no standing Wazuh admin secret is stored or leaked. Export ONE masked value here:
       # both phase steps inherit it through GITHUB_ENV, and deploy-aws-poc.yml retains it instead
       # of minting again. That continuity is required because the OS-swap preserves /var/ossec and
-      # its manager API credential state on the data disk; the client certificate used by the FIM
-      # indexer query does not remove Stage 1's need to re-authenticate to the surviving manager
-      # API state. The playbook mints a fallback only when no environment value is supplied.
+      # its manager API credential state on the data disk. The manual recovery-proof input makes
+      # phase 2 unset this value locally so the playbook mints a fresh credential and exercises the
+      # recovery ladder; every default and automatic run keeps the cross-phase value.
       - name: Mint the ephemeral Wazuh admin password
         shell: bash
         run: |
@@ -311,6 +318,10 @@ jobs:
           rm -rf "${DEV_BUILD}"; mkdir -p "${DEV_BUILD}"
           rsync -a "${GITHUB_WORKSPACE}/.frameworks/ansible-framework/" "${DEV_BUILD}/"
           rsync -a "${GITHUB_WORKSPACE}/ansible/" "${DEV_BUILD}/"
+          LOADER_DEFAULTS="${DEV_BUILD}/operating_systems/RedHat_Rocky_8/defaults/main.yml"
+          sed -i \
+            "/^# product's '/c\\# product's '/opt/ansible/tmp' when run under secure-wazuh's ansible/ansible.cfg." \
+            "${LOADER_DEFAULTS}"
 
       - name: Install ansible-core + collections
         working-directory: _dev-build
@@ -327,13 +338,13 @@ jobs:
           python -m pip install --no-cache-dir boto3 botocore
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
-      # The AWS systems take NO inbound SSH (see docs/reference/aws-iam/README.md's zero-ingress
+      # The AWS systems take NO inbound SSH (see docs/reference/aws-iam/README.md's PoC-networking
       # note): inventory/aws/aws_ec2.yml's compose: block tunnels every connection through
       # `aws ssm start-session --document-name AWS-StartSSHSession`, and that ProxyCommand shells
       # out to the Session Manager plugin — a separate binary the AWS CLI does NOT bundle and
       # ubuntu-latest does not ship. Without it every host is UNREACHABLE with the misleading
       # "Connection closed by UNKNOWN port 65535".
-      - name: Install the SSM Session Manager plugin (SSH transport for the zero-ingress hosts)
+      - name: Install the SSM Session Manager plugin (SSH transport for no-inbound-SSH hosts)
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/session-manager-plugin.deb \
@@ -482,20 +493,51 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-          # WAZUH_ADMIN_PASSWORD remains inherited from the same GITHUB_ENV export as phase 1;
-          # do not shadow the cross-phase credential with a step-local empty value.
+          # Default and automatic runs retain the GITHUB_ENV password used by phase 1. An opted-in
+          # dispatch unsets it inside this step so the playbook mints a new phase-2 value.
+          PROVE_PASSWORD_RECOVERY: ${{ inputs.prove_password_recovery && 'true' || 'false' }}
+          # The role writes this controller-side marker only after both 401 responses, rbac.db
+          # recovery, the manager restart, and recovered factory authentication.
+          WAZUH_PASSWORD_RECOVERY_PROOF_PATH: >-
+            ${{ github.workspace }}/wazuh-password-recovery.proof
           # Same path as phase 1 (see that step's comment) — this run overwrites it with the
           # cumulative (4-entry) state; phase 1's own snapshot already survives at
           # poc-proof-phase1.json.
           POC_EVIDENCE_JSON: ${{ github.workspace }}/poc-proof.json
         run: |
           set -euo pipefail
+          recovery_proof="${WAZUH_PASSWORD_RECOVERY_PROOF_PATH}"
+          rm -f -- "${recovery_proof}"
+          case "${PROVE_PASSWORD_RECOVERY}" in
+            true)
+              unset WAZUH_ADMIN_PASSWORD
+              ;;
+            false)
+              ;;
+            *)
+              echo "Invalid prove_password_recovery value: ${PROVE_PASSWORD_RECOVERY}" >&2
+              exit 1
+              ;;
+          esac
           # SAME command as phase 1 — the playbook's deploy plays re-provision the swapped AIO
           # (its data disk already carries an "ours" GPT+label, so linux_disk_manager's
           # mutation-safety guard skips reformatting; the wazuh_server role reinstalls the stack
           # fresh onto the new OS) and idempotent-reconnect both untouched agents; its FIM proof
           # section then proves all 4 cumulative ledger entries — see that playbook's own header.
           ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
+          if [[ "${PROVE_PASSWORD_RECOVERY}" == "true" ]]; then
+            if [[ ! -f "${recovery_proof}" ]] ||
+              ! grep -Fqx 'manager-api-rbac-recovery' "${recovery_proof}"; then
+              echo "Phase 2 did not produce the required password-recovery rung evidence" >&2
+              exit 1
+            fi
+            echo "Phase 2 password-recovery rung evidence verified"
+          elif [[ -e "${recovery_proof}" ]]; then
+            echo "Password-recovery rung ran even though prove_password_recovery was false" >&2
+            exit 1
+          else
+            echo "Password-recovery rung evidence is absent with the opt-in disabled"
+          fi
 
       # -----------------------------------------------------------------------
       # DESTROY — always tear the environment down, pass or fail. Same state, same working dir.

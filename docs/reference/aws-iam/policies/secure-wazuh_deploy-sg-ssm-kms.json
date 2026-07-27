@@ -174,35 +174,6 @@
           "aws:RequestedRegion": "us-east-1"
         }
       }
-    },
-    {
-      "Sid": "DenyPermanentSecurityGroupMutation",
-      "Effect": "Deny",
-      "Action": [
-        "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:AuthorizeSecurityGroupEgress",
-        "ec2:RevokeSecurityGroupIngress",
-        "ec2:RevokeSecurityGroupEgress",
-        "ec2:ModifySecurityGroupRules",
-        "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
-        "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
-        "ec2:DeleteSecurityGroup"
-      ],
-      "Resource": "arn:aws:ec2:us-east-1:*:security-group/sg-06a3a06bcc4413c10"
-    },
-    {
-      "Sid": "DenyPermanentSecurityGroupRuleMutation",
-      "Effect": "Deny",
-      "Action": [
-        "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:AuthorizeSecurityGroupEgress",
-        "ec2:RevokeSecurityGroupIngress",
-        "ec2:RevokeSecurityGroupEgress",
-        "ec2:ModifySecurityGroupRules",
-        "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
-        "ec2:UpdateSecurityGroupRuleDescriptionsEgress"
-      ],
-      "Resource": "arn:aws:ec2:us-east-1:*:security-group-rule/sgr-08833db7ea5d82c23"
     }
   ]
 }
