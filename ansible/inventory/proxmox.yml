@@ -9,9 +9,10 @@
 # Collapsed all-in-one topology: the whole central stack (indexer + manager + filebeat +
 # dashboard) is ONE role (wazuh_server) on ONE host. `wazuh_indexers`/`wazuh_dashboards` remain
 # only because the loader/consumers still reference them; the AIO host is a member of all three
-# central groups. Endpoint agents run on SEPARATE hosts — `wazuh_agents` (Linux) and
-# `wazuh_agents_windows` (Windows) are intentionally empty here (the agent role's BEGIN guard
-# refuses to install on any wazuh_servers member).
+# central groups. Endpoint agents run on SEPARATE hosts — `wazuh_agents` (all endpoints) and its
+# `wazuh_agents_linux` / `wazuh_agents_windows` platform subsets are intentionally empty here
+# because this parked inventory defines no endpoint hosts. The manager host stays separate because
+# it owns `/var/ossec`; the Linux agent installer rejects a manager endpoint matching its host.
 # =========================================================================================== #
 
 all:
@@ -52,6 +53,8 @@ all:
 
     # Endpoint agent groups (populated per environment; empty on the AIO-only topology).
     wazuh_agents:
+      hosts: {}
+    wazuh_agents_linux:
       hosts: {}
     # Windows-over-SSH: connection vars (ansible_shell_type=powershell, ansible_become=false) come from inventory
     wazuh_agents_windows:

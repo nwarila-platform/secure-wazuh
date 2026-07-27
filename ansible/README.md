@@ -36,7 +36,10 @@ The AWS target is **two files**: `inventory/aws/aws_ec2.yml` + `playbooks/deploy
 per-component and wrapper playbooks that used to sit alongside it (`site.yml`, `deploy_all.yml`,
 `bootstrap.yml`, `linux_disk_manager.yml`, the standalone role playbooks, the FIM triggers, the
 pipeline smoke test, `aws_runner_env.yml`) were folded into that one file; they remain in git
-history if a per-stage entry point is ever needed again.
+history if an individual stage is ever needed again.
+
+The dynamic inventory puts every endpoint in `wazuh_agents`, then also classifies it in exactly
+one platform subset: `wazuh_agents_linux` or `wazuh_agents_windows`.
 
 `wazuh_agent` and `linux_disk_manager` are **not vendored here** — their source of truth is
 [`ansible-framework/applications/`](../docs/explanation/composition-model.md) and they are

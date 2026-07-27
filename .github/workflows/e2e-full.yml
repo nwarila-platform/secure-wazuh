@@ -394,9 +394,9 @@ jobs:
           # would OVERRIDE it (with an empty string when no such secret exists) — it is the
           # fallback leg of Stage 1's admin_password chain, which Stage 1's freshly minted value
           # outranks. Still zero -e either way.
-          # Read by deploy-aws-poc.yml's fim_prove role entry point (gated so a local run without
-          # this var writes no evidence) — it writes the machine-readable proof JSON here,
-          # controller-side, for "Render PoC evidence" below to consume.
+          # Read by deploy-aws-poc.yml's inline Stage 5 evidence block (gated so a local run
+          # without this var writes no evidence) — it writes the machine-readable proof JSON
+          # here, controller-side, for "Render PoC evidence" below to consume.
           POC_EVIDENCE_JSON: ${{ github.workspace }}/poc-proof.json
         run: |
           set -euo pipefail

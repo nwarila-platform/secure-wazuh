@@ -74,17 +74,19 @@
 # (secure-wazuh_deploy.json, "SsmSessionDocumentAndTeardown").
 #
 # Groups reproduce the proven contract (ansible/inventory/proxmox.yml, docs/reference/
-# inventory-and-topology.md): wazuh_servers / wazuh_agents / wazuh_agents_windows, keyed off the
-# org's mandatory Function auto-tag. This mapping is Wazuh-specific by design and is NOT
-# genericized — it is what makes this a Wazuh inventory rather than a bare EC2 lister.
+# inventory-and-topology.md): wazuh_servers / wazuh_agents (all endpoints) plus the
+# wazuh_agents_linux / wazuh_agents_windows platform subsets, keyed off the org's mandatory
+# Function auto-tag. This mapping is Wazuh-specific by design and is NOT genericized — it is what
+# makes this a Wazuh inventory rather than a bare EC2 lister.
 # wazuh_indexers/wazuh_dashboards are intentionally OMITTED — vestigial even in the static
 # inventories (the AIO role runs entirely off wazuh_servers; inventory-and-topology.md), and the
 # CI-generated AWS inventory in deploy.yml drops them too.
 #
 # NOTE: terraform/aws.tfvars declares three all_systems entries: one tags.Function=wazuh-aio AIO
-# and two tags.Function=wazuh-agent endpoints, one Linux and one Windows. The groups: block splits
-# those agents on AWS's platform hostvar into wazuh_agents and wazuh_agents_windows. As before,
-# this file only reflects whatever the tfvars stand up; dynamic inventory does not invent topology.
+# and two tags.Function=wazuh-agent endpoints, one Linux and one Windows. The groups: block puts
+# both endpoints in wazuh_agents and splits them on AWS's platform hostvar into
+# wazuh_agents_linux / wazuh_agents_windows. As before, this file only reflects whatever the
+# tfvars stand up; dynamic inventory does not invent topology.
 # =========================================================================================== #
 
 plugin: amazon.aws.aws_ec2
@@ -222,9 +224,10 @@ groups:
   # (verified against the installed 10.3.2's plugin source, which sets host_vars["tags"] directly
   # with no deprecation warning). Keyed off the org's mandatory Function auto-tag.
   wazuh_servers: "tags.Function | default('') == 'wazuh-aio'"
+  wazuh_agents: "tags.Function | default('') == 'wazuh-agent'"
   # EC2's Platform field is only ever set — to the literal 'Windows', capital W (verified against
   # botocore's PlatformValues enum and the amazon.aws.aws_ec2 source, which snake_cases hostvar
   # KEYS but never touches string VALUES) — for Windows instances, and absent for Linux. lower()
   # both sides defensively so casing can never silently misclassify an agent.
-  wazuh_agents: "tags.Function | default('') == 'wazuh-agent' and (platform | default('') | lower) != 'windows'"
+  wazuh_agents_linux: "tags.Function | default('') == 'wazuh-agent' and (platform | default('') | lower) != 'windows'"
   wazuh_agents_windows: "tags.Function | default('') == 'wazuh-agent' and (platform | default('') | lower) == 'windows'"
