@@ -1,0 +1,218 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FolderObjectAdminAllowlist",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts",
+        "s3:GetObjectTagging",
+        "s3:GetObjectVersionTagging",
+        "s3:PutObjectTagging",
+        "s3:DeleteObjectTagging"
+      ],
+      "Resource": "arn:aws:s3:::<account-id>-terraform/nwarila-platform/secure-wazuh/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      }
+    },
+    {
+      "Sid": "ListOwnFolderOnly",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": "arn:aws:s3:::<account-id>-terraform",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "nwarila-platform/secure-wazuh/*",
+            "env:/*"
+          ]
+        },
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      }
+    },
+    {
+      "Sid": "ReadBucketLocation",
+      "Effect": "Allow",
+      "Action": "s3:GetBucketLocation",
+      "Resource": "arn:aws:s3:::<account-id>-terraform",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      }
+    },
+    {
+      "Sid": "WazuhArtifactObjectAdmin",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts",
+        "s3:GetObjectTagging",
+        "s3:GetObjectVersionTagging",
+        "s3:PutObjectTagging",
+        "s3:DeleteObjectTagging"
+      ],
+      "Resource": [
+        "arn:aws:s3:::<account-id>-ansible/functions/wazuh/*",
+        "arn:aws:s3:::<account-id>-ansible/applications/wazuh-agent/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      }
+    },
+    {
+      "Sid": "ListWazuhArtifactPrefix",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": "arn:aws:s3:::<account-id>-ansible",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "functions/wazuh/*",
+            "applications/wazuh-agent/*"
+          ]
+        },
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      }
+    },
+    {
+      "Sid": "ReadArtifactBucketLocation",
+      "Effect": "Allow",
+      "Action": "s3:GetBucketLocation",
+      "Resource": "arn:aws:s3:::<account-id>-ansible",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      }
+    },
+    {
+      "Sid": "ConfineToOwnFolderAndWazuhArtifacts",
+      "Effect": "Deny",
+      "Action": "s3:*",
+      "NotResource": [
+        "arn:aws:s3:::<account-id>-terraform",
+        "arn:aws:s3:::<account-id>-terraform/nwarila-platform/secure-wazuh/*",
+        "arn:aws:s3:::<account-id>-ansible",
+        "arn:aws:s3:::<account-id>-ansible/functions/wazuh/*",
+        "arn:aws:s3:::<account-id>-ansible/applications/wazuh-agent/*"
+      ]
+    },
+    {
+      "Sid": "GuardrailNeverPublicOrCrossAccount",
+      "Effect": "Deny",
+      "Resource": "*",
+      "Action": [
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy",
+        "s3:PutBucketAcl",
+        "s3:PutObjectAcl",
+        "s3:PutObjectVersionAcl",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:PutAccountPublicAccessBlock",
+        "s3:PutAccessPointPolicy",
+        "s3:PutAccessPointPolicyForObjectLambda",
+        "s3:PutMultiRegionAccessPointPolicy",
+        "s3:CreateAccessGrant",
+        "s3:PutAccessGrantsInstanceResourcePolicy",
+        "s3:PutBucketOwnershipControls",
+        "s3:ObjectOwnerOverrideToBucketOwner"
+      ]
+    },
+    {
+      "Sid": "GuardrailNeverChargeIncurring",
+      "Effect": "Deny",
+      "Resource": "*",
+      "Action": [
+        "s3:PutReplicationConfiguration",
+        "s3:PutInventoryConfiguration",
+        "s3:PutAnalyticsConfiguration",
+        "s3:PutMetricsConfiguration",
+        "s3:PutStorageLensConfiguration",
+        "s3:CreateStorageLensGroup",
+        "s3:UpdateStorageLensGroup",
+        "s3:PutBucketRequestPayment",
+        "s3:PutBucketLogging",
+        "s3:PutBucketNotification",
+        "s3:PutAccelerateConfiguration",
+        "s3:PutLifecycleConfiguration",
+        "s3:RestoreObject",
+        "s3:PutObjectRetention",
+        "s3:PutObjectLegalHold",
+        "s3:BypassGovernanceRetention",
+        "s3:CreateBucketMetadataTableConfiguration",
+        "s3:PutIntelligentTieringConfiguration",
+        "s3:CreateJob",
+        "s3:UpdateJobPriority",
+        "s3:UpdateJobStatus"
+      ]
+    },
+    {
+      "Sid": "GuardrailNeverBucketLifecycle",
+      "Effect": "Deny",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:DeleteBucket"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyUnencryptedPuts",
+      "Effect": "Deny",
+      "Action": "s3:PutObject",
+      "Resource": [
+        "arn:aws:s3:::<account-id>-terraform/nwarila-platform/secure-wazuh/*",
+        "arn:aws:s3:::<account-id>-ansible/functions/wazuh/*",
+        "arn:aws:s3:::<account-id>-ansible/applications/wazuh-agent/*"
+      ],
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption": "AES256"
+        }
+      }
+    },
+    {
+      "Sid": "DenyPutsWithoutEncryptionHeader",
+      "Effect": "Deny",
+      "Action": "s3:PutObject",
+      "Resource": [
+        "arn:aws:s3:::<account-id>-terraform/nwarila-platform/secure-wazuh/*",
+        "arn:aws:s3:::<account-id>-ansible/functions/wazuh/*",
+        "arn:aws:s3:::<account-id>-ansible/applications/wazuh-agent/*"
+      ],
+      "Condition": {
+        "Null": {
+          "s3:x-amz-server-side-encryption": "true"
+        }
+      }
+    }
+  ]
+}

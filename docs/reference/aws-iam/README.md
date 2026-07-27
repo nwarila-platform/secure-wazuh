@@ -1,165 +1,201 @@
-# AWS IAM — roles & privileges (reference)
+# AWS IAM — roles and privileges
 
-**Type**: Reference (Diátaxis). This documents the AWS IAM that backs the ephemeral AWS PoC
-(`terraform/aws.tfvars` + the `aws-terraform-framework`). The JSON here is the **authoritative
-record** of the live IAM.
+**Type**: Reference (Diátaxis). This directory defines the IAM used by the ephemeral AWS PoC
+(`terraform/aws.tfvars` plus `aws-terraform-framework`). An operator provisions the roles and
+policies; Terraform does not manage them.
 
-> **These roles/policies are created by hand, not by Terraform** (org convention: OIDC roles are
-> provisioned directly, mirroring `github_nwarila-platform_github-terraform-runner[-admin]`). This
-> folder is the source of truth for review; apply changes here first, then with `aws iam`.
+## Materialization and application
 
-## Roles
+`<account-id>` is the repository's fail-fast tripwire for the real AWS account ID. Before applying
+any source JSON, the operator replaces every exact `<account-id>` token with the org-global
+`AWS_ACCOUNT_ID` in an untracked copy. A real 12-digit account ID must never be committed.
 
-| Role | Trust | Attached policies | Purpose |
+Materialize all files into one untracked directory, substitute the same account ID throughout,
+and apply the trust documents, managed policies, inline policy, and attachments as one coordinated
+change. Read each applied document and attachment back from IAM, normalize its JSON, and compare it
+with the materialized source before granting access to a deployment.
+
+## Role-to-policy map
+
+| Role | Trust source | Attached policies | Purpose |
 |---|---|---|---|
-| `github_nwarila-platform_secure-wazuh` | GitHub OIDC → `main` and same-repository pull requests | `github_nwarila-platform_secure-wazuh` (S3 state + artifact read) · `github_nwarila-platform_secure-wazuh_deploy` | CI deploy and automatic PR proof (OIDC, no long-lived keys) |
-| `github_nwarila-platform_secure-wazuh-admin` | broker `AssumeRole` (≤1h) | `secure-wazuh-folder-admin` (inline, S3 folder admin) · `github_nwarila-platform_secure-wazuh_deploy` | Operator artifact management **and** local deploy via boxed creds |
-| `secure-wazuh-poc-role` | `ec2.amazonaws.com` | `AmazonSSMManagedInstanceCore` (AWS-managed) · `secure-wazuh-poc-role-s3` (inline) | EC2 **instance profile** — SSM agent + S3 artifact read. Name contains `wazuh` to satisfy the deploy policy's `iam:PassRole` guard. |
+| `github_nwarila-platform_secure-wazuh` | `roles/github_nwarila-platform_secure-wazuh.trust.json` | `github_nwarila-platform_secure-wazuh` · `secure-wazuh-artifact-read` · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | CI state, artifact read, deploy, proof, and destroy |
+| `github_nwarila-platform_secure-wazuh-admin` | `roles/github_nwarila-platform_secure-wazuh-admin.trust.json` | `secure-wazuh-folder-admin` (inline) · `secure-wazuh-artifact-read` · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | Operator folder and artifact administration, and local deploy with boxed credentials |
+| `secure-wazuh-poc-role` | `roles/secure-wazuh-poc-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) · `secure-wazuh-artifact-read` | EC2 instance profile for SSM and read-only artifact access |
 
-The `_deploy` policy on the `-admin` role is a **deliberate, reversible deviation** from its
-recorded S3-only duty — it lets an operator run the local `deploy → test → destroy` path with
-boxed `-admin` credentials. Detach it when that local deploy path is retired.
+The three deploy policies on the `-admin` role support the local `deploy → test → destroy` path and
+should be detached when that path is retired. EC2 uses instance profile
+`secure-wazuh-poc-profile`, which contains `secure-wazuh-poc-role`; `iam:GetInstanceProfile` is
+pinned to the profile and `iam:PassRole` is pinned to the role. Role-name substrings are not an
+authorization boundary.
 
-### Deploy-role trust policy
+`secure-wazuh-artifact-read` is one customer-managed policy attached to the CI, `-admin`, and
+instance-profile roles. The `-admin` inline policy separately retains artifact write, deletion,
+tagging, and multipart administration.
 
-This is the source trust document for `github_nwarila-platform_secure-wazuh`. The two exact `sub`
-values admit this repository's `main` branch and automatic pull-request proof runs, while the
-audience remains `sts.amazonaws.com`; the workflow separately excludes fork pull requests before
-the credentialed job starts. The `<account-id>` token is deliberately not a live value. The
-operator substitutes the org-global `AWS_ACCOUNT_ID` while applying the trust document and does
-not commit the materialized copy.
+The `-admin` role is the human/break-glass path. Its trust allows `sts:AssumeRole` from the account
+root principal only when `aws:PrincipalArn` matches the organization's reserved
+`AWSReservedSSO_github_nwarila-platform_*` role. It is not assumed with web identity, so GitHub
+OIDC claim conditions do not belong in its trust.
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "GitHubActionsForMainAndSameRepositoryPullRequests",
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": [
-            "repo:nwarila-platform/secure-wazuh:ref:refs/heads/main",
-            "repo:nwarila-platform/secure-wazuh:pull_request"
-          ]
-        }
-      }
-    }
-  ]
-}
-```
+## GitHub OIDC trust
 
-## Policies (`policies/`)
+`roles/github_nwarila-platform_secure-wazuh.trust.json` defines the CI role trust. It requires all
+of these claims:
 
-These files are identity/permissions policies attached to roles. They deliberately do not repeat
-the trust statement above: IAM identity policies cannot contain a `Principal`.
+- `aud = sts.amazonaws.com`;
+- `sub` matching either `repo:nwarila-platform@230745524/secure-wazuh@1307854438:*` or
+  `repo:nwarila-platform/secure-wazuh:*`;
+- the immutable repository identity `repository_id = 1307854438`;
+- `job_workflow_ref` matching either
+  `nwarila-platform/secure-wazuh/.github/workflows/deploy.yml@*` or
+  `nwarila-platform/secure-wazuh/.github/workflows/e2e-full.yml@*`.
 
-- **`secure-wazuh_deploy.json`** — the budget + security deploy policy (managed; attached to **both**
-  roles). Implicit-deny by default; explicit-allow **only** for the exact 3-system spec:
-  - instance types **`{m6i.xlarge, t3.medium}`** only, `default` tenancy, **IMDSv2 required**
-    (`ec2:MetadataHttpTokens=required`), region **us-east-1** only;
-  - EBS **gp3 ≤100 GB / ≤3000 IOPS / ≤125 MB/s** — with `ec2:ModifyVolume` split out and capped so a
-    tagged volume can't be grown to `io2`;
-  - **Identity — repository-id, not a name prefix (v5, migration complete 2026-07):** every
-    mutating action is scoped to the immutable **`nwarila:management:repository-id = "1307854438"`**
-    tag (secure-wazuh's GitHub repo id) — the interim name-prefix + legacy environment-tag pair
-    this replaces is gone from the policy entirely (so the teardown leg can never be denied —
-    the record's primary cost control is destroy-always). The tag is stamped by the framework's
-    *mandatory* deployment identity, never hand-set: `aws-terraform-framework` applies it (alongside
-    `managed-by`/`repository`/`stack`/`environment`/`owner`/`commit-sha`/`run-id`) to every taggable
-    resource through provider `default_tags`, **plus an explicit root-volume tag merge** —
-    `default_tags` cannot reach an `aws_instance`'s implicitly-created root volume, so the framework
-    issues a separate, follow-up tag call for it (see `StampRepoIdentityTags` below). **Deliberate
-    trade:** the old name-prefix cap was a second, independent check layered on top of the tag;
-    that layering is gone — identity is the tag alone now. The budget posture is unaffected: the
-    type/size/region caps above are unchanged and do the actual cost-control work regardless of
-    which tag key gates identity.
-  - **PREREQUISITE:** every apply — CI and local alike — MUST export `TF_VAR_resource_metadata`
-    (the framework's runner protocol; see `aws-terraform-framework`'s
-    `docs/reference/runner-protocol.md`, "Deployment Identity Tags") before the first
-    `RunInstances`/`CreateVolume`/`CreateNetworkInterface` call. Skip it and every
-    `RequestTag/nwarila:management:repository-id` condition below is unsatisfied — every
-    create-call in this policy is denied; there is no fallback identity.
-  - **`StampRepoIdentityTags` (added 2026-07):** allows exactly `ec2:CreateTags` on
-    `instance`/`volume`/`network-interface`/`security-group`, gated on the request itself carrying
-    `RequestTag/nwarila:management:repository-id = "1307854438"` (region-locked too, no
-    `ec2:DeleteTags` — removal stays exclusively on `LifecycleOnlyOnOurTaggedResources`). This is
-    the permission the root-volume tag merge above needs: the root volume is born implicitly
-    inside `RunInstances`, invisible to `default_tags`, so the provider tags it with a SEPARATE,
-    standalone `CreateTags` call moments later — a call `TagOnlyAtCreateTime`'s `ec2:CreateAction`
-    condition does not cover (that condition matches only tags bundled INSIDE the originating
-    `RunInstances`/`CreateVolume`/`CreateNetworkInterface` call itself, not a follow-up call).
-  - `iam:PassRole` limited to `role/*wazuh*` → `ec2`; KMS only via `ec2.us-east-1` for EBS; SSM
-    `StartSession` (SSH-over-SSM) to our tagged instances.
-  - **Security groups — framework-managed, per-system (added 2026-07):** `ec2:CreateSecurityGroup`
-    (us-east-1) + `Authorize/Revoke/Modify/Delete` SG rules (us-east-1) + create-time `CreateTags` on
-    SG / SG-rule resources — so the `aws-terraform-framework` can create each system's OWN
-    system-specific SG (e.g. the AIO's inbound Wazuh mesh 1514/1515 from the deploy subnet).
-    **Deliberately region-scoped, NOT rule-content- or `ResourceTag`-locked** (rationale: every system
-    carries comprehensive per-system inbound/outbound rules; and a just-created SG-rule resource has no
-    tag to match at authorize time, so `ResourceTag` scoping 403s). A conscious loosening of the
-    exact-spec posture, for the SG surface only, bounded to us-east-1.
-  - **Disk resolution (linux_disk_manager, added 2026-07):** the AWS disk resolver
-    (`ansible-framework`'s `linux_disk_manager` role, `tasks/resolve_aws.yml`) runs a
-    controller-side `ec2_vol_info` (`DescribeVolumes`) per target host to turn a declared
-    `function` (EBS `Function` tag) into that volume's by-id `unique_id`. It relies entirely on
-    this statement's existing `ec2:Describe*` (`ReadOnlyForTerraformAndDiscovery`) — the target
-    instance itself needs no EBS/IAM grant of its own — so a future least-privilege narrowing of
-    that Sid must keep `DescribeVolumes` or the disk resolver breaks.
-  - Verified with `iam simulate-custom-policy` (per-statement, v5) before publish — 12/12:
-    identity-stamped launches/lifecycle/SSM allowed; missing/foreign-identity, oversize type,
-    IMDSv1, and wrong-region denied. Published as the policy's default version; confirmed LIVE
-    two ways: (1) the deploy role stamped the standing SG's repository-id tag via the new
-    `StampRepoIdentityTags` path — impossible under v4; (2) the previously-403ing OS-swap apply
-    (a `refresh_serial` bump alongside a non-refresh sibling) re-ran with ZERO tag errors, and
-    the sibling's root-volume tags converged.
-- **`github_nwarila-platform_secure-wazuh.json`** — the CI role's S3 duty: read/write of this repo's
-  Terraform state and its lock file under `<account-id>-terraform/<owner>/<repo>/`, plus read-only
-  access to the Wazuh artifacts in `<account-id>-ansible`. Both targets keep their own state object
-  (`aws.tfstate`, `proxmox.tfstate`), so the state statements are scoped to `*.tfstate` beneath that
-  one repo prefix rather than to a single file. Two `Deny` statements require every state upload to
-  carry `x-amz-server-side-encryption: AES256` — bucket-default encryption does **not** satisfy them,
-  because the condition tests the request header, so the workflows pass `encrypt=true` to
-  `terraform init`. Deleting a state object is denied outright; only the lock file may be removed.
-- **`secure-wazuh-poc-role-s3.json`** — the instance profile's S3 artifact read (folder-scoped, read-only).
+### Repository OIDC claims
 
-## Roles (`roles/`)
+This repository emits the ID-embedded subject form
+`repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:<ref>`. Any `sub` condition must account for this
+form. The `job_workflow_ref` claim is present on ordinary, non-reusable workflow jobs and has the
+value `<owner>/<repo>/.github/workflows/<file>@<ref>`. The `repository_id` claim is `1307854438`
+and is emitted on every run.
 
-- **`secure-wazuh-poc-role.trust.json`** — the EC2 assume-role trust for the instance profile.
+The repository-scoped `sub` gate does not restrict branches. Apply the document as a complete
+replacement so no ref-based or temporary feature-branch subjects remain.
 
-## Permanent networking (provisioned in AWS, left standing — not IAM)
+Branch selection stays in the workflows' trigger logic instead of the role trust. Their `paths:`
+filters cover `.github/.framework-pin`, `.github/.aws-tf-framework-pin`, `ansible/**`,
+`terraform/**`, and the workflow file itself. The Wazuh version is the `bundle_key` in
+`ansible/applications/wazuh_server/vars/redhat_dev.yml`, so version changes remain covered by the
+`ansible/**` filter. A `pull_request` run of `e2e-full.yml` can therefore authenticate without a
+loose `pull_request` subject: the trust does not key authorization on the event.
 
-A single **public subnet** the deployments land in (one shared deploy subnet for all systems):
-auto-assign
-public IP + a **no-inbound security group** (`secure-wazuh-poc-sg`, zero ingress, all egress) so the
-SSM path works over the internet gateway with **no open ports** and no NAT/endpoint cost. Plus the
-`secure-wazuh-poc-key` key pair (private key stays local; never committed). Named resources:
-`secure-wazuh-igw`, `secure-wazuh-public-use1a`, `secure-wazuh-public-rt`, `secure-wazuh-poc-sg`.
-`secure-wazuh-poc-sg` (`sg-06a3a06bcc4413c10`) carries a one-time, hand-stamped
-`nwarila:management:repository-id = 1307854438` tag (replacing the retired hand-stamped environment
-tag — this SG is permanent/hand-provisioned, outside Terraform, so nothing re-applies the tag per
-run) so the deploy role's `ResourceTag`-gated lifecycle actions keep working when they touch ENIs
-that reference it alongside the framework-created per-system SGs.
+The `@*` suffix is a deliberate, accepted risk: it admits any ref's copy of those two workflow
+files, including a modified version. Repository write access already equals deploy authority here,
+so pinning specific refs would add IAM churn without adding a real boundary.
 
-**Security-group composition:** every system's ENI references the standing SG above by ID. The
-Wazuh AIO's interface list additionally references `secure-wazuh-poc-aio`, the key of its own
-per-deploy group declared in the top-level `managed_security_groups` map. That group owns the
-manager's inbound mesh (tcp 1514/1515 from the deploy subnet); agents only initiate outbound and
-use the standing group's egress.
+Before applying the trust, inspect a token from each credentialed workflow and confirm that
+`repository_id` and `job_workflow_ref` have the exact values required by the document. Confirm both
+workflows can authenticate after application.
 
-The framework's inline per-system `managed_security_group` attribute is deliberately not used
-here. It derives the AWS group name as `<hostname>-sg`, which would make the AIO group
-`secure-wazuh-poc-sg` and collide case-insensitively with the permanent standing group of that
-name in the same VPC. AWS cannot create the duplicate group. Adopting the inline attribute would
-require either an explicit name override in the framework or re-stamping the standing group under
-a non-colliding name.
+The event-path boundary forbids any workflow that combines
+`pull_request_target` with `id-token: write`. By default, GitHub does not mint an ID token to a fork
+`pull_request` run. An administrator setting can send write tokens to pull-request workflows, and
+the `id-token` permission is write-or-none. The same-repository guard in `e2e-full.yml` excludes
+fork PRs before the credentialed job and does not depend on that setting remaining unchanged.
 
-## Cost & count backstops
+## Deploy policy split and controls
 
-IAM cannot cap instance **count** — a Budgets cost alarm (+ an us-east-1 4-vCPU On-Demand-Standard
-quota request) is the backstop, paired with the deploy → test → **destroy** discipline.
+The deploy boundary uses three managed policies:
+
+- `policies/secure-wazuh_deploy-ec2.json` →
+  `github_nwarila-platform_secure-wazuh_deploy-ec2`;
+- `policies/secure-wazuh_deploy-discovery-iam.json` →
+  `github_nwarila-platform_secure-wazuh_deploy-discovery-iam`;
+- `policies/secure-wazuh_deploy-sg-ssm-kms.json` →
+  `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms`.
+
+The split is structural. Do not recreate one combined document. Attach all three policies to
+**both** deploy-capable roles before detaching the old
+`github_nwarila-platform_secure-wazuh_deploy` policy. Detaching first creates a permissions outage;
+leaving the old policy attached temporarily preserves its old broad permissions.
+
+AWS ignores whitespace when enforcing the 6,144-character managed-policy limit. The compact
+source sizes and remaining headroom are:
+
+| Policy source | Compact characters | Headroom |
+|---|---:|---:|
+| `github_nwarila-platform_secure-wazuh.json` | 1,634 | 4,510 |
+| `secure-wazuh-artifact-read.json` | 800 | 5,344 |
+| `secure-wazuh-folder-admin.json` | 4,392 | 1,752 |
+| `secure-wazuh_deploy-ec2.json` | 5,087 | 1,057 |
+| `secure-wazuh_deploy-discovery-iam.json` | 1,090 | 5,054 |
+| `secure-wazuh_deploy-sg-ssm-kms.json` | 4,462 | 1,682 |
+
+The EC2 policy defines these cost and security controls:
+
+- `us-east-1` only; instance types exactly `{m6i.xlarge, t3.medium}`; default tenancy; IMDSv2
+  required at launch;
+- gp3 volumes no larger than 100 GiB, 3000 IOPS, or 125 MiB/s, including later
+  `ModifyVolume`; `NumericLessThanEqualsIfExists` remains intentional for optional gp3
+  IOPS/throughput inputs;
+- create authorization uses the request identity tag and lifecycle authorization uses the
+  resource identity tag `nwarila:management:repository-id = 1307854438`;
+- ENI creation requires the repository identity tag on the new network-interface authorization
+  leg; the supporting subnet and security-group legs are region-scoped because they do not receive
+  the new interface's request-tag context;
+- runtime metadata changes on owned instances permit other metadata-option edits, but an explicit
+  `ec2:MetadataHttpTokens` input can only be `required`;
+- console output is tag-scoped.
+
+The discovery and IAM policy keeps Terraform's EC2 read-only discovery action allowlist in
+`us-east-1`, limits instance-profile discovery to `secure-wazuh-poc-profile`, and permits passing
+only `secure-wazuh-poc-role` to EC2.
+
+Every CI and local apply must export `TF_VAR_resource_metadata` before Terraform creates any
+resource. The pinned framework supplies the identity tags through provider `default_tags` and
+includes them in the `RunInstances` tag specifications for both instances and volumes. Its
+follow-up root-volume tag merge therefore operates on a volume that already carries the identity.
+
+`StampRepoIdentityTagOnRootVolumes` is the only standalone tag allow. It is limited to EBS volumes
+that already carry the repository identity, and the request must carry that same identity value.
+This permits the provider's follow-up merge without allowing an untagged volume to be claimed.
+Standalone tagging of instances, ENIs, security groups, and untagged volumes is not allowed.
+Explicit Denies prevent overwriting a foreign repository identity, setting the identity to another
+value, or deleting the identity key.
+
+The second deploy policy defines the remaining surfaces:
+
+- security-group creation and group actions are pinned to VPC `vpc-03c38504869c1c9bb`; group
+  mutation/deletion also requires the repository identity resource tag. Security-group-rule
+  resources stay region-scoped because EC2 exposes the VPC context on the parent group
+  authorization, not the rule resource. Explicit Denies carve the permanent
+  `secure-wazuh-poc-sg` group and its standing rule out of all rule mutation and group deletion,
+  while framework-created groups remain manageable;
+- SSM `StartSession` remains tag-scoped to owned instances and the
+  `AWS-StartSSHSession` document; resume/terminate is region-scoped to session resources. An assumed
+  role's `${aws:userid}` contains the role ID and session name separated by a colon, so using it as
+  a session ARN prefix would not match the SSM session ID and would silently deny teardown;
+- Terraform can call `kms:ListAliases` and `kms:DescribeKey` directly in `us-east-1`; EBS
+  cryptographic operations require `kms:ViaService = ec2.us-east-1.amazonaws.com`;
+  `kms:CreateGrant` is separate and additionally requires `kms:GrantIsForAWSResource = true`.
+
+## S3 policies
+
+- `github_nwarila-platform_secure-wazuh.json` grants state/lock access only under
+  `<account-id>-terraform/nwarila-platform/secure-wazuh/`. State-bucket listing is scoped to this
+  repository's key prefix plus Terraform's `env:/` workspace-enumeration prefix.
+  `DenyDeleteStateFile` covers current objects and versions. The paired encryption Denies still
+  require an explicit `AES256` request header; bucket-default encryption alone does not satisfy
+  them.
+- `secure-wazuh-artifact-read.json` grants only Wazuh object/version reads, prefix listing, and
+  bucket-location reads in `<account-id>-ansible`.
+- `secure-wazuh-folder-admin.json` retains the admin role's repository-folder and Wazuh-artifact
+  object administration, including multipart cleanup; scoped bucket listing and location reads;
+  confinement, public/cross-account, charge-incurring, bucket-lifecycle, and encryption Denies.
+
+Every S3 Allow that addresses a repository bucket uses the account-named bucket ARN and
+`aws:ResourceAccount = <account-id>`. Cross-account artifact access is not implicit; if it becomes
+a requirement, add a separate explicit statement with its own approval boundary.
+
+Terraform state remains SSE-S3 (`AES256`). Moving it to SSE-KMS requires a selected CMK, bucket
+configuration, backend configuration, key policy, and tested recovery path; it is deliberately
+not represented as complete by an IAM-only edit.
+
+## Permanent networking
+
+The deployments use public subnet `subnet-0e1c8aae192deff26` in
+`vpc-03c38504869c1c9bb`, with the permanent zero-inbound/all-egress
+`secure-wazuh-poc-sg` (`sg-06a3a06bcc4413c10`) and SSH key pair
+`secure-wazuh-poc-key`. The standing group carries the hand-provisioned
+`nwarila:management:repository-id = 1307854438` tag. Every system uses that group; the AIO also
+uses the framework-managed `secure-wazuh-poc-aio` group for TCP 1514/1515 from
+`10.1.10.0/24`. The deploy policies explicitly deny mutation or deletion of the permanent group
+and its standing all-egress rule because Terraform only consumes that group; the managed AIO group
+remains mutable for create and destroy. Access is SSH over SSM, not inbound SSH.
+
+## Cost and count backstops
+
+IAM cannot cap instance count. The live us-east-1 Running On-Demand Standard quota is 32 vCPUs.
+A 4-vCPU quota is a target that must be requested and verified separately before it can be treated
+as an account-side backstop. The Budgets alarm and deploy → test → destroy discipline remain in
+place.

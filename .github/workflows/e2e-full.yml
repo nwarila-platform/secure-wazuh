@@ -138,8 +138,8 @@ jobs:
 
       # aws-terraform-framework's runner protocol (docs/reference/runner-protocol.md,
       # "Deployment Identity Tags"). Exports TF_VAR_resource_metadata for every later terraform
-      # step in this job; docs/reference/aws-iam/README.md's StampRepoIdentityTags / RequestTag
-      # conditions require it on every create-call, or they deny the request.
+      # step in this job; docs/reference/aws-iam/README.md's StampRepoIdentityTagOnRootVolumes and
+      # create-time RequestTag controls require it, or the applicable request is denied.
       - name: Derive deployment identity + targets
         shell: bash
         env:
@@ -217,14 +217,14 @@ jobs:
       # AWS auth via OIDC — no long-lived credentials in the repo
       # -----------------------------------------------------------------------
       - name: Configure AWS credentials (OIDC)
-        # The checked-in trust source authorizes this repository's main-branch and pull_request
-        # subjects with the sts.amazonaws.com audience. The job guard above excludes fork PRs
-        # before this credentialed step; the operator keeps the live role synchronized separately.
+        # The checked-in trust source requires this workflow file's job_workflow_ref claim, the
+        # immutable repository ID, and the sts.amazonaws.com audience. The job guard above remains
+        # defense in depth and excludes fork PRs before this credentialed step.
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
           # The role ARN is derived from the org-global AWS_ACCOUNT_ID and the
-          # github_<owner>_<repo> naming convention. Its trust must cover this repo's OIDC
-          # subjects and its policy the existing EC2/EBS/VPC + S3 + Terraform-state scope.
+          # github_<owner>_<repo> naming convention. Its trust is pinned to this repository and
+          # workflow file; its policy retains the existing EC2/EBS/VPC + S3 + state scope.
           role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
         # configure-aws-credentials exports AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY /
