@@ -2,7 +2,12 @@
 
 **Type**: How-to (Diátaxis). For the objects these credentials read, see [`reference/s3-artifacts.md`](../reference/s3-artifacts.md); for how the deploy consumes them, see [`how-to/deploy-the-stack.md`](deploy-the-stack.md).
 
-The S3 downloads (offline bundle, cert PEMs, Linux agent RPM) run **on the target host**, so the target's boto3 needs AWS credentials at module-call time — with one exception: the Windows agent MSI download is **controller-delegated** (a Windows target has no boto3), so it runs on the controller/runner instead. Either way, the safe way to supply the credentials is as `no_log` module arguments sourced from the runner environment — never as target (or controller) shell environment variables, and never echoed to stdout. This guide explains the pattern and how to follow it.
+The S3 downloads (offline bundle, dashboard listener pair, Linux agent RPM) run **on the target
+host**, so the target's boto3 needs AWS credentials at module-call time — with one exception: the
+Windows agent MSI download is **controller-delegated** (a Windows target has no boto3), so it runs
+on the controller/runner instead. Either way, supply credentials as `no_log` module arguments
+sourced from the runner environment — never as target (or controller) shell environment variables,
+and never echo them to stdout.
 
 ## Why the target shell must never hold the credentials
 

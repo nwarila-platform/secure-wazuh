@@ -17,12 +17,14 @@
 - name: 'Wazuh manager config changed | stop'
   listen: 'wazuh-manager-config-changed'
   become: true
+  when: __wazuh_manager_fully_converged__ | default(false) | bool
   ansible.builtin.systemd:
     name: 'wazuh-manager'
     state: 'stopped'
 
 - name: 'Wazuh manager config changed | terminate stale API child'
   listen: 'wazuh-manager-config-changed'
+  when: __wazuh_manager_fully_converged__ | default(false) | bool
   ansible.builtin.include_tasks: "{{ role_path }}/tasks/terminate_stale_wazuh_apid.yml"
 
 # Handlers cannot see task-level vars, so the endpoint override is read from the v3.2.0
@@ -31,6 +33,7 @@
 # chain the role tasks use.
 - name: 'Wazuh manager config changed | wait for API port to drain'
   listen: 'wazuh-manager-config-changed'
+  when: __wazuh_manager_fully_converged__ | default(false) | bool
   ansible.builtin.wait_for:
     host: "{{ wazuh_server_running.endpoint_host | default(ansible_host | default(inventory_hostname), true) }}"
     port: 55000
@@ -40,6 +43,7 @@
 - name: 'Wazuh manager config changed | start'
   listen: 'wazuh-manager-config-changed'
   become: true
+  when: __wazuh_manager_fully_converged__ | default(false) | bool
   ansible.builtin.systemd:
     name: 'wazuh-manager'
     state: 'started'
@@ -50,18 +54,21 @@
 - name: 'Filebeat config changed'
   listen: 'filebeat-config-changed'
   become: true
+  when: __wazuh_filebeat_fully_converged__ | default(false) | bool
   ansible.builtin.systemd:
     name: 'filebeat'
     state: 'restarted'
 
 # Notified when the dashboard's TLS material, opensearch_dashboards.yml, keystore password, or
-# wazuh.yml changes. Gated on __wazuh_dashboard_start__ (set in present_redhat.yml BEGIN from
-# config.dashboard.service_state). The dedicated fact freezes the intended state before handlers
-# flush, avoiding dependence on later variable resolution.
+# wazuh.yml changes. The intended-state and fully-converged facts are reset at role entry, then
+# the latter is enabled only after the listener pair, trust, keystore, configuration, and runtime
+# prerequisites are complete.
 - name: 'Restart wazuh-dashboard'
   listen: 'wazuh-dashboard-config-changed'
   become: true
-  when: __wazuh_dashboard_start__ | default(true)
+  when:
+    - __wazuh_dashboard_start__ | default(false) | bool
+    - __wazuh_dashboard_fully_converged__ | default(false) | bool
   ansible.builtin.systemd:
     name: 'wazuh-dashboard'
     state: 'restarted'

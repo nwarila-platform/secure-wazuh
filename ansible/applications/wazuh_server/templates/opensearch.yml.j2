@@ -4,9 +4,10 @@
    DN allowlists, and TLS policy are role variables instead of in-place regex patches.
 
    admin_dn / nodes_dn are NOT guessed: present_redhat.yml reads the RFC2253 subject of the
-   actual admin.pem / indexer.pem placed under config.certs_dir and passes them in as
-   __admin_dn__ / __indexer_dn__, so the security plugin trusts exactly the certs installed
-   on this host. A multi-node indexer cluster would need every peer node's DN listed under
+   freshly minted admin.pem / indexer.pem and then installs those exact files under
+   config.certs_dir. It passes the subjects in as __admin_dn__ / __indexer_dn__, so the security
+   plugin trusts exactly the certs installed on this host. A multi-node indexer cluster would
+   need every peer node's DN listed under
    plugins.security.nodes_dn — extend here when that topology ships. #}
 network.host: "{{ config.network_host }}"
 node.name: "{{ __node_name__ }}"
@@ -24,8 +25,7 @@ node.max_local_storage_nodes: "3"
 path.data: /var/lib/wazuh-indexer
 path.logs: /var/log/wazuh-indexer
 
-{# Canonical cert filenames: the role renames the per-node PEMs (<cert_name>.pem) to
-   indexer.pem / indexer-key.pem on copy, so these paths stay stable across hosts. #}
+{# Canonical cert filenames are minted on target and stay stable across hosts. #}
 plugins.security.ssl.http.pemcert_filepath: {{ config.certs_dir }}/indexer.pem
 plugins.security.ssl.http.pemkey_filepath: {{ config.certs_dir }}/indexer-key.pem
 plugins.security.ssl.http.pemtrustedcas_filepath: {{ config.certs_dir }}/root-ca.pem

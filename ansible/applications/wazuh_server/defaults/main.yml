@@ -100,8 +100,7 @@ wazuh_server_defaults:
   indexer_host: '127.0.0.1'   # filebeat + manager indexer-connector + dashboard opensearch.hosts
   manager_host: '127.0.0.1'   # dashboard wazuh.yml manager API
   endpoint_host: "{{ private_ip_address | default('', true) }}"  # '' => ansible_host|inventory_hostname
-  cert_name: "{{ wazuh_cert_name | default('', true) }}"         # '' => inventory_hostname
-  node_name: ''               # OpenSearch node.name; '' => cert_name/inventory_hostname
+  node_name: ''               # OpenSearch node.name + minted DNS SAN; '' => inventory_hostname
   #endregion --- [ Endpoints ] ------------------------------------------------------------------ #
 
   #region ------ [ Firewall (union) ] ----------------------------------------------------------- #
@@ -198,6 +197,10 @@ wazuh_server_defaults:
     manager_username: 'wazuh-wui'
     bind_address: '0.0.0.0'
     service_state: 'started'
+    # Exact SHA-256 X.509 fingerprint of the current self-signed dev listener placeholder.
+    # Set to an empty string when the placeholder is retired; issued certificates use the
+    # target's normal trust store and never enter the leaf-pinning exception.
+    dev_placeholder_fingerprint: 'C2:2B:8D:FF:DF:94:7A:96:5A:79:D1:11:65:F3:80:B3:55:A3:81:2A:5C:75:45:0C:D4:E2:A5:E4:22:17:D9:E1'
   #endregion --- [ Dashboard config ] ----------------------------------------------------------- #
 
   #region ------ [ Side-deps ] ------------------------------------------------------------------ #

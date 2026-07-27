@@ -139,6 +139,16 @@ all_systems = [
             cidr_ipv6                    = null
             prefix_list_id               = null
             referenced_security_group_id = null
+          },
+          {
+            description                  = "Wazuh dashboard: HTTPS UI (443) from the deploy subnet"
+            ip_protocol                  = "tcp"
+            from_port                    = 443
+            to_port                      = 443
+            cidr_ipv4                    = "10.1.10.0/24"
+            cidr_ipv6                    = null
+            prefix_list_id               = null
+            referenced_security_group_id = null
           }
         ]
 
