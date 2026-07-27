@@ -53,7 +53,7 @@ Terraform frameworks; the generic Ansible loader and shared roles live in the pi
 | **Hardening** | STIG-aligned RHEL/Rocky 8 baseline + FIPS mode; least-privilege services |
 | **All-in-one** | Indexer + manager + Filebeat + dashboard on one node (fail-fast on unsupported multi-node) |
 | **File Integrity Monitoring** | Realtime (inotify) FIM that emits change **events** with **zero audit records** (`whodata="no"`) |
-| **Secrets** | Operator supplies **one** password (the dashboard admin); everything else is generated/derived, **rotated every run, nothing persisted** |
+| **Secrets** | Each playbook invocation resolves one dashboard-admin password, normally minting it; service credentials rotate per run, while guarded recovery converges persistent manager RBAC state |
 | **TLS** | OpenSearch/Filebeat/dashboard TLS from SHA-256-verified S3 cert PEMs today; a two-tier on-target PKI is the **tracked target** (see [ADR&nbsp;0001](docs/decision-records/repo/0001-secrets-and-tls.md), which carries its implementation-status banner) |
 | **Supply chain** | Offline package bundle + pinned SHA256; deny-all explicit `.gitignore`; org security workflows (CodeQL, Scorecard, IaC scan) |
 | **Reproducibility** | Pinned `ansible-framework` commit (`.github/.framework-pin`); pinned RHEL-8 ansible-core 2.16 toolchain |

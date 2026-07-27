@@ -14,9 +14,9 @@
 #     layer) before this role runs.
 #   - `ENV` as an Ansible fact (playbooks/deploy-aws-poc.yml propagates literal `dev` — no
 #     --extra-vars); AWS creds from the runner env via that playbook's run-input bridge.
-#   - Exactly ONE Wazuh secret: `wazuh_server.secrets.admin_password` (see below). The ephemeral
-#     AWS workflow supplies one run-scoped value across both OS-swap phases; the playbook mints a
-#     fallback only when none is supplied. Every other credential is generated or derived here.
+#   - Exactly ONE Wazuh secret: `wazuh_server.secrets.admin_password` (see below). The playbook
+#     resolves it independently for each invocation, normally minting a fresh value when no
+#     explicit environment override is supplied. Every other credential is generated or derived.
 # =========================================================================================== #
 
 wazuh_server_defaults:
@@ -25,22 +25,22 @@ wazuh_server_defaults:
   state: 'present'
   #endregion --- [ Lifecycle ] ------------------------------------------------------------------ #
 
-  #region ------ [ Secrets (rotate-every-run; nothing persisted) ] ------------------------------ #
-  # The ONLY operator-provided credential: the OpenSearch `admin` superuser, which is also the
-  # dashboard / web-UI login. Set it in the `wazuh_server.secrets:` override dict.
+  #region ------ [ Secrets (rotate every invocation; no controller persistence) ] --------------- #
+  # The ONLY resolved credential input: the OpenSearch `admin` superuser, which is also the
+  # dashboard / web-UI login. The playbook sets it in the `wazuh_server.secrets:` override dict.
   #
-  # Every other credential (OpenSearch internal service users + manager API users) is
-  # PROCEDURALLY GENERATED FRESH ON EVERY RUN and never written to disk — the credential tasks
-  # therefore always report `changed` (rotation by design). `generated_users` is the exact set
-  # rendered into internal_users.yml + the manager API sync + the keystores.
+  # Every other credential (OpenSearch internal service users + manager API users) is generated or
+  # derived fresh for the invocation, with no controller persistence. Target-side bcrypt hashes,
+  # keystores, RBAC state, and the locked dashboard config are rewritten as appropriate, so the
+  # credential tasks always report `changed` (rotation by design).
   secrets:
     admin_password: ''
     # Fresh 32-char random every run (OpenSearch internal users + service auth). These live only
     # in bcrypt hashes (internal_users.yml, pushed via the admin CERT), so rotating them never
     # locks anything out. The manager API users (wazuh, wazuh-wui) are NOT here — their creds live
-    # in the persistent rbac.db and can only be changed by authenticating with the current one,
-    # so they are DERIVED deterministically from admin_password in present_redhat.yml #region 01
-    # (stable across reruns => always re-authenticatable, still nothing persisted).
+    # in the persistent rbac.db and can only be changed by authenticating with the current one.
+    # They are DERIVED deterministically from this invocation's admin_password; when that root
+    # changes, present_redhat.yml's guarded ladder rebuilds only rbac.db and rotates them.
     generated_users:
       - 'anomalyadmin'    # OpenSearch internal (hash-only)
       - 'kibanaserver'    # dashboard -> indexer service auth
@@ -158,7 +158,7 @@ wazuh_server_defaults:
     config_path: '/var/ossec/etc/ossec.conf'
     keystore_bin: '/var/ossec/bin/wazuh-keystore'
     # The manager indexer-connector authenticates as the cluster admin (full write on
-    # wazuh-states-*). admin is the ONE operator-provided password.
+    # wazuh-states-*). admin is this invocation's ONE resolved password.
     keystore_indexer_user: 'admin'
     # Narrow no-password-literal exemption: these are Wazuh's public vendor factory bootstrap
     # values, not operator secrets or desired credentials. They are used only to authenticate a

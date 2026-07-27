@@ -68,7 +68,7 @@ and where each value comes from.
 | `AWS_SESSION_TOKEN` | Optional (STS). |
 | `ANSIBLE_S3_BUCKET` | Required controller environment variable naming the artifact bucket. GitHub workflows derive it from the org-global account-id input; local operators export it explicitly. |
 | `GITHUB_RUN_ID` | Required inventory selector. GitHub provides it to every workflow step; local operators resolve it from the deployed commit-sha tag as documented below. |
-| `wazuh_admin_password` | The one Wazuh credential. Stage 1 retains a non-empty `WAZUH_ADMIN_PASSWORD` (providing cross-phase continuity after an OS-swap) or mints a strong 32-character fallback when none is supplied. |
+| `wazuh_admin_password` | The one Wazuh credential. Each playbook invocation mints a strong 32-character value when `WAZUH_ADMIN_PASSWORD` is absent or empty; a non-empty value remains an explicit override. Normal GitHub runs leave it unset, and the manager role converges from prior `rbac.db` state through its guarded authentication ladder. |
 
 The EBS volume's `/dev/disk/by-id` name is runtime-derived from its `Function` tag through
 `linux_disk_manager`'s AWS resolver.

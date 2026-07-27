@@ -30,7 +30,7 @@ None mirrored yet. Inherited framework decisions land at `template/NNNN-...md` w
 
 | #  | Title | Status | Date | Summary |
 |----|-------|--------|------|---------|
-| [0001](repo/0001-secrets-and-tls.md) | Two-Tier PKI and a Rotate-Every-Run Secrets Model | Accepted (partially implemented — secrets landed, PKI pending) | 2026-07-21 | One operator password; internal service creds rotate every run; target two-tier PKI (on-target internal CA + S3 dashboard cert). |
+| [0001](repo/0001-secrets-and-tls.md) | Two-Tier PKI and a Rotate-Every-Run Secrets Model | Accepted (partially implemented — secrets landed, PKI pending) | 2026-07-21 | One resolved admin password per invocation; internal service creds rotate every run; target two-tier PKI (on-target internal CA + S3 dashboard cert). |
 | [0002](repo/0002-combined-terraform-ansible-delivery.md) | Combined Terraform-Provisions + Ansible-Configures Product Delivery | Accepted | 2026-07-21 | One repo provisions (Terraform) and configures (Ansible) the product; commit-to-`main` GitOps loop. |
 | [0003](repo/0003-deny-all-explicit-gitignore.md) | Deny-All Explicit `.gitignore` for secure-wazuh | Accepted | 2026-07-21 | `.gitignore` starts with `**`; every tracked path is re-included with an explicit `!/path`; enforced by `make allowlist-check`. |
 

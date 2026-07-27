@@ -23,17 +23,7 @@
 
 - name: 'Wazuh manager config changed | terminate stale API child'
   listen: 'wazuh-manager-config-changed'
-  become: true
-  register: '__wazuh_apid_pkill__'
-  changed_when: __wazuh_apid_pkill__.rc == 0
-  failed_when: __wazuh_apid_pkill__.rc not in [0, 1]
-  ansible.builtin.command:
-    argv:
-      - 'pkill'
-      - '-u'
-      - 'wazuh'
-      - '-f'
-      - '/var/ossec/api/scripts/wazuh_apid.py'
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/terminate_stale_wazuh_apid.yml"
 
 # Handlers cannot see task-level vars, so the endpoint override is read from the v3.2.0
 # loader's `<role>_running` merged-config fact (persists for the play, so it is still set

@@ -56,7 +56,7 @@ This keeps indexer data, manager state, and dashboard state on the durable disk 
 ## Trust and hardening posture
 
 - **Artifacts are verified before use.** The offline bundle and agent RPM are checked against PR-reviewed SHA-256 pins after download; a mismatch aborts the install.
-- **Secrets rotate every run.** The operator supplies exactly one password (the `admin` superuser / dashboard login). Every OpenSearch internal service user is generated fresh each run and exists only as a bcrypt hash; the manager API users are derived deterministically from the admin password so reruns stay authenticatable without persisting anything.
+- **Secrets rotate every run.** The playbook resolves one password per invocation (the `admin` superuser / dashboard login), normally minting it when no explicit environment override is supplied. Every OpenSearch internal service user is generated fresh and exists only as a bcrypt hash; manager API users are derived from that invocation's admin password, and the guarded authentication ladder converges prior `rbac.db` state.
 - **Minimal external surface.** The indexer HTTP API (9200) is deliberately not opened in the firewall — on an AIO box every consumer reaches it over loopback. Only agent comms (1514), enrollment (1515), the manager API (55000), and the dashboard (443) are exposed.
 - **File integrity monitoring is realtime.** The role replaces the vendor's 12-hour scheduled scan with an inotify realtime `<syscheck>` stanza on `/etc`, `/usr/bin`, `/usr/sbin`, so changes emit events immediately rather than only surfacing as periodic inventory diffs.
 

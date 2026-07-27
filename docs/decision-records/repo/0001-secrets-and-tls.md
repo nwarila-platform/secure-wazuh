@@ -11,7 +11,7 @@
 | Reversibility  | Medium                                      |
 | Review-by      | N/A (Accepted)                              |
 
-> **⚠️ Implementation status.** The **secrets model** (decisions 2 & 3 below — one operator
+> **⚠️ Implementation status.** The **secrets model** (decisions 2 & 3 below — one resolved admin
 > password, rotate-every-run internal service users as bcrypt-only, manager-API users derived
 > from the admin password, plaintext-off-disk mitigations) **is implemented** in the
 > `wazuh_server` role today. The **two-tier PKI** (decision 1 — internal CA/node/admin certs
@@ -42,13 +42,13 @@ its secrets:
    overwhelming majority of secrets. The one irreducible plaintext credential is the
    dashboard-to-manager API password in the Wazuh app's `wazuh.yml`. Documented
    mitigations apply.
-3. **Rotate-every-run, nothing-persisted.** Because delivery is a commit-to-main
+3. **Rotate-every-run, no controller persistence.** Because delivery is a commit-to-main
    GitOps loop (see [ADR-0002](0002-combined-terraform-ansible-delivery.md)),
    internal PKI and indexer internal-user passwords are minted fresh on every run and
-   nothing is persisted between runs. The sole exception is the two **manager-API
-   users** (`wazuh`, `wazuh-wui`): they are derived **deterministically** from
-   `admin_password` so they remain stable across reruns and can still authenticate
-   against a persisted RBAC database.
+   nothing is persisted between runs on the controller. The two **manager-API users**
+   (`wazuh`, `wazuh-wui`) live in persistent `rbac.db`; each invocation derives their
+   desired passwords from its resolved `admin_password` and converges prior state through
+   a guarded current-password, factory-password, then `rbac.db`-only recovery ladder.
 
 ## Context and Problem Statement
 
@@ -90,8 +90,8 @@ Finally, the delivery model (ADR-0002) redeploys the stack on **every commit to 
 — in place on the permanent Proxmox instance and from zero on the ephemeral AWS
 proof-of-concept. That makes "rotate on every run" cheap and desirable, but it collides
 with one piece of durable state: the Wazuh **manager RBAC database** on the persistent
-data volume, which is not wiped between runs. Any credential the manager persists must
-survive a rerun.
+data volume, which is not wiped between runs. The role must therefore converge that
+credential state safely when a new invocation resolves a different desired password.
 
 ## Decision Drivers
 
@@ -106,8 +106,8 @@ survive a rerun.
 4. **FIPS-approved cryptography.** On-target minting must use FIPS-validated
    primitives (approved key types and SHA-2 digests) so the self-signed PKI is
    admissible under the hardened baseline.
-5. **Idempotent redeploys.** The rotate-every-run loop must not require a manual
-   credential-reset dance against durable manager state on each commit.
+5. **Convergent redeploys.** The rotate-every-run loop must recover durable manager
+   credential state automatically, without a manual reset on each commit.
 6. **Least privilege between co-located components.** Dropping client certs must not
    weaken authentication; password + CA-verify must be a real authentication, not an
    anonymous bind.
@@ -209,29 +209,26 @@ dashboard public key.
    - the rotate-every-run model (Part C), which bounds the lifetime of any captured
      value to a single deploy cycle.
 
-### Part C — Rotate-every-run, nothing-persisted
+### Part C — Rotate-every-run, no controller persistence
 
-The pipeline receives one stable root secret, `admin_password`, from its secret store;
-it is never committed to the repository (see
-[ADR-0003](0003-deny-all-explicit-gitignore.md)). From it, **every run** mints fresh
-internal-PKI key material and fresh indexer internal-user passwords. `securityadmin`
-re-initializes the OpenSearch security index wholesale on each run, and the matching
-keystore values (dashboard `kibanaserver`, Filebeat writer) are rewritten in the same
-run, so rotating those is free and self-consistent. Nothing is persisted between runs on
-the controller or CI runner.
+Each playbook invocation resolves one `admin_password`. When no non-empty environment
+override is supplied, the playbook mints a fresh strong value; it is never committed to
+the repository (see [ADR-0003](0003-deny-all-explicit-gitignore.md)). From it, the run
+mints fresh internal-PKI key material and fresh indexer internal-user passwords.
+`securityadmin` re-initializes the OpenSearch security index wholesale on each run, and
+the matching keystore values (dashboard `kibanaserver`, Filebeat writer) are rewritten
+in the same run, so rotating those is free and self-consistent. Nothing is persisted
+between runs on the controller or CI runner.
 
-The deliberate exception is the two **manager-API users**, `wazuh` and `wazuh-wui`. The
-Wazuh manager persists API users in its **RBAC database** (`rbac.db`) on the persistent
-data volume of the permanent Proxmox instance. That database is treated as durable state
-and is **not** wiped between runs. If the two API passwords were random per run, a rerun
-against the persisted `rbac.db` would either fail to authenticate — the dashboard's
-`wazuh.yml` would hold a value the manager no longer knows — or force a reset every
-commit. Instead, the two passwords are **derived deterministically** from
-`admin_password` (a keyed derivation with a distinct per-user label, e.g.
-`HMAC-SHA256(admin_password, "wazuh-api:wazuh")` and `…:"wazuh-wui"`). Given a stable
-`admin_password`, the derivation reproduces the same two passwords on every run, so a
-rerun writes them idempotently to both `rbac.db` and the dashboard `wazuh.yml`, and
-authentication holds with no reset step.
+The two **manager-API users**, `wazuh` and `wazuh-wui`, live in the manager's persistent
+**RBAC database** (`rbac.db`). Their desired passwords are derived deterministically
+from this invocation's `admin_password`, with a distinct per-user label, and may differ
+from the values left by the previous invocation. The role first tries the new desired
+`wazuh` password, then the vendor factory password. Only explicit 401 responses from
+both attempts permit recovery: stop the manager, remove only `rbac.db`, restart it,
+authenticate against the rebuilt factory state, and immediately rotate the complete
+role-owned API-user set. Transport, TLS, timeout, 5xx, rate-limit, and other unexpected
+failures cannot enter recovery.
 
 ## Pros and Cons of the Options
 
@@ -308,12 +305,13 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
    path, `wazuh.yml` MUST be `0600`, owned by the service account (or relocated into the
    service account HOME per the documented technique), SELinux-confined, fapolicyd-covered,
    and every task touching it MUST set `no_log: true`.
-7. **Deterministic API users.** The `wazuh` and `wazuh-wui` passwords MUST be derived
-   deterministically from `admin_password` and MUST reproduce identically across reruns;
-   a rerun against a persisted `rbac.db` MUST authenticate without a reset step.
+7. **Convergent API users.** The `wazuh` and `wazuh-wui` passwords MUST be derived
+   deterministically from the invocation's `admin_password`. The desired-password attempt,
+   then the factory-password attempt, MUST each return an explicit 401 before recovery may
+   remove only `rbac.db`; the rebuilt users MUST then be rotated immediately.
 8. **Nothing persisted.** No generated secret MUST be written into the repository or
-   left on the CI runner between runs; `admin_password` MUST arrive from the secret store,
-   not from tracked files.
+   left on the CI runner between runs; `admin_password` MUST be minted for the invocation
+   or supplied through the environment, never through tracked files.
 
 ## Consequences
 
@@ -327,7 +325,7 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
   is reduced to a single, contained file.
 - Internal PKI rotates for free on every commit-to-main deploy, bounding the lifetime of
   any compromised internal key to one cycle.
-- Idempotent redeploys hold against durable manager RBAC state without a reset dance.
+- Convergent redeploys handle durable manager RBAC state without a manual reset.
 
 ### Negative
 
@@ -339,9 +337,12 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
 - One irreducible plaintext credential remains until (and unless) a 4.14.5 keystore path
   is confirmed; its containment depends on correct ownership, mode, SELinux, fapolicyd,
   and `no_log` all being right.
-- Deterministic derivation of the two API users means a compromise of `admin_password`
-  compromises those two users deterministically; the root secret must be guarded
-  accordingly.
+- Deterministic derivation of the two API users means a compromise of an invocation's
+  `admin_password` compromises those users for that invocation; the root secret must be
+  guarded accordingly.
+- Recovery rebuilds the complete API-user database. The declared `manager.api_users` set
+  is therefore an ownership boundary: unmanaged API users would be removed and are not
+  compatible with this convergence model.
 
 ### Neutral
 
@@ -361,10 +362,10 @@ be revisited:
    topology that exposes 9200 to remote clients would change the trust analysis.
 2. The FIPS-validated crypto module on the target provides the approved primitives the
    on-target mint requires.
-3. `admin_password` is delivered as a stable secret from the pipeline's secret store and
-   is guarded as the root of the two derived API credentials.
-4. The manager RBAC database on the persistent volume is the only durable credential
-   store that a rerun must not disturb; the indexer security index is safe to
+3. Each invocation can resolve a strong `admin_password`, and every task that reads or
+   renders it is protected by `no_log`.
+4. The role owns the complete manager API-user set and may rebuild only `rbac.db` after
+   the two explicit unauthorized responses; the indexer security index is safe to
    re-initialize wholesale each run.
 
 ## Supersedes

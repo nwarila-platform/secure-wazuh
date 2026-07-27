@@ -1,0 +1,15 @@
+---
+# Shared by the manager restart handler and guarded RBAC recovery after systemd has stopped
+# wazuh-manager. The API child can outlive the unit and keep port 55000 bound.
+- name: 'Terminate stale Wazuh manager API child'
+  become: true
+  register: '__wazuh_apid_pkill__'
+  changed_when: __wazuh_apid_pkill__.rc == 0
+  failed_when: __wazuh_apid_pkill__.rc not in [0, 1]
+  ansible.builtin.command:
+    argv:
+      - 'pkill'
+      - '-u'
+      - 'wazuh'
+      - '-f'
+      - '/var/ossec/api/scripts/wazuh_apid.py'

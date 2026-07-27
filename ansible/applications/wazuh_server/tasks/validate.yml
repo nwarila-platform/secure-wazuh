@@ -78,7 +78,7 @@
         setype: 'tmp_t'
         seuser: 'system_u'
 
-    # admin_password is the ONE operator-provided secret (defaults/main.yml: ''). It is used
+    # admin_password is the ONE resolved secret input (defaults/main.yml: ''). It is used
     # verbatim as the indexer/dashboard 'admin' login AND as the keyed-derivation root for the
     # wazuh/wazuh-wui manager-API passwords (present_redhat.yml #region 01) -- the single
     # highest-value credential in the stack. That derivation prepends a fixed 'Wz9.' prefix to
@@ -86,7 +86,8 @@
     # own content, so nothing downstream mechanically enforces complexity on admin_password
     # itself. This is a defense-in-depth floor on that one human-facing master credential (this
     # product's STIG-grade posture), not a dependency of the derivation.
-    - name: 'BEGIN | Assert Operator admin_password Meets Length And Complexity Requirements'
+    - name: 'BEGIN | Assert admin_password Meets Length And Complexity Requirements'
+      no_log: true
       vars:
         __admin_pw__: "{{ config.secrets.admin_password | default('') | string }}"
       ansible.builtin.assert:
@@ -101,9 +102,9 @@
           {{ 'missing or empty' if (__admin_pw__ | length) == 0
              else 'only ' ~ (__admin_pw__ | length) ~ ' characters (need >= 15)' if (__admin_pw__ | length) < 15
              else 'missing a required character class (need upper, lower, digit, and a symbol)' }}.
-          This is the ONE operator secret -- it becomes the indexer/dashboard 'admin' login AND
-          the derivation root for the manager API passwords. Set a >=15-character value with
-          upper/lower/digit/symbol in the wazuh_server.secrets.admin_password override.
+          This resolved secret becomes the indexer/dashboard 'admin' login AND the derivation root
+          for the manager API passwords. Set a >=15-character value with upper/lower/digit/symbol
+          in the wazuh_server.secrets.admin_password override.
         quiet: true
 
     # present_redhat.yml's token-acquisition step (#region 07) selects api_users by
