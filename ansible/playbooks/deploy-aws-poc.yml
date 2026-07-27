@@ -8,9 +8,10 @@
 #
 #   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 #
-# SELF-CONTAINED: it takes no --extra-vars and no operator-provided Wazuh secret. AWS credentials
-# and the required ANSIBLE_S3_BUCKET come from the controller environment; the one credential the
-# stack needs is minted here for this run only.
+# SELF-CONTAINED: it takes no --extra-vars and requires no operator-provided Wazuh secret. AWS
+# credentials and the required ANSIBLE_S3_BUCKET come from the controller environment. A supplied
+# WAZUH_ADMIN_PASSWORD is retained; when it is absent or empty, the playbook mints the one
+# credential the stack needs.
 # Step 0 fails closed unless the run-scoped inventory resolves the exact three-system topology.
 #
 # TWO-PHASE USAGE (the cumulative 4/4 proof):
@@ -79,15 +80,22 @@
 - name: 'Stage 1 - Deploy Wazuh All-In-One Stack'
   hosts: 'wazuh_servers'
   pre_tasks:
-    # Drawn once: repeated bare lookups could produce different passwords in the same stack run.
-    - name: 'INIT | Mint A Strong Ephemeral admin_password For This Run'
+    # The environment must win: an OS-swap preserves /var/ossec (including rbac.db) on the data
+    # disk, so a second invocation against that surviving state must derive the SAME manager API
+    # password. A fresh mint cannot re-authenticate. Local runs remain self-contained by minting
+    # only when WAZUH_ADMIN_PASSWORD is absent or empty; either result is frozen exactly once.
+    - name: 'INIT | Resolve A Strong Ephemeral admin_password For This Run'
       run_once: true
       no_log: true
       ansible.builtin.set_fact:
         wazuh_admin_password: >-
-          {{ lookup('community.general.random_string',
-                    length=32, min_lower=2, min_upper=2, min_numeric=2, min_special=2,
-                    override_special='-_.=+') }}
+          {%- set __environment_password__ =
+                lookup('ansible.builtin.env', 'WAZUH_ADMIN_PASSWORD') -%}
+          {{ __environment_password__
+             if __environment_password__ | length > 0
+             else lookup('community.general.random_string',
+                         length=32, min_lower=2, min_upper=2, min_numeric=2, min_special=2,
+                         override_special='-_.=+') }}
 
   # Loader lookup('vars', role_name) requires role-named overrides, so this rule is inapplicable.
   roles:
@@ -109,7 +117,7 @@
           s3:
             bucket: "{{ lookup('ansible.builtin.env', 'ANSIBLE_S3_BUCKET') }}"
           secrets:
-            admin_password: "{{ wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD'), true) }}"
+            admin_password: "{{ wazuh_admin_password }}"
 
 #endregion --- [ Stage 1: Wazuh All-In-One Stack ] ------------------------------------------ #
 

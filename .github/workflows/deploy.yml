@@ -373,9 +373,9 @@ jobs:
           # a fallback in case a future change to the OIDC action or step ordering ever stops
           # exporting AWS_REGION here.
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-          # WAZUH_ADMIN_PASSWORD is deliberately NOT bound: this ephemeral target mints its own
-          # admin credential in the playbook's Stage 1, per run, and that value outranks the
-          # env-var leg of the role's precedence chain. Nothing here has a password to supply.
+          # This single-phase workflow does not mint WAZUH_ADMIN_PASSWORD. With no supplied value,
+          # Stage 1 uses its strong random fallback; if a caller supplies a non-empty environment
+          # value, Stage 1 retains it. Nothing is passed as an extra var.
         run: |
           set -euo pipefail
           ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml

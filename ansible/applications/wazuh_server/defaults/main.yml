@@ -14,9 +14,9 @@
 #     layer) before this role runs.
 #   - `ENV` as an Ansible fact (playbooks/deploy-aws-poc.yml propagates literal `dev` — no
 #     --extra-vars); AWS creds from the runner env via that playbook's run-input bridge.
-#   - Exactly ONE Wazuh secret: `wazuh_server.secrets.admin_password` (see below). On the
-#     ephemeral AWS target the playbook mints it per run, so no operator supplies it. Every
-#     other credential is generated fresh each run (nothing persisted).
+#   - Exactly ONE Wazuh secret: `wazuh_server.secrets.admin_password` (see below). The ephemeral
+#     AWS workflow supplies one run-scoped value across both OS-swap phases; the playbook mints a
+#     fallback only when none is supplied. Every other credential is generated or derived here.
 # =========================================================================================== #
 
 wazuh_server_defaults:

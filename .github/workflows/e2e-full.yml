@@ -16,9 +16,9 @@
 # header):
 #   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 # ZERO -e: the whole AWS target is two files — that playbook plus inventory/aws/aws_ec2.yml — and
-# product inputs come from those files plus the controller environment. The effective Wazuh admin
-# credential is minted by the playbook's own Stage 1, while the workflow-created value is only the
-# lower-precedence backstop described below; neither is passed as an extra var.
+# product inputs come from those files plus the controller environment. This workflow mints the
+# effective Wazuh admin credential once for the run, and the playbook retains it in both phases;
+# a local invocation with no supplied value mints its own fallback. Neither uses an extra var.
 #
 # Mirrors .github/workflows/deploy.yml's AWS job conventions throughout (SHA-pinned actions,
 # both framework-pin resolutions, Terraform 1.15.1, and the compose/collections/creds plumbing)
@@ -30,9 +30,9 @@
 # AWS CONFIGURATION MODEL — org-global secrets provide AWS_ACCOUNT_ID and
 # AWS_EC2_SSH_PRIVATE_KEY. TF_STATE_BUCKET is derived as <AWS_ACCOUNT_ID>-terraform; the optional
 # AWS_REGION org variable defaults to us-east-1. The repo commits both framework pins. This
-# workflow also exports a masked, run-scoped WAZUH_ADMIN_PASSWORD backstop, but the playbook's
-# Stage 1 mints the effective credential in each phase and outranks that fallback. Role ARN,
-# artifact bucket, state bucket, stack, and owner are derived at runtime.
+# workflow exports one masked, run-scoped WAZUH_ADMIN_PASSWORD for cross-phase continuity; the
+# playbook consumes it and mints only when no value is supplied. Role ARN, artifact bucket, state
+# bucket, stack, and owner are derived at runtime.
 # -----------------------------------------------------------------------------
 
 name: e2e-full
@@ -168,14 +168,12 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # EPHEMERAL-TARGET CREDENTIAL POLICY: this AWS PoC is created and destroyed inside this one
-      # run, so no standing Wazuh admin secret is stored, rotated, or leaked anywhere. The value
-      # exported here is a masked, run-scoped BACKSTOP only: deploy-aws-poc.yml's Stage 1 mints its
-      # own password per ansible-playbook process and wins the role's precedence chain
-      # (`wazuh_admin_password | default(lookup('env', 'WAZUH_ADMIN_PASSWORD'), true)`), so this
-      # env var is the lower-precedence fallback that keeps the chain non-empty rather than the
-      # credential the stack actually gets. Either way it stays zero--e, and each phase configures
-      # its own fresh password — deliberately safe, because the FIM proof authenticates to the
-      # indexer with the admin CLIENT CERTIFICATE, never this password.
+      # run, so no standing Wazuh admin secret is stored or leaked. Export ONE masked value here:
+      # both phase steps inherit it through GITHUB_ENV, and deploy-aws-poc.yml retains it instead
+      # of minting again. That continuity is required because the OS-swap preserves /var/ossec and
+      # its manager API credential state on the data disk; the client certificate used by the FIM
+      # indexer query does not remove Stage 1's need to re-authenticate to the surviving manager
+      # API state. The playbook mints a fallback only when no environment value is supplied.
       - name: Mint the ephemeral Wazuh admin password
         shell: bash
         run: |
@@ -391,9 +389,9 @@ jobs:
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           # WAZUH_ADMIN_PASSWORD is deliberately NOT bound here: the ephemeral password minted
           # above already reaches every later step through $GITHUB_ENV, and an explicit env: entry
-          # would OVERRIDE it (with an empty string when no such secret exists) — it is the
-          # fallback leg of Stage 1's admin_password chain, which Stage 1's freshly minted value
-          # outranks. Still zero -e either way.
+          # would OVERRIDE it (with an empty string when no such secret exists). Stage 1 retains
+          # this run-scoped value, so phase 1 and phase 2 derive the same manager API passwords.
+          # Still zero -e either way.
           # Read by deploy-aws-poc.yml's inline Stage 5 evidence block (gated so a local run
           # without this var writes no evidence) — it writes the machine-readable proof JSON
           # here, controller-side, for "Render PoC evidence" below to consume.
@@ -484,6 +482,8 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          # WAZUH_ADMIN_PASSWORD remains inherited from the same GITHUB_ENV export as phase 1;
+          # do not shadow the cross-phase credential with a step-local empty value.
           # Same path as phase 1 (see that step's comment) — this run overwrites it with the
           # cumulative (4-entry) state; phase 1's own snapshot already survives at
           # poc-proof-phase1.json.
