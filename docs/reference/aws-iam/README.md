@@ -15,6 +15,11 @@ and apply the trust documents, managed policies, inline policy, and attachments 
 change. Read each applied document and attachment back from IAM, normalize its JSON, and compare it
 with the materialized source before granting access to a deployment.
 
+The permanent-security-group Denies deliberately use `*` in the account field of their EC2 ARNs.
+The fixed region and resource IDs identify the protected group and rule; the wildcard ensures a
+missed account substitution cannot silently disable either Deny. Leave those two account fields as
+wildcards when materializing the policy.
+
 ## Role-to-policy map
 
 | Role | Trust source | Attached policies | Purpose |
@@ -78,10 +83,11 @@ Before applying the trust, inspect a token from each credentialed workflow and c
 workflows can authenticate after application.
 
 The event-path boundary forbids any workflow that combines
-`pull_request_target` with `id-token: write`. By default, GitHub does not mint an ID token to a fork
-`pull_request` run. An administrator setting can send write tokens to pull-request workflows, and
-the `id-token` permission is write-or-none. The same-repository guard in `e2e-full.yml` excludes
-fork PRs before the credentialed job and does not depend on that setting remaining unchanged.
+`pull_request_target` with `id-token: write`. The organization setting that sends write tokens to
+workflows from fork pull requests MUST remain disabled. With that required setting, GitHub does not
+mint an ID token to fork `pull_request` runs; the `id-token` permission is write-or-none. The
+same-repository guard in `e2e-full.yml` also excludes fork PRs before the credentialed job, but it
+does not replace that organization-level dependency.
 
 ## Deploy policy split and controls
 
@@ -107,9 +113,9 @@ source sizes and remaining headroom are:
 | `github_nwarila-platform_secure-wazuh.json` | 1,634 | 4,510 |
 | `secure-wazuh-artifact-read.json` | 800 | 5,344 |
 | `secure-wazuh-folder-admin.json` | 4,392 | 1,752 |
-| `secure-wazuh_deploy-ec2.json` | 5,087 | 1,057 |
+| `secure-wazuh_deploy-ec2.json` | 5,471 | 673 |
 | `secure-wazuh_deploy-discovery-iam.json` | 1,090 | 5,054 |
-| `secure-wazuh_deploy-sg-ssm-kms.json` | 4,462 | 1,682 |
+| `secure-wazuh_deploy-sg-ssm-kms.json` | 4,532 | 1,612 |
 
 The EC2 policy defines these cost and security controls:
 
@@ -121,8 +127,9 @@ The EC2 policy defines these cost and security controls:
 - create authorization uses the request identity tag and lifecycle authorization uses the
   resource identity tag `nwarila:management:repository-id = 1307854438`;
 - ENI creation requires the repository identity tag on the new network-interface authorization
-  leg; the supporting subnet and security-group legs are region-scoped because they do not receive
-  the new interface's request-tag context;
+  leg. The `RunInstances` network-interface, subnet, and security-group legs and the
+  `CreateNetworkInterface` subnet and security-group legs are restricted to the deploy VPC; both
+  subnet legs are additionally pinned to `subnet-0e1c8aae192deff26`;
 - runtime metadata changes on owned instances permit other metadata-option edits, but an explicit
   `ec2:MetadataHttpTokens` input can only be `required`;
 - console output is tag-scoped.
@@ -134,7 +141,8 @@ only `secure-wazuh-poc-role` to EC2.
 Every CI and local apply must export `TF_VAR_resource_metadata` before Terraform creates any
 resource. The pinned framework supplies the identity tags through provider `default_tags` and
 includes them in the `RunInstances` tag specifications for both instances and volumes. Its
-follow-up root-volume tag merge therefore operates on a volume that already carries the identity.
+follow-up root-volume tag merge therefore operates on a volume that already carries the identity,
+and the volume authorization leg requires that identity in the launch request.
 
 `StampRepoIdentityTagOnRootVolumes` is the only standalone tag allow. It is limited to EBS volumes
 that already carry the repository identity, and the request must carry that same identity value.
@@ -155,9 +163,13 @@ The second deploy policy defines the remaining surfaces:
   `AWS-StartSSHSession` document; resume/terminate is region-scoped to session resources. An assumed
   role's `${aws:userid}` contains the role ID and session name separated by a colon, so using it as
   a session ARN prefix would not match the SSM session ID and would silently deny teardown;
-- Terraform can call `kms:ListAliases` and `kms:DescribeKey` directly in `us-east-1`; EBS
-  cryptographic operations require `kms:ViaService = ec2.us-east-1.amazonaws.com`;
-  `kms:CreateGrant` is separate and additionally requires `kms:GrantIsForAWSResource = true`.
+- Terraform can call `kms:ListAliases` and `kms:DescribeKey` directly in `us-east-1`. EBS
+  cryptographic operations and grants are pinned to the AWS-managed key currently resolved by
+  `alias/aws/ebs`; automatic rotation changes its key material without changing the logical key
+  ARN. Cryptographic operations require `kms:ViaService = ec2.us-east-1.amazonaws.com`;
+  `kms:CreateGrant` is separate and additionally requires `kms:GrantIsForAWSResource = true`. A
+  clone must resolve its own `alias/aws/ebs` target and replace the committed key ID before applying
+  this policy.
 
 ## S3 policies
 

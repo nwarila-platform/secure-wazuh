@@ -32,7 +32,7 @@
         "kms:ReEncrypt*",
         "kms:GenerateDataKey*"
       ],
-      "Resource": "arn:aws:kms:us-east-1:*:key/*",
+      "Resource": "arn:aws:kms:us-east-1:<account-id>:key/381209c1-5530-4c19-8f9d-5d75e401790b",
       "Condition": {
         "StringEquals": {
           "kms:ViaService": "ec2.us-east-1.amazonaws.com"
@@ -43,7 +43,7 @@
       "Sid": "KmsGrantForEbsOnly",
       "Effect": "Allow",
       "Action": "kms:CreateGrant",
-      "Resource": "arn:aws:kms:us-east-1:*:key/*",
+      "Resource": "arn:aws:kms:us-east-1:<account-id>:key/381209c1-5530-4c19-8f9d-5d75e401790b",
       "Condition": {
         "StringEquals": {
           "kms:ViaService": "ec2.us-east-1.amazonaws.com"
@@ -188,7 +188,7 @@
         "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
         "ec2:DeleteSecurityGroup"
       ],
-      "Resource": "arn:aws:ec2:us-east-1:<account-id>:security-group/sg-06a3a06bcc4413c10"
+      "Resource": "arn:aws:ec2:us-east-1:*:security-group/sg-06a3a06bcc4413c10"
     },
     {
       "Sid": "DenyPermanentSecurityGroupRuleMutation",
@@ -202,7 +202,7 @@
         "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
         "ec2:UpdateSecurityGroupRuleDescriptionsEgress"
       ],
-      "Resource": "arn:aws:ec2:us-east-1:<account-id>:security-group-rule/sgr-08833db7ea5d82c23"
+      "Resource": "arn:aws:ec2:us-east-1:*:security-group-rule/sgr-08833db7ea5d82c23"
     }
   ]
 }
