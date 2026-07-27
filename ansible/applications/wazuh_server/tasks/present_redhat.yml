@@ -731,6 +731,25 @@
             group: 'root'
             mode: '0600'
 
+        - name: 'PKI | Write Internal CA Certificate Policy'
+          ansible.builtin.copy:
+            dest: "{{ __pki_temp_dir__.path }}/internal-pki-ca.cnf"
+            owner: 'root'
+            group: 'root'
+            mode: '0600'
+            content: |
+              [req]
+              distinguished_name = dn
+              prompt = no
+
+              [dn]
+              CN = secure-wazuh-internal-root
+
+              [v3_ca]
+              basicConstraints = critical,CA:TRUE,pathlen:0
+              keyUsage = critical,keyCertSign,cRLSign
+              subjectKeyIdentifier = hash
+
         - name: 'PKI | Mint Fresh Self-Signed Internal Root CA'
           no_log: true
           changed_when: true
@@ -745,14 +764,40 @@
               - '-sha256'
               - '-days'
               - '365'
-              - '-subj'
-              - '/CN=secure-wazuh-internal-root'
-              - '-addext'
-              - 'basicConstraints=critical,CA:TRUE,pathlen:0'
-              - '-addext'
-              - 'keyUsage=critical,keyCertSign,cRLSign'
+              - '-config'
+              - "{{ __pki_temp_dir__.path }}/internal-pki-ca.cnf"
+              - '-extensions'
+              - 'v3_ca'
               - '-out'
               - "{{ __pki_temp_dir__.path }}/root-ca.pem"
+
+        - name: 'PKI | Verify Root CA Has Exactly One Basic Constraints Extension'
+          register: '__root_ca_certificate_text__'
+          changed_when: false
+          failed_when: >-
+            (__root_ca_certificate_text__.stdout
+             | regex_findall('X509v3 Basic Constraints:') | length) != 1
+          ansible.builtin.command:
+            argv:
+              - 'openssl'
+              - 'x509'
+              - '-in'
+              - "{{ __pki_temp_dir__.path }}/root-ca.pem"
+              - '-noout'
+              - '-text'
+
+        - name: 'PKI | Write Leaf Certificate Request Policy'
+          ansible.builtin.copy:
+            dest: "{{ __pki_temp_dir__.path }}/internal-pki-requests.cnf"
+            owner: 'root'
+            group: 'root'
+            mode: '0600'
+            content: |
+              [req]
+              distinguished_name = dn
+              prompt = no
+
+              [dn]
 
         - name: 'PKI | Write Leaf Certificate Extension Policy'
           ansible.builtin.copy:
@@ -801,6 +846,8 @@
               - "{{ __pki_temp_dir__.path }}/{{ item.name }}-key.pem"
               - '-subj'
               - "{{ item.subject }}"
+              - '-config'
+              - "{{ __pki_temp_dir__.path }}/internal-pki-requests.cnf"
               - '-out'
               - "{{ __pki_temp_dir__.path }}/{{ item.name }}.csr"
 
