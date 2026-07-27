@@ -15,28 +15,19 @@
 # committed. Every value below is real, committed bootstrap data — this file carries no
 # REPLACE_ME placeholders; it is consumed directly by both workflows above.
 #
-# Security groups, TWO mechanisms, both in play:
-#   - STANDING, pre-provisioned, referenced by ID: sg-06a3a06bcc4413c10 is the zero-inbound
-#     SSM-only group every system's ENI carries (docs/reference/aws-iam/README.md, "Permanent
-#     networking") — the framework does NOT build this one from a CIDR, it only references it.
-#   - MANAGED, framework-CREATED per system: managed_security_groups below, e.g. the AIO's own
-#     inbound Wazuh mesh (1514/1515) from the deploy subnet. See that block's own comment for why
-#     this is per-system, not a shared cross-system rule.
-#
-# The framework's inline per-system managed_security_group attribute is deliberately not used:
-# its derived "<hostname>-sg" name would make the AIO group "secure-wazuh-poc-sg", colliding with
-# the permanent standing group of that name in this VPC. Adopting the inline attribute requires
-# either an explicit framework name override or re-stamping the standing group under a
-# non-colliding name.
+# Security groups are interface-scoped in this PoC: every network_interfaces entry declares flat
+# ingress and egress rules. The framework creates "<hostname>-eni-<index>-sg" from that interface's
+# description and tags, then attaches it only to that interface. security_groups is reserved for
+# pre-created EC2 group IDs; this PoC uses none, so every list is [].
 
 environment = "dev"
 
 # Readiness gate: path (on the Terraform runner) to the OpenSSH private key matching
-# all_systems[*].key_name. All 3 systems below keep readiness_gate = false (SSM-only reachability
-# — the standing SG has zero inbound, so the gate's direct-SSH precheck cannot reach any of them
-# regardless), so this path is not exercised by either workflow today; it is still supplied as
-# real bootstrap data (the runner-local convention ansible/inventory/aws/group_vars/all.yml
-# already assumes for its own ansible_ssh_private_key_file) rather than left as a placeholder.
+# all_systems[*].key_name. All 3 systems below keep readiness_gate = false: their interface groups
+# expose no SSH ingress (the agents are zero-inbound), so the gate's direct-SSH precheck cannot
+# reach them. This path is not exercised by either workflow today; it is still supplied as real
+# bootstrap data (the runner-local convention ansible/inventory/aws/group_vars/all.yml already
+# assumes for its own ansible_ssh_private_key_file) rather than left as a placeholder.
 readiness_private_key_paths = {
   "secure-wazuh-poc-key" = "/root/.ssh/secure-wazuh-poc-key.pem"
 }
@@ -53,7 +44,7 @@ all_systems = [
     availability_zone = "us-east-1a"
 
     # public subnet secure-wazuh-public-use1a (IGW-routed, auto-assign public IP — see
-    # docs/reference/aws-iam/README.md "Permanent networking")
+    # docs/reference/aws-iam/README.md "PoC networking")
     subnet_id            = "subnet-0e1c8aae192deff26"
     key_name             = "secure-wazuh-poc-key" # must match a readiness_private_key_paths key
     iam_instance_profile = "secure-wazuh-poc-profile"
@@ -127,19 +118,48 @@ all_systems = [
       {
         private_ip = "10.1.10.20"
 
-        # The standing zero-inbound SSM-only group (every system's baseline) PLUS this system's
-        # OWN managed inbound mesh (defined in managed_security_groups below, referenced here by
-        # its map key rather than a literal sg- id).
-        security_groups = ["sg-06a3a06bcc4413c10", "secure-wazuh-poc-aio"]
-        description     = null
+        # The interface-owned group declared below is attached automatically. No pre-created groups
+        # are used.
+        security_groups = []
+        description     = "Wazuh AIO (manager+dashboard+indexer) system-specific inbound firewall."
         interface_type  = null
-        tags            = {}
+        tags = {
+          Environment = "dev"
+          System      = "wazuh"
+          Role        = "wazuh-aio"
+        }
+
+        ingress = [
+          {
+            description                  = "Wazuh manager: agent events (1514) + enrollment (1515) from the deploy subnet"
+            ip_protocol                  = "tcp"
+            from_port                    = 1514
+            to_port                      = 1515
+            cidr_ipv4                    = "10.1.10.0/24"
+            cidr_ipv6                    = null
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          }
+        ]
+
+        # Outbound-all preserves S3 artifact downloads, SSM registration, DNS, and package installs.
+        egress = [
+          {
+            description                  = "All outbound"
+            ip_protocol                  = "-1"
+            from_port                    = null
+            to_port                      = null
+            cidr_ipv4                    = "0.0.0.0/0"
+            cidr_ipv6                    = null
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          }
+        ]
       }
     ]
 
-    # The subnet auto-assigns public IPs; this framework's own EIP path is not used here (the
-    # standing SG has zero inbound regardless, so a public IP carries no exposure of its own —
-    # SSM is the only reachability path either way).
+    # The subnet auto-assigns public IPs; this framework's own EIP path is not used here. The
+    # interface group has no Internet-sourced ingress, so SSM remains the only administrative path.
     associate_public_ip = false
   },
   {
@@ -179,11 +199,33 @@ all_systems = [
 
     network_interfaces = [
       {
-        private_ip      = "10.1.10.21"
-        security_groups = ["sg-06a3a06bcc4413c10"] # standing zero-inbound SSM-only group only
-        description     = null
+        private_ip = "10.1.10.21"
+
+        # This interface's group intentionally has zero inbound rules. No pre-created groups are used.
+        security_groups = []
+        description     = "Linux Wazuh agent system-specific zero-inbound firewall."
         interface_type  = null
-        tags            = {}
+        tags = {
+          Environment = "dev"
+          System      = "wazuh"
+          Role        = "wazuh-agent"
+        }
+
+        ingress = []
+
+        # Outbound-all preserves S3 artifact downloads, SSM registration, DNS, and package installs.
+        egress = [
+          {
+            description                  = "All outbound"
+            ip_protocol                  = "-1"
+            from_port                    = null
+            to_port                      = null
+            cidr_ipv4                    = "0.0.0.0/0"
+            cidr_ipv6                    = null
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          }
+        ]
       }
     ]
 
@@ -228,53 +270,39 @@ all_systems = [
 
     network_interfaces = [
       {
-        private_ip      = "10.1.10.22"
-        security_groups = ["sg-06a3a06bcc4413c10"]
-        description     = null
+        private_ip = "10.1.10.22"
+
+        # This interface's group intentionally has zero inbound rules. No pre-created groups are used.
+        security_groups = []
+        description     = "Windows Wazuh agent system-specific zero-inbound firewall."
         interface_type  = null
-        tags            = {}
+        tags = {
+          Environment = "dev"
+          System      = "wazuh"
+          Role        = "wazuh-agent"
+        }
+
+        ingress = []
+
+        # Outbound-all preserves S3 artifact downloads, SSM registration, DNS, and package installs.
+        egress = [
+          {
+            description                  = "All outbound"
+            ip_protocol                  = "-1"
+            from_port                    = null
+            to_port                      = null
+            cidr_ipv4                    = "0.0.0.0/0"
+            cidr_ipv6                    = null
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          }
+        ]
       }
     ]
 
     associate_public_ip = false
   }
 ]
-
-# Per-system security groups, framework-managed (NOT the standing SG above, which stays
-# zero-inbound/SSM-only and is only ever referenced, never built, from a CIDR). Each SYSTEM owns
-# its OWN inbound/outbound firewall here — a shared cross-system rule is deliberately NOT this
-# framework's role (docs/reference/aws-iam/README.md, "Permanent networking").
-managed_security_groups = {
-  "secure-wazuh-poc-aio" = {
-    region      = "us_east_1"
-    vpc_id      = "vpc-03c38504869c1c9bb"
-    description = "Wazuh AIO (manager+dashboard+indexer) system-specific inbound firewall."
-
-    ingress = [
-      {
-        description                  = "Wazuh manager: agent events (1514) + enrollment (1515) from the deploy subnet"
-        ip_protocol                  = "tcp"
-        from_port                    = 1514
-        to_port                      = 1515
-        cidr_ipv4                    = "10.1.10.0/24"
-        cidr_ipv6                    = null
-        prefix_list_id               = null
-        referenced_security_group_id = null
-      }
-    ]
-
-    # Egress-all is already supplied by the standing SG (sg-06a3a06bcc4413c10) attached to every
-    # ENI alongside this one. Comprehensive per-system egress (deny-by-default, only what the AIO
-    # actually needs — S3, SSM, DNS, etc.) is a deliberate follow-up, not modeled here yet.
-    egress = []
-
-    tags = {
-      Environment = "dev"
-      System      = "wazuh"
-      Role        = "wazuh-aio"
-    }
-  }
-}
 
 # An ephemeral single-box-plus-agents PoC needs no managed database and no load balancer. Keeping
 # these lists empty is how this framework expresses "no RDS" and "no ALB/NLB".

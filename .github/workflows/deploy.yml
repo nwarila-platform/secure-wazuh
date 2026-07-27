@@ -279,6 +279,10 @@ jobs:
           rm -rf "${DEV_BUILD}"; mkdir -p "${DEV_BUILD}"
           rsync -a "${GITHUB_WORKSPACE}/.frameworks/ansible-framework/" "${DEV_BUILD}/"
           rsync -a "${GITHUB_WORKSPACE}/ansible/" "${DEV_BUILD}/"
+          LOADER_DEFAULTS="${DEV_BUILD}/operating_systems/RedHat_Rocky_8/defaults/main.yml"
+          sed -i \
+            "/^# product's '/c\\# product's '/opt/ansible/tmp' when run under secure-wazuh's ansible/ansible.cfg." \
+            "${LOADER_DEFAULTS}"
 
       - name: Install ansible-core + collections
         working-directory: _dev-build
@@ -307,13 +311,13 @@ jobs:
           install -d -m 0700 "$HOME/.ssh"
           install -m 0600 /dev/stdin "$HOME/.ssh/secure-wazuh-poc-key.pem" <<< "${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}"
 
-      # The PoC security group has zero inbound rules (docs/reference/aws-iam/README.md), so
-      # inventory/aws/aws_ec2.yml tunnels every ssh/sftp/scp call through
+      # No interface accepts inbound SSH (docs/reference/aws-iam/README.md), so
+      # inventory/aws/aws_ec2.yml tunnels every SSH/SFTP/SCP call through
       # `aws ssm start-session --document-name AWS-StartSSHSession`. That ProxyCommand shells out
       # to the Session Manager plugin — a separate binary the AWS CLI does NOT bundle and
       # ubuntu-latest does not ship. Without it every host is UNREACHABLE with the misleading
       # "Connection closed by UNKNOWN port 65535". Same step as e2e-full.yml's.
-      - name: Install the SSM Session Manager plugin (SSH transport for the zero-ingress hosts)
+      - name: Install the SSM Session Manager plugin (SSH transport for no-inbound-SSH hosts)
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/session-manager-plugin.deb \

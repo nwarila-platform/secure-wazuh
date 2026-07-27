@@ -32,6 +32,15 @@
   hosts: 'localhost:all'
   gather_facts: false
   pre_tasks:
+    # remote_tmp applies to delegated local connections too. Reuse the workflow's writable
+    # controller temp for implicit localhost while leaving every target on ansible.cfg's /opt path.
+    - name: 'INIT | Configure Delegated Localhost Transfer Temp'
+      run_once: true
+      delegate_to: 'localhost'
+      delegate_facts: true
+      ansible.builtin.set_fact:
+        ansible_remote_tmp: "{{ lookup('ansible.builtin.env', 'ANSIBLE_LOCAL_TEMP') }}"
+
     - name: 'INIT | Require This Run''s Complete Three-System Inventory'
       run_once: true
       ansible.builtin.assert:

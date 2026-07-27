@@ -15,11 +15,6 @@ and apply the trust documents, managed policies, inline policy, and attachments 
 change. Read each applied document and attachment back from IAM, normalize its JSON, and compare it
 with the materialized source before granting access to a deployment.
 
-The permanent-security-group Denies deliberately use `*` in the account field of their EC2 ARNs.
-The fixed region and resource IDs identify the protected group and rule; the wildcard ensures a
-missed account substitution cannot silently disable either Deny. Leave those two account fields as
-wildcards when materializing the policy.
-
 ## Role-to-policy map
 
 | Role | Trust source | Attached policies | Purpose |
@@ -115,7 +110,7 @@ source sizes and remaining headroom are:
 | `secure-wazuh-folder-admin.json` | 4,392 | 1,752 |
 | `secure-wazuh_deploy-ec2.json` | 5,471 | 673 |
 | `secure-wazuh_deploy-discovery-iam.json` | 1,090 | 5,054 |
-| `secure-wazuh_deploy-sg-ssm-kms.json` | 4,532 | 1,612 |
+| `secure-wazuh_deploy-sg-ssm-kms.json` | 3,678 | 2,466 |
 
 The EC2 policy defines these cost and security controls:
 
@@ -156,9 +151,8 @@ The second deploy policy defines the remaining surfaces:
 - security-group creation and group actions are pinned to VPC `vpc-03c38504869c1c9bb`; group
   mutation/deletion also requires the repository identity resource tag. Security-group-rule
   resources stay region-scoped because EC2 exposes the VPC context on the parent group
-  authorization, not the rule resource. Explicit Denies carve the permanent
-  `secure-wazuh-poc-sg` group and its standing rule out of all rule mutation and group deletion,
-  while framework-created groups remain manageable;
+  authorization, not the rule resource. Framework-created, repository-tagged interface groups
+  remain manageable through deployment and teardown;
 - SSM `StartSession` remains tag-scoped to owned instances and the
   `AWS-StartSSHSession` document; resume/terminate is region-scoped to session resources. An assumed
   role's `${aws:userid}` contains the role ID and session name separated by a colon, so using it as
@@ -193,17 +187,18 @@ Terraform state remains SSE-S3 (`AES256`). Moving it to SSE-KMS requires a selec
 configuration, backend configuration, key policy, and tested recovery path; it is deliberately
 not represented as complete by an IAM-only edit.
 
-## Permanent networking
+## PoC networking
 
 The deployments use public subnet `subnet-0e1c8aae192deff26` in
-`vpc-03c38504869c1c9bb`, with the permanent zero-inbound/all-egress
-`secure-wazuh-poc-sg` (`sg-06a3a06bcc4413c10`) and SSH key pair
-`secure-wazuh-poc-key`. The standing group carries the hand-provisioned
-`nwarila:management:repository-id = 1307854438` tag. Every system uses that group; the AIO also
-uses the framework-managed `secure-wazuh-poc-aio` group for TCP 1514/1515 from
-`10.1.10.0/24`. The deploy policies explicitly deny mutation or deletion of the permanent group
-and its standing all-egress rule because Terraform only consumes that group; the managed AIO group
-remains mutable for create and destroy. Access is SSH over SSM, not inbound SSH.
+`vpc-03c38504869c1c9bb` and SSH key pair `secure-wazuh-poc-key`. Each
+`network_interfaces` entry declares its own `ingress` and `egress`; the framework derives
+`<hostname>-eni-<index>-sg` and attaches that group only to the declaring interface.
+`security_groups` is reserved for pre-created group IDs, and all three interfaces currently set it
+to `[]`.
+
+The AIO interface admits TCP 1514/1515 from `10.1.10.0/24`; the Linux and Windows agent
+interfaces admit no inbound traffic. All three interface groups independently allow all outbound
+traffic. None permits inbound SSH, so administrative access is SSH over SSM.
 
 ## Cost and count backstops
 
