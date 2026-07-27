@@ -91,9 +91,14 @@
 !/docs/reference/aws-iam/README.md
 !/docs/reference/aws-iam/policies/
 !/docs/reference/aws-iam/policies/github_nwarila-platform_secure-wazuh.json
-!/docs/reference/aws-iam/policies/secure-wazuh-poc-role-s3.json
-!/docs/reference/aws-iam/policies/secure-wazuh_deploy.json
+!/docs/reference/aws-iam/policies/secure-wazuh-artifact-read.json
+!/docs/reference/aws-iam/policies/secure-wazuh-folder-admin.json
+!/docs/reference/aws-iam/policies/secure-wazuh_deploy-discovery-iam.json
+!/docs/reference/aws-iam/policies/secure-wazuh_deploy-ec2.json
+!/docs/reference/aws-iam/policies/secure-wazuh_deploy-sg-ssm-kms.json
 !/docs/reference/aws-iam/roles/
+!/docs/reference/aws-iam/roles/github_nwarila-platform_secure-wazuh-admin.trust.json
+!/docs/reference/aws-iam/roles/github_nwarila-platform_secure-wazuh.trust.json
 !/docs/reference/aws-iam/roles/secure-wazuh-poc-role.trust.json
 !/docs/reference/inventory-and-topology.md
 !/docs/reference/poc-evidence.md

@@ -49,12 +49,13 @@
 # plugin_utils/inventory.py), an EMPTY `regions` list does not defer region selection to a single
 # boto3 client — it calls `describe_regions()` once (using AWS_REGION/AWS_DEFAULT_REGION/'us-east-1'
 # only for THAT bootstrap call) and then queries EVERY region it returns. This repo's IAM deploy
-# policy scopes `ec2:Describe*` to `aws:RequestedRegion == us-east-1`
-# (docs/reference/aws-iam/policies/secure-wazuh_deploy.json), and `strict_permissions` (403
-# handling) defaults to `true` — so an empty `regions` list would hard-fail the whole inventory
-# parse on the first non-us-east-1 region it tries. A single TEMPLATED region element avoids this:
-# exactly one region is ever queried, it is still env-driven, and 'us-east-1' is a documented
-# fallback default (matches this product's only current target), not a hardcoded override.
+# policy scopes its explicit EC2 Describe allowlist to `aws:RequestedRegion == us-east-1`
+# (docs/reference/aws-iam/policies/secure-wazuh_deploy-discovery-iam.json), and
+# `strict_permissions` (403 handling) defaults to `true` — so an empty `regions` list would
+# hard-fail the whole inventory parse on the first non-us-east-1 region it tries. A single
+# TEMPLATED region element avoids this: exactly one region is ever queried, it is still env-driven,
+# and 'us-east-1' is a documented fallback default (matches this product's only current target),
+# not a hardcoded override.
 #
 # RUN ID is GitHub's default GITHUB_RUN_ID environment variable. Both workflows stamp that exact
 # value into every framework-created resource through TF_VAR_resource_metadata before Terraform
@@ -71,7 +72,7 @@
 # instance except through SSM. ansible_host is therefore the INSTANCE-ID and the SSM ProxyCommand
 # is set in compose: below (ansible_ssh_common_args), tunnelling every ssh/sftp/scp call through
 # `aws ssm start-session` using the exact `AWS-StartSSHSession` document the deploy policy grants
-# (secure-wazuh_deploy.json, "SsmSessionDocumentAndTeardown").
+# (secure-wazuh_deploy-sg-ssm-kms.json, `SsmStartSshSessionDocument`).
 #
 # Groups reproduce the proven contract (ansible/inventory/proxmox.yml, docs/reference/
 # inventory-and-topology.md): wazuh_servers / wazuh_agents (all endpoints) plus the
