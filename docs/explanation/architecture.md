@@ -33,7 +33,7 @@ Everything internal resolves to `127.0.0.1`, so there is no group dereferencing 
 | Role | Runs on | Owns |
 |---|---|---|
 | `wazuh_server` | `wazuh_servers` (one host) | Indexer + manager + Filebeat + dashboard |
-| `wazuh_agent` | `wazuh_agents` (endpoints) | Standalone agent install and enrollment |
+| `wazuh_agent` | `wazuh_agents` (all endpoints; Linux/Windows platform subsets) | Standalone agent install and enrollment |
 | `linux_disk_manager` | `wazuh_servers` (step 0) | Provisioning and mounting the data volume |
 
 `linux_disk_manager` is a shared framework role, not a product role — it is composed in from the pinned `ansible-framework` at run time (see [`explanation/composition-model.md`](composition-model.md)).

@@ -57,9 +57,9 @@ ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 That one playbook runs, in order: propagate the `dev` tier and AWS credential bridge; bootstrap
 every target through `os_bootstrap`; provision and mount `/mnt/data`; mint the run's ephemeral
 admin password and deploy `wazuh_server`; deploy both agent platforms together through the normal
-`wazuh_agent` entry; invoke the Linux and Windows FIM trigger entries; append their markers to the
-cumulative ledger on `/mnt/data`; and prove every ledger entry reached `wazuh-alerts-*` as an
-endpoint-agent event (`agent.id != 000`).
+`wazuh_agent` entry; run the inline Linux and Windows FIM trigger stages; append their markers to
+the cumulative ledger on `/mnt/data`; and prove every ledger entry reached `wazuh-alerts-*` as
+an endpoint-agent event (`agent.id != 000`).
 
 This AWS target requires exactly one AIO, one Linux agent, and one Windows agent. Step 0 rejects an
 empty, partial, or duplicate run-scoped inventory before any target work begins.
@@ -113,7 +113,9 @@ The playbook gates itself during the run (it fails the play rather than leaving 
 
 - **Indexer cluster is green or yellow.** The play asserts this before Filebeat starts. A single-node AIO box reports green once shards allocate.
 - **Dashboard answers on 443.** A TLS-validated login smoke test runs at the end of the role against `127.0.0.1` (always in the node cert SANs).
-- **Agents enrolled.** Each endpoint in `wazuh_agents` / `wazuh_agents_windows` should show as active; the local manager also runs agent `000` for on-box FIM.
+- **Agents enrolled.** Each endpoint in the all-agent `wazuh_agents` group should show as active;
+  `wazuh_agents_linux` and `wazuh_agents_windows` classify those endpoints for the platform FIM
+  trigger stages. The local manager also runs agent `000` for on-box FIM.
 - **File integrity monitoring emits events.** The playbook's own proof section already asserts this end to end, per agent, and fails the run if any ledger entry is missing its alert. Its `PROVEN:` summary names the linux/windows split.
 
 ## Verification: idempotency

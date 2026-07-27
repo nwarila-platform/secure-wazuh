@@ -60,7 +60,7 @@ wazuh_server_defaults:
     - { canonical: '/var/lib/wazuh-dashboard', subpath: 'dashboard/data' }
     - { canonical: '/var/log/wazuh-dashboard', subpath: 'dashboard/logs' }
 
-  # Opt-in PoC proof entry points persist their append-only ledger on the same data disk so the
+  # The inline PoC proof stages persist their append-only ledger on the same data disk so the
   # pre-swap entries survive an AIO root-volume replacement.
   poc_fim_proof:
     ledger_path: '/mnt/data/wazuh-fim-ledger.jsonl'

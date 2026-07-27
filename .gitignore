@@ -137,8 +137,6 @@
 !/ansible/applications/wazuh_server/molecule/.gitkeep
 !/ansible/applications/wazuh_server/tasks/
 !/ansible/applications/wazuh_server/tasks/clean_redhat.yml
-!/ansible/applications/wazuh_server/tasks/fim_ledger.yml
-!/ansible/applications/wazuh_server/tasks/fim_prove.yml
 !/ansible/applications/wazuh_server/tasks/main.yml
 !/ansible/applications/wazuh_server/tasks/present_redhat.yml
 !/ansible/applications/wazuh_server/tasks/validate.yml

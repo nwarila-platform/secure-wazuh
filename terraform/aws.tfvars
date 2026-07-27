@@ -81,7 +81,7 @@ all_systems = [
     # volume (ebs_block_devices below) is UNAFFECTED and gets re-attached to the new instance
     # (Terraform replaces the aws_instance resource, not the separate aws_ebs_volume). This is
     # the "replace-OS-only" proof: the AIO's indexer data and the FIM ledger written by
-    # wazuh_server/tasks/fim_ledger.yml survive even though the OS underneath does not. The two
+    # deploy-aws-poc.yml Stage 4 survive even though the OS underneath does not. The two
     # agents below stay refresh = false so the swap never touches them — only the AIO OS is tested.
     refresh = true
 
@@ -101,7 +101,7 @@ all_systems = [
     }
 
     # Dedicated data volume for /mnt/data (Wazuh indexer + alert storage, and the ledger written
-    # by wazuh_server/tasks/fim_ledger.yml). Ephemeral sizing; the permanent Proxmox box carries 256 GB. The
+    # by deploy-aws-poc.yml Stage 4). Ephemeral sizing; the permanent Proxmox box carries 256 GB. The
     # framework assigns this volume's device name positionally (first extra volume -> /dev/sdd)
     # — but consumers must NEVER use positional names (Nitro can re-enumerate NVMe devices across
     # reboots, and this volume is explicitly re-attached across an OS-swap replacement too).
