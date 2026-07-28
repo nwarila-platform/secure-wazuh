@@ -59,14 +59,14 @@ This keeps indexer data, manager state, and dashboard state on the durable disk 
 - **Artifacts are verified before use.** The offline bundle and agent packages are checked against
   configured SHA-256 pins after download. The dashboard certificate pair is checked against its
   S3 sidecars before installation.
-- **Internal PKI rotates every run.** The internal CA and separate indexer-node, securityadmin, and manager-API certificates are minted on the target with RSA-3072/SHA-256. The CA private key is shredded after issuance. The role reads only the dashboard listener pair from S3; legacy internal fallback objects remain pending removal after deployment validation.
+- **Internal PKI rotates every run.** The internal CA and separate indexer-node, securityadmin, and manager-API certificates are minted on the target with RSA-3072/SHA-256. The CA private key is shredded after issuance. Internal PKI never transits S3; the dashboard listener pair and sidecars are the only certificate material S3 holds.
 - **Secrets rotate every run.** The playbook resolves one password per invocation (the `admin` superuser / dashboard login), normally minting it when no explicit environment override is supplied. Every OpenSearch internal service user is generated fresh and exists only as a bcrypt hash; manager API users are derived from that invocation's admin password, and the guarded authentication ladder converges prior `rbac.db` state.
 - **Minimal external surface.** The AWS AIO interface permits agent comms/enrollment (1514-1515) and dashboard HTTPS (443) from the deploy subnet. The manager API (55000) and indexer HTTP API (9200) stay closed at the interface; their AIO consumers use loopback.
-- **File integrity monitoring is realtime.** The role replaces the vendor's 12-hour scheduled scan with an inotify realtime `<syscheck>` stanza on `/etc`, `/usr/bin`, `/usr/sbin`, so changes emit events immediately rather than only surfacing as periodic inventory diffs.
+- **File integrity monitoring is realtime.** The role replaces the vendor's 12-hour scheduled scan with an inotify realtime `<syscheck>` stanza on `/etc`, `/usr/bin`, `/usr/sbin`, so changes emit events immediately rather than only surfacing as periodic inventory diffs. Run 30316886760 proved realtime readiness in both deployment phases.
 
 ## External dependencies
 
-- **S3** — the source of truth for the offline bundle, dashboard listener certificate pair, and agent packages. Fresh internal PKI is neither downloaded nor uploaded by the role; the live bucket still retains the legacy fallback set described in [`reference/s3-artifacts.md`](../reference/s3-artifacts.md).
+- **S3** — the source of truth for the offline bundle, dashboard listener certificate pair and sidecars, and agent packages. The dashboard pair is its only certificate material; all internal PKI is minted and retained exclusively on the target.
 - **The pinned Ansible and Terraform frameworks** — the loader, shared roles, and all Terraform resource logic are composed in at run time from pinned framework commits; see [`explanation/composition-model.md`](composition-model.md).
 
 ## Related

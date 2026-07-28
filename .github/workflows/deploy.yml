@@ -2,9 +2,9 @@
 # =============================================================================
 # Deploy Workflow — commit-to-main GitOps for the secure-wazuh product
 # =============================================================================
-# ONE repo, TWO targets, driven by every push to main — but only ONE of them is live today:
+# ONE repo retains TWO target definitions, but only AWS is active on applicable pushes to main:
 #
-#   proxmox  — the PERMANENT live instance. PARKED (`if: false`); see that job's own header.
+#   proxmox  — the intended PERMANENT target. PARKED (`if: false`); see that job's own header.
 #   aws      — an EPHEMERAL proof-of-concept. Terraform applies, then ONE Ansible playbook
 #              (playbooks/deploy-aws-poc.yml) configures the stack AND proves a real
 #              agent-sourced FIM event on each endpoint; the environment is ALWAYS torn down
@@ -13,7 +13,8 @@
 # The AWS job COMPOSES Ansible at run time: the generic loader + shared roles — including
 # `wazuh_agent` and `linux_disk_manager` — live in the pinned `ansible-framework` (SHA in
 # .github/.framework-pin); this repo's ONE product-specific role (`wazuh_server`) is overlaid
-# on top into a throwaway `_dev-build/` tree, exactly as the dev-only compose script does locally.
+# on top into a throwaway `_dev-build/` tree. Local operators can reproduce these steps in the
+# ignored directory; this repository does not ship a compose helper.
 # The whole AWS target is two committed files: playbooks/deploy-aws-poc.yml and
 # inventory/aws/aws_ec2.yml. No --extra-vars, ever.
 #

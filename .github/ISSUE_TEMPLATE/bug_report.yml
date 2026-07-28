@@ -57,7 +57,7 @@ body:
       label: Deployment target
       description: Which delivery target were you deploying to when the bug occurred?
       options:
-        - Proxmox (permanent live instance)
+        - Proxmox (intended permanent target, currently parked)
         - AWS (ephemeral proof-of-concept)
         - Vagrant lab
         - Other / not applicable

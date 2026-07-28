@@ -9,6 +9,11 @@ on the controller/runner instead. Either way, supply credentials as `no_log` mod
 sourced from the runner environment — never as target (or controller) shell environment variables,
 and never echo them to stdout.
 
+The unchanged artifact-read policy grants `functions/wazuh/*` and
+`applications/wazuh-agent/*`. Those prefixes contain only the offline bundle, dashboard listener
+pair and sidecars, and the two agent packages. Internal PKI never transits S3, and the dashboard
+listener pair is the only certificate material those credentials can read.
+
 ## Why the target shell must never hold the credentials
 
 Wazuh captures `sudo` command lines as alerts. Every Ansible task that runs under `become` is a `sudo` invocation, and the process environment of that invocation is part of what the audit trail records. If AWS credentials are exported into the target shell environment, they land in `sudo`/audit-derived Wazuh alerts and are then indexed and retained.

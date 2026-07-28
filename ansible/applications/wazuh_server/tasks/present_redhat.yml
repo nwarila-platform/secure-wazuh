@@ -27,7 +27,8 @@
     __manager_host__: "{{ config.manager_host | default('127.0.0.1', true) }}"
     # Where the post-deploy 443 login smoke-test connects (validate_certs: true). A wildcard
     # bind can't be dialed, so fall back to loopback. The S3-custodied dashboard listener
-    # certificate must cover this address; the current dev placeholder includes 127.0.0.1.
+    # certificate must cover this address; the configured dev placeholder is expected to include
+    # 127.0.0.1.
     # An explicit bind_address is likewise the dashboard certificate issuer's responsibility.
     __dashboard_endpoint_host__: >-
       {{ config.dashboard.bind_address
@@ -2249,7 +2250,7 @@
       ansible.builtin.uri:
         url: "https://{{ __dashboard_endpoint_host__ }}/"
         method: 'GET'
-        # Trust the exact current dev placeholder only while it is self-signed. An issued
+        # Trust the exact configured dev placeholder only while it is self-signed. An issued
         # replacement omits ca_path and must chain through the target's normal trusted CA store.
         ca_path: >-
           {{ config.dashboard.certs_dir ~ '/dashboard.pem'

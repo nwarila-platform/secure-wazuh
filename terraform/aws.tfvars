@@ -8,7 +8,8 @@
 #     workflow_dispatch): deploy -> prove (phase 1) -> OS-swap the AIO
 #     (terraform apply -var refresh_serial=1) -> prove again, cumulatively (phase 2) -> DESTROY
 #     (~$1 per run).
-# The permanent live instance is the Proxmox target (see proxmox.tfvars) — unrelated to this file.
+# The Proxmox target (see proxmox.tfvars) is the intended permanent instance; its deploy job is
+# parked and wired to no playbook today. Unrelated to this file either way.
 #
 # NO secrets, and NO AWS account id, live in this file (the account-id ban is absolute — see
 # ADR-0004). AWS credentials reach the runner through GitHub OIDC (assume-role) and are never
