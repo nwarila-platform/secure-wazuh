@@ -4,12 +4,12 @@
 # =============================================================================
 # Expensive, destructive-cycle proof of the AIO's OS-swap ("replace-OS-only") lever — fires once
 # per merge request that touches `ansible/**`, `terraform/**`, or a framework pin (plus the
-# `rerun-poc` label and `workflow_dispatch`; see the trigger block below). NOT part of the routine
-# per-commit `deploy.yml` loop. Stands up the full 3-system AWS PoC (AIO +
-# Linux agent + Windows agent), proves 2 fresh agent-sourced FIM events (phase 1), force-replaces
-# ONLY the AIO's OS via `terraform apply -var refresh_serial=1` (its data disk survives,
-# re-attached to the new instance), redeploys, then completes the cumulative 4/4 proof — the 2
-# pre-swap survivors AND 2 new events, cumulative by construction (see deploy-aws-poc.yml's
+# `rerun-poc` label and `workflow_dispatch`; see the trigger block below). This is the only active
+# AWS workflow path; it is not a routine per-commit deploy. It stands up the full 3-system AWS PoC
+# (AIO + Linux agent + Windows agent), proves 2 fresh agent-sourced FIM events (phase 1),
+# force-replaces ONLY the AIO's OS via `terraform apply -var refresh_serial=1` (its data disk
+# survives, re-attached to the new instance), redeploys, then completes the cumulative 4/4 proof —
+# the 2 pre-swap survivors AND 2 new events, cumulative by construction (see deploy-aws-poc.yml's
 # "Cumulative FIM Proof" ledger section) — before ALWAYS tearing everything down.
 #
 # ONE Ansible command drives both phases identically (see playbooks/deploy-aws-poc.yml's own
@@ -22,11 +22,8 @@
 # surviving rbac.db does not hold and exercises the normal recovery ladder. Its marker is required
 # as evidence that recovery occurred. Neither phase uses an extra var.
 #
-# Mirrors .github/workflows/deploy.yml's AWS job conventions throughout (SHA-pinned actions,
-# both framework-pin resolutions, Terraform 1.15.1, and the compose/collections/creds plumbing)
-# — see that file for shared rationale not repeated here. Both workflows use Terraform 1.15.1
-# because aws-terraform-framework pins `required_version = "= 1.15.1"` exactly
-# (terraform/versions.tf).
+# Actions and both framework inputs are SHA-pinned. Terraform is pinned to 1.15.1 because
+# aws-terraform-framework sets `required_version = "= 1.15.1"` exactly (terraform/versions.tf).
 #
 # -----------------------------------------------------------------------------
 # AWS CONFIGURATION MODEL — org-global secrets provide AWS_ACCOUNT_ID and
@@ -47,8 +44,8 @@ name: e2e-full
 # apply it to fire another run on demand; the job-level `if:` below gates every OTHER label so
 # an unrelated label change (triage, size/*, anything) never triggers a real AWS spend.
 # workflow_dispatch stays available for a fully manual run. Neither trigger ever fires on a
-# push/merge to main — this workflow is MR-evidence-only, not part of the deploy loop
-# (deploy.yml owns that).
+# push/merge to main. With deploy.yml's superseded AWS job retired, no commit-to-main AWS deploy
+# gate remains.
 #
 # RECURSION SAFE: the "Fold evidence into the MR" step below commits onto the SAME PR branch
 # this workflow just proved — authored via GITHUB_TOKEN (github.token), and GitHub does not let
@@ -56,9 +53,7 @@ name: e2e-full
 # isn't in `types:` above either, so that commit's own synchronize event is not something this
 # workflow listens for regardless.
 #
-# COST: roughly $1 of real AWS spend per MR-open (or per `rerun-poc` label), $0 standing — the
-# same deploy/prove/destroy discipline as deploy.yml's AWS job, just PR-triggered instead of
-# push-triggered.
+# COST: roughly $1 of real AWS spend per MR-open (or per `rerun-poc` label), $0 standing.
 on:
   workflow_dispatch:
   pull_request:
@@ -73,15 +68,14 @@ on:
 # Least privilege at the workflow level; the one job elevates only what it needs.
 permissions: {}
 
-# Deliberately shared with deploy.yml's AWS job: both apply the same aws.tfvars against one
-# singleton, same-tagged PoC environment. This also serializes two e2e-full runs; an in-flight
-# apply, OS-swap, or destroy must never overlap another run or be interrupted mid-mutation.
+# The PoC is a singleton with one state key and one set of identity tags. Serialize e2e-full runs so
+# an apply, OS-swap, or destroy never overlaps another run or is interrupted mid-mutation.
 concurrency:
   group: secure-wazuh-aws-poc
   cancel-in-progress: false
 
 env:
-  # Framework source repositories composed/run at deploy time — same slugs as deploy.yml.
+  # Framework source repositories composed and run at deploy time.
   # Their immutable refs are committed in .github/.framework-pin and
   # .github/.aws-tf-framework-pin, then resolved with tr in the checkout steps below.
   ANSIBLE_FRAMEWORK_REPO: nwarila-platform/ansible-framework
@@ -198,9 +192,8 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.AWS_TF_FRAMEWORK_REPO }}
-          # Version-locked in .github/.aws-tf-framework-pin — a committed SHA,
-          # reviewable in the diff and reproducible, exactly mirroring .framework-pin for the
-          # ansible framework. deploy.yml's AWS job reads the same file, so both track one SHA.
+          # Version-locked in .github/.aws-tf-framework-pin — a committed SHA that mirrors
+          # .framework-pin for the Ansible framework.
           ref: ${{ steps.tfpin.outputs.sha }}
           path: .frameworks/aws-tf
           persist-credentials: false
@@ -235,10 +228,9 @@ jobs:
           terraform_version: "1.15.1"
           terraform_wrapper: false
 
-      # Shares the routine deploy job's secure-wazuh/aws.tfstate. The shared
-      # secure-wazuh-aws-poc concurrency group serializes both workflows so they never touch
-      # the singleton PoC state at the same time.
-      - name: Terraform init (e2e-full — shared routine deploy aws.tfstate)
+      # Every run uses the singleton secure-wazuh/aws.tfstate. The workflow concurrency group
+      # prevents two e2e-full runs from touching that state at the same time.
+      - name: Terraform init (e2e-full — singleton aws.tfstate)
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
@@ -320,7 +312,7 @@ jobs:
           python -m pip install --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}"
           # boto3/botocore: required only on the controller for sts_assume_role, local S3
           # presigning/dashboard-pair retrieval, dynamic inventory, and linux_disk_manager's
-          # delegated AWS Function-tag resolver. Same requirement as deploy.yml's AWS job.
+          # delegated AWS Function-tag resolver.
           python -m pip install --no-cache-dir boto3 botocore
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
@@ -379,10 +371,8 @@ jobs:
         working-directory: _dev-build
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
-          # Belt-and-suspenders: the OIDC step above already exports AWS_REGION for every later
-          # step, and deploy-aws-poc.yml's run-input AWS_DEFAULT_REGION bridge prefers AWS_REGION
-          # over this — see deploy.yml's AWS job's identical comment on its own equivalent line
-          # for the full rationale (kept as a fallback, not redundant by accident).
+          # The OIDC step above exports AWS_REGION for every later step. Keep this fallback because
+          # deploy-aws-poc.yml's run-input bridge prefers AWS_REGION over AWS_DEFAULT_REGION.
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           # WAZUH_ADMIN_PASSWORD is deliberately not bound: the playbook mints a fresh value for
           # this invocation. Phase 2 does the same independently. Still zero -e.
