@@ -124,14 +124,19 @@ jobs:
       id-token: write # required for AWS OIDC federation (no long-lived keys)
 
     env:
-      # Module payloads can contain censored task arguments. Keep controller/delegated-localhost
-      # transfer temp in the runner-owned temporary tree, outside the workspace. Target
-      # remote_tmp remains the STIG-compatible /opt path from the composed ansible.cfg.
-      ANSIBLE_LOCAL_TEMP: ${{ runner.temp }}/secure-wazuh-ansible/local
       ANSIBLE_CACHE_PLUGIN_CONNECTION: ${{ github.workspace }}/.ansible/facts
       ANSIBLE_SSH_CONTROL_PATH_DIR: ${{ github.workspace }}/.ansible/cp
 
     steps:
+      # Module payloads can contain censored task arguments. Keep controller/delegated-localhost
+      # transfer temp in the runner-owned temporary tree, outside the workspace. Target remote_tmp
+      # remains the STIG-compatible /opt path from the composed ansible.cfg.
+      #
+      # This is a step rather than a job-level `env:` entry because the `runner` context is not
+      # available when job env is evaluated; RUNNER_TEMP is only defined once steps begin.
+      - name: Point the Ansible controller temp outside the workspace
+        run: echo "ANSIBLE_LOCAL_TEMP=${RUNNER_TEMP:?}/secure-wazuh-ansible/local" >> "${GITHUB_ENV}"
+
       # -----------------------------------------------------------------------
       # Source checkout + pinned framework checkouts
       # -----------------------------------------------------------------------

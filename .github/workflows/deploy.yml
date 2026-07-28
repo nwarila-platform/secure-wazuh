@@ -123,14 +123,19 @@ jobs:
       # The repo commits the framework pins (.framework-pin + .aws-tf-framework-pin, both SHAs);
       # role ARN, bundle bucket, stack, and owner are derived.
       TF_DIR: .frameworks/aws-tf/terraform
-      # Module payloads can contain censored task arguments. Keep controller/delegated-localhost
-      # transfer temp in the runner-owned temporary tree, outside the workspace. Target
-      # remote_tmp remains the STIG-compatible /opt path from the composed ansible.cfg.
-      ANSIBLE_LOCAL_TEMP: ${{ runner.temp }}/secure-wazuh-ansible/local
       ANSIBLE_CACHE_PLUGIN_CONNECTION: ${{ github.workspace }}/.ansible/facts
       ANSIBLE_SSH_CONTROL_PATH_DIR: ${{ github.workspace }}/.ansible/cp
 
     steps:
+      # Module payloads can contain censored task arguments. Keep controller/delegated-localhost
+      # transfer temp in the runner-owned temporary tree, outside the workspace. Target remote_tmp
+      # remains the STIG-compatible /opt path from the composed ansible.cfg.
+      #
+      # This is a step rather than a job-level `env:` entry because the `runner` context is not
+      # available when job env is evaluated; RUNNER_TEMP is only defined once steps begin.
+      - name: Point the Ansible controller temp outside the workspace
+        run: echo "ANSIBLE_LOCAL_TEMP=${RUNNER_TEMP:?}/secure-wazuh-ansible/local" >> "${GITHUB_ENV}"
+
       - name: Checkout secure-wazuh
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
