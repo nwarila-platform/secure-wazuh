@@ -66,46 +66,47 @@ total only about 1.7 KiB and are retrieved directly by the controller, so they d
 bearer URL. `MaxSessionDuration` is a role property and is materialized alongside, not inside,
 `roles/secure-wazuh-artifact-reader.trust.json`.
 
-The `-admin` role is the human/break-glass path. Its trust allows `sts:AssumeRole` from the account
-root principal only when `aws:PrincipalArn` matches the organization's reserved
-`AWSReservedSSO_github_nwarila-platform_*` role. It is not assumed with web identity, so GitHub
-OIDC claim conditions do not belong in its trust.
+The `-admin` role is the human local-deploy and folder-administration path. Its trust allows
+`sts:AssumeRole` from the account root principal only when `aws:PrincipalArn` matches the
+organization's reserved `AWSReservedSSO_github_nwarila-platform_*` role. It is not assumed with web
+identity, so GitHub OIDC claim conditions do not belong in its trust.
 
-### Admin standing compute access
+### Decision record — retain admin standing compute access
 
-The `-admin` role currently carries the same three compute-lifecycle policies as CI in addition to
-its inline folder-admin policy. The SSO permission-set assignments that determine which humans can
-reach the trusted principal are outside this repository. Their membership, authentication controls,
-session duration, and any additional gate must be established from account-side configuration
-before relying on them as compensating controls.
+| Field | Value |
+|---|---|
+| Status | Accepted |
+| Decision date | 2026-07-28 |
+| Owner | @NWarila |
+| Reconsider when | Local workstation deploys stop; `secure-wazuh-poc-role` gains any policy beyond `AmazonSSMManagedInstanceCore`; or the SSO permission set no longer requires MFA |
 
-There are three defensible dispositions:
+`github_nwarila-platform_secure-wazuh-admin` keeps the `deploy-ec2`,
+`deploy-sg-ssm-kms`, and `deploy-discovery-iam` compute-lifecycle policies that duplicate the CI
+role's grants. The owner runs deploys from a workstation for development and testing as needed, so
+`RunInstances` is part of this role's ordinary job. Splitting compute access into another role would
+add friction to an active workflow without removing the need for human deploy authority.
 
-- Keep the current grants only with a recorded risk acceptance that names an owner and expiry,
-  identifies the account-side access controls, and explains why immediate human access to the
-  `RunInstances` boundary is necessary.
-- Reduce `-admin` to state and folder administration and let it assume a deploy role when compute
-  access is needed. This reduces active-session privilege only if the second hop has an independent
-  gate; an unconditional `sts:AssumeRole` grant leaves compute equally reachable. The committed CI
-  role currently trusts only GitHub OIDC, so this disposition also requires a separately trusted
-  human deploy role or a deliberate trust redesign.
-- Split break-glass administration from routine local deployment. Keep state and artifact
-  administration on the break-glass role, and give a separate, independently gated local-deploy
-  identity only the scoped state and compute policies plus artifact-reader assumption. Do not give
-  that local-deploy identity direct artifact reads.
+Assumption requires an SSO login with MFA. The trust policy also requires `aws:PrincipalArn` to
+match `AWSReservedSSO_github_nwarila-platform_*`; naming the account root as the principal does not
+make the role reachable by other account principals. `MaxSessionDuration` is 3,600 seconds.
 
-The recommended disposition is the split. State and artifact recovery do not inherently require
-the `RunInstances` authority described under accepted deploy residual risk, and combining them
-increases the impact of every break-glass session. Separate identities allow the local-deploy path
-to be disabled or time-gated without impairing state recovery, and make the reader-role assumption
-load-bearing for routine local deployments.
+The accepted residual risk is material: `RunInstances` together with `iam:PassRole` on
+`secure-wazuh-poc-role` permits an operator to launch an instance with arbitrary user data and that
+instance profile. The launch boundary restricts the region, instance types, VPC, AMI owners, pinned
+key pair, IMDSv2 setting, and repository-identity tag. The instance profile's privilege ceiling is
+now SSM only because it carries `AmazonSSMManagedInstanceCore` and no other policy; it previously
+also carried artifact-read access.
 
-Evidence that would settle the choice is: the actual SSO assignments and session controls; recent
-human-use records showing whether local compute operations are required and how often; a recovery
-exercise performed without compute grants; and positive and negative tests showing that the chosen
-local-deploy identity can complete deploy and teardown through the reader role while the
-break-glass identity is denied compute operations. Until that evidence exists, the standing
-duplicate compute boundary has no demonstrated break-glass requirement.
+`secure-wazuh-folder-admin` grants artifact writes as well as reads. The admin role can therefore
+replace the offline bundle or agent packages in S3. The deploy verifies each artifact against a
+SHA-256 value committed in this repository, so changing an S3 object alone cannot substitute a
+different payload successfully. The S3 boundary by itself is not the safe residual; the committed
+digest check is the compensating integrity control.
+
+Because `secure-wazuh-folder-admin` also grants artifact reads, a successful local deploy through
+the admin role cannot prove that the artifact-reader role supplied the read credential. CI proves
+the reader-role path because its deploy role has no direct artifact-read grant; local success
+cannot.
 
 ## GitHub OIDC trust
 
@@ -120,9 +121,12 @@ of these claims:
   `nwarila-platform/secure-wazuh/.github/workflows/deploy.yml@*` or
   `nwarila-platform/secure-wazuh/.github/workflows/e2e-full.yml@*`.
 
+The `deploy.yml` pattern remains in the source trust, but that workflow no longer contains an AWS
+job or grants `id-token: write`. `e2e-full.yml` is the only credentialed AWS workflow.
+
 ### Repository OIDC claims
 
-The live workflows emit GitHub's standard repository subject form,
+The live credentialed workflow emits GitHub's standard repository subject form,
 `repo:<owner>/<repo>:<context>`. The ID-embedded alternative in the source trust document has not
 been a live token subject; it remains an additional accepted pattern, not a description of emitted
 behavior. The `job_workflow_ref` claim is present on ordinary, non-reusable workflow jobs and has
@@ -143,9 +147,9 @@ The `@*` suffix is a deliberate, accepted risk: it admits any ref's copy of thos
 files, including a modified version. Repository write access already equals deploy authority here,
 so pinning specific refs would add IAM churn without adding a real boundary.
 
-Before applying the trust, inspect a token from each credentialed workflow and confirm that
-`repository_id` and `job_workflow_ref` have the exact values required by the document. Confirm both
-workflows can authenticate after application.
+Before applying the trust, inspect an `e2e-full.yml` token and confirm that `repository_id` and
+`job_workflow_ref` have the exact values required by the document. Confirm that workflow can
+authenticate after application.
 
 The event-path boundary forbids any workflow that combines
 `pull_request_target` with `id-token: write`. The organization setting that sends write tokens to
