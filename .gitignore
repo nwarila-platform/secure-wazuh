@@ -170,15 +170,8 @@
 !/ansible/inventory/proxmox.yml
 !/ansible/playbooks/
 !/ansible/playbooks/deploy-aws-poc.yml
-!/ansible/playbooks/tasks/
-!/ansible/playbooks/tasks/fetch-presigned-s3-object-attempt.yml
-!/ansible/playbooks/tasks/fetch-presigned-s3-object.yml
-!/ansible/playbooks/tasks/mint-artifact-reader-session.yml
-!/ansible/playbooks/tasks/presign-s3-object.yml
-!/ansible/playbooks/tasks/scrub-artifact-reader-session.yml
 !/ansible/library/
 !/ansible/library/secure_wazuh_iam_profile_guard.py
-!/ansible/library/secure_wazuh_s3.py
 !/ansible/requirements.yml
 
 # --------------------------------------------------------------------------- #

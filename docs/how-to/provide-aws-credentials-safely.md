@@ -37,19 +37,11 @@ metadata; the boundary is that no deploy or artifact-reader authority reaches th
    `secure-wazuh-artifact-read` name. Platform preparation, disk resolution, and host preparation
    consume no artifact credential or URL lifetime.
 
-2. **Each package attempt assumes the reader role beside its use.**
-   `amazon.aws.sts_assume_role` runs on delegated localhost under the ambient deploy identity:
-
-   ```yaml
-   - name: 'S3 SESSION | Mint A Fresh Scoped Artifact-Read Credential'
-     delegate_to: 'localhost'
-     no_log: true
-     amazon.aws.sts_assume_role:
-       role_arn: "{{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}"
-       role_session_name: >-
-         secure-wazuh-{{ artifact_reader_session_scope }}-{{ lookup('env', 'GITHUB_RUN_ID') }}
-       duration_seconds: 3600
-   ```
+2. **Each package attempt assumes the reader role beside its use.** The composed framework's
+   `applications/s3_artifact_delivery/tasks/mint_session.yml` at the commit named by
+   `.github/.framework-pin` is the source of truth. It runs `amazon.aws.sts_assume_role` on
+   delegated localhost under the ambient deploy identity and consumes the reader-role ARN,
+   session name, and region supplied by the caller.
 
    Censored, non-cacheable facts hold the returned values in the current inventory host's
    controller-side variable context. The assume-role register is overwritten immediately after
@@ -68,12 +60,19 @@ metadata; the boundary is that no deploy or artifact-reader authority reaches th
    - name: 'S3 | Fetch The Offline Bundle With A Fresh Signature Per Attempt'
      no_log: true
      vars:
-       artifact_fetch_session_scope: 'server-bundle'
-       artifact_fetch_platform: 'posix'
-       artifact_fetch_dest: "{{ bundle_path }}"
-       artifact_fetch_checksum: "{{ trusted_bundle_sha256 | lower | trim }}"
-     ansible.builtin.include_tasks: >-
-       {{ playbook_dir }}/tasks/fetch-presigned-s3-object.yml
+       s3_artifact_delivery_reader_role_arn: >-
+         {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+       s3_artifact_delivery_session_name: >-
+         secure-wazuh-server-bundle-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
+       s3_artifact_delivery_bucket: "{{ artifact_bucket }}"
+       s3_artifact_delivery_object_key: "{{ bundle_object_key }}"
+       s3_artifact_delivery_region: "{{ AWS_DEFAULT_REGION }}"
+       s3_artifact_delivery_checksum: "{{ trusted_bundle_sha256 | lower | trim }}"
+       s3_artifact_delivery_destination: "{{ bundle_path }}"
+       s3_artifact_delivery_platform: 'posix'
+     ansible.builtin.include_role:
+       name: 's3_artifact_delivery'
+       tasks_from: 'fetch'
    ```
 
    The helper runs up to three sequential mint-sign-fetch includes with two 10-second delays.

@@ -11,10 +11,10 @@
 #              afterwards (deploy -> prove -> destroy).
 #
 # The AWS job COMPOSES Ansible at run time: the generic loader + shared roles — including
-# `wazuh_agent` and `linux_disk_manager` — live in the pinned `ansible-framework` (SHA in
-# .github/.framework-pin); this repo overlays `wazuh_server`, the two product artifact-fetch task
-# entries for `wazuh_agent`, and its controller helper into a throwaway `_dev-build/` tree. Local
-# operators can reproduce these steps in the ignored directory.
+# `wazuh_agent`, `linux_disk_manager`, and `s3_artifact_delivery` — live in the pinned
+# `ansible-framework` (SHA in .github/.framework-pin); this repo overlays `wazuh_server` and the
+# two product artifact-fetch task entries for `wazuh_agent` into a throwaway `_dev-build/` tree.
+# Local operators can reproduce these steps in the ignored directory.
 # The whole AWS target is two committed files: playbooks/deploy-aws-poc.yml and
 # inventory/aws/aws_ec2.yml. No --extra-vars, ever.
 #

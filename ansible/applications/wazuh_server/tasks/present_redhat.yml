@@ -239,15 +239,20 @@
         # attempt's URL or role session.
         - name: 'S3 | Fetch The Offline Bundle With A Fresh Signature Per Attempt'
           vars:
-            artifact_fetch_session_scope: 'server-bundle'
-            artifact_presign_bucket: "{{ config.s3.bucket }}"
-            artifact_presign_key: "{{ config.s3.bundle_key }}"
-            artifact_presign_fact: '__wazuh_bundle_url__'
-            artifact_fetch_platform: 'posix'
-            artifact_fetch_dest: "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
-            artifact_fetch_checksum: "{{ config.s3.bundle_sha256 | lower | trim }}"
-          ansible.builtin.include_tasks: >-
-            {{ playbook_dir }}/tasks/fetch-presigned-s3-object.yml
+            s3_artifact_delivery_reader_role_arn: >-
+              {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+            s3_artifact_delivery_session_name: >-
+              secure-wazuh-server-bundle-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
+            s3_artifact_delivery_bucket: "{{ config.s3.bucket }}"
+            s3_artifact_delivery_object_key: "{{ config.s3.bundle_key }}"
+            s3_artifact_delivery_region: "{{ AWS_DEFAULT_REGION }}"
+            s3_artifact_delivery_checksum: "{{ config.s3.bundle_sha256 | lower | trim }}"
+            s3_artifact_delivery_destination: >-
+              {{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}
+            s3_artifact_delivery_platform: 'posix'
+          ansible.builtin.include_role:
+            name: 's3_artifact_delivery'
+            tasks_from: 'fetch'
 
         - name: 'S3 | Create Controller Staging For The Dashboard Listener Pair'
           delegate_to: 'localhost'
@@ -265,8 +270,14 @@
         # chained session. Mint a separate session immediately before the dashboard read group.
         - name: 'S3 | Mint A Fresh Dashboard Reader Session Beside Its Use'
           vars:
-            artifact_reader_session_scope: 'server-dashboard'
-          ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/mint-artifact-reader-session.yml"
+            s3_artifact_delivery_reader_role_arn: >-
+              {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+            s3_artifact_delivery_session_name: >-
+              secure-wazuh-server-dashboard-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
+            s3_artifact_delivery_region: "{{ AWS_DEFAULT_REGION }}"
+          ansible.builtin.include_role:
+            name: 's3_artifact_delivery'
+            tasks_from: 'mint_session'
 
         - name: 'S3 | Download The Dashboard Listener Pair To The Controller'
           delegate_to: 'localhost'
@@ -278,19 +289,20 @@
             TMPDIR: "{{ lookup('ansible.builtin.env', 'ANSIBLE_LOCAL_TEMP') }}"
           vars:
             ansible_python_interpreter: "{{ ansible_playbook_python }}"
-          secure_wazuh_s3:
+          s3_artifact:
             mode: 'get'
             bucket: "{{ config.s3.bucket }}"
             object_key: "{{ config.s3.certs_prefix }}/{{ item }}"
             region: "{{ AWS_DEFAULT_REGION }}"
-            access_key: "{{ __artifact_read_access_key__ }}"
-            secret_key: "{{ __artifact_read_secret_key__ }}"
-            session_token: "{{ __artifact_read_session_token__ }}"
+            access_key: "{{ __s3_artifact_delivery_access_key__ }}"
+            secret_key: "{{ __s3_artifact_delivery_secret_key__ }}"
+            session_token: "{{ __s3_artifact_delivery_session_token__ }}"
             dest: "{{ __dashboard_ctrl_tmpdir__.path }}/{{ item }}"
 
         - name: 'S3 | Scrub The Dashboard Reader Session After Its Use'
-          ansible.builtin.include_tasks: >-
-            {{ playbook_dir }}/tasks/scrub-artifact-reader-session.yml
+          ansible.builtin.include_role:
+            name: 's3_artifact_delivery'
+            tasks_from: 'scrub_session'
 
         - name: 'S3 | Push The Dashboard Listener Pair From The Controller'
           no_log: true
@@ -308,11 +320,10 @@
           no_log: false
           ansible.builtin.fail:
             msg: >-
-              {{
-                'Server artifact signing failed the bearer-URL redaction guard'
-                if (__artifact_presign_redaction_detected__ | default(false) | bool)
-                else 'Server artifact preparation or HTTPS fetch failed'
-              }} on {{ inventory_hostname }} (original error hidden by no_log).
+              Server artifact delivery failed on
+              {{ inventory_hostname }} (original error hidden by no_log).
+              The censored failure does not identify whether role assumption, signing, the
+              bearer-URL redaction guard, target transfer, or dashboard staging failed.
               Verify the artifact-reader role assumption, configured region, offline bundle,
               and dashboard listener material. Sensitive configuration and bearer values are
               not printed.
@@ -320,22 +331,24 @@
       always:
 
         - name: 'S3 | Scrub Any Remaining Server Artifact Credential'
-          ansible.builtin.include_tasks: >-
-            {{ playbook_dir }}/tasks/scrub-artifact-reader-session.yml
+          ansible.builtin.include_role:
+            name: 's3_artifact_delivery'
+            tasks_from: 'scrub_session'
 
         - name: 'S3 | Scrub Any Remaining Server Bearer State'
           no_log: true
           ansible.builtin.set_fact:
-            __artifact_presign_result__: ''
-            __artifact_presign_redaction_detected__: ''
-            __artifact_fetch_result__: ''
-            __artifact_fetch_succeeded__: ''
-            __artifact_fetch_terminal_failure__: ''
+            __s3_artifact_delivery_presign_result__: ''
+            __s3_artifact_delivery_redaction_detected__: ''
+            __s3_artifact_delivery_fetch_result__: ''
+            __s3_artifact_delivery_succeeded__: ''
+            __s3_artifact_delivery_terminal_failure__: ''
+            ansible_failed_result: ''
 
         - name: 'S3 | Scrub Any Remaining Server Bearer URL Fact'
           no_log: true
           ansible.builtin.set_fact:
-            __wazuh_bundle_url__: ''
+            __s3_artifact_delivery_url__: ''
             cacheable: false
 
         - name: 'S3 | Remove Controller Staging For The Dashboard Listener Pair'

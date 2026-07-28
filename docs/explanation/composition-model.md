@@ -8,22 +8,31 @@ secure-wazuh is the org's canonical exemplar of a **combined delivery repo**: it
 
 The repo carries only the product-specific delta:
 
-- **Ansible product delta** — `wazuh_server`, two `wazuh_agent` artifact-fetch task overlays, the
-  controller S3 helper, and the playbooks and inventory that wire them together.
+- **Ansible product delta** — `wazuh_server`, two `wazuh_agent` artifact-fetch task overlays, and
+  the playbooks and inventory that wire them together.
 - **Terraform data, not code** — `terraform/proxmox.tfvars` and `terraform/aws.tfvars`. There are **no `.tf` files** in this repo. Variable declarations and resource logic live in the pinned frameworks.
 
 Everything else — the generic role loader, the base `linux_disk_manager` and `wazuh_agent` roles,
-and every Terraform resource — belongs to a framework and is pulled in when a run happens.
+the shared `s3_artifact_delivery` role, and every Terraform resource — belongs to a framework and
+is pulled in when a run happens.
 
 ## The Ansible composition
 
 The product roles resolve fully only when they sit **inside** the framework's directory layout, next to the generic `tasks/main.yml` loader and the shared roles they call. The composition assembles that tree:
 
 1. Read the framework pin at `.github/.framework-pin` — a single commit SHA; see that file for the exact value currently pinned.
-2. Lay down `ansible-framework` at that exact commit (this already includes `wazuh_agent` and `linux_disk_manager`).
+2. Lay down `ansible-framework` at that exact commit (this already includes `wazuh_agent`,
+   `linux_disk_manager`, and `s3_artifact_delivery`).
 3. Overlay this repo's `ansible/` tree on top. `wazuh_server` joins the framework roles, and the
    two product `wazuh_agent` task files replace only the package-fetch entries.
 4. Run Ansible from inside the resulting tree.
+
+The dashboard listener path currently invokes the shared role's internal `mint_session` and
+`scrub_session` task files and reads its internal `__s3_artifact_delivery_*__` credential facts.
+Those details are not a published role interface. This coupling exists because the public `fetch`
+entry point sends a bearer URL to the target, while dashboard private-key material must remain a
+controller download followed by a file push. A future public controller-side `get` entry point
+should own that sequence and remove the internal dependency.
 
 Locally an operator can reproduce the workflow's checkout-and-overlay steps in the ignored
 `_dev-build/` folder. This repository does not ship a compose helper. CI performs the composition

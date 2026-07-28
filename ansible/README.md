@@ -30,7 +30,8 @@ ansible/
 ├── applications/
 │   ├── wazuh_server/                  vendored: collapsed all-in-one central role
 │   ├── wazuh_agent/                   framework role with product fetch-task overlays
-│   └── linux_disk_manager/            composed from ansible-framework (step-0 storage)
+│   ├── linux_disk_manager/            composed from ansible-framework (step-0 storage)
+│   └── s3_artifact_delivery/          composed shared mint/sign/fetch helper role
 └── requirements.yml                   ansible.posix · community.general · amazon.aws · ansible.windows
 ```
 
@@ -43,19 +44,22 @@ history if an individual stage is ever needed again.
 The dynamic inventory puts every endpoint in `wazuh_agents`, then also classifies it in exactly
 one platform subset: `wazuh_agents_linux` or `wazuh_agents_windows`.
 
-`linux_disk_manager` and the base `wazuh_agent` role are composed at run time from
+`linux_disk_manager`, the base `wazuh_agent` role, and `s3_artifact_delivery` are composed at run
+time from
 [`ansible-framework/applications/`](../docs/explanation/composition-model.md) at the pin in
 `.github/.framework-pin`. This repository overlays only `wazuh_agent`'s Linux and Windows
-installer task files for the controller-presign flow. `wazuh_server` remains product-specific.
+installer task files, which consume the shared artifact-delivery role. `wazuh_server` remains
+product-specific.
 
-Each role's `tasks/main.yml` is the platform's generic loader and is intended to remain
-byte-identical across product and framework copies. It validates `ENV`, merges role defaults with
-`vars/<family>[_<env>].yml` overlays and the playbook's `<role>:` override dict, and dispatches to
-`<state>_<family>.yml` via `first_found`. The tracked `wazuh_server` loader is byte-identical to
-the framework application loaders. The Linux roles ship `present_redhat.yml` +
+Each lifecycle-managed application role's `tasks/main.yml` is the platform's generic loader and is
+intended to remain byte-identical across product and framework copies. It validates `ENV`, merges
+role defaults with `vars/<family>[_<env>].yml` overlays and the playbook's `<role>:` override dict,
+and dispatches to `<state>_<family>.yml` via `first_found`. The tracked `wazuh_server` loader is
+byte-identical to the framework application loaders. The Linux roles ship `present_redhat.yml` +
 `clean_redhat.yml`; `wazuh_agent` also ships `present_windows.yml`, reached through the same
-Windows-safe normal loader entry as Linux. **Do not make role-specific edits in
-`tasks/main.yml`.**
+Windows-safe normal loader entry as Linux. The one-shot `s3_artifact_delivery` helper has explicit
+`tasks_from` entries instead of `tasks/main.yml`. **Do not make role-specific edits in
+application loaders.**
 
 ## Required Ansible vars
 

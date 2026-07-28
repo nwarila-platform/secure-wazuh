@@ -69,15 +69,19 @@
 
         - name: 'S3 (win) | Fetch The Windows Agent MSI With A Fresh Signature Per Attempt'
           vars:
-            artifact_fetch_session_scope: 'windows-agent'
-            artifact_presign_bucket: "{{ config.s3.bucket }}"
-            artifact_presign_key: "{{ config.s3.agent_msi_key }}"
-            artifact_presign_fact: '__wazuh_agent_msi_url__'
-            artifact_fetch_platform: 'windows'
-            artifact_fetch_dest: "{{ config.windows.msi_dest | string | trim }}"
-            artifact_fetch_checksum: "{{ config.s3.agent_msi_sha256 | lower | trim }}"
-          ansible.builtin.include_tasks: >-
-            {{ playbook_dir }}/tasks/fetch-presigned-s3-object.yml
+            s3_artifact_delivery_reader_role_arn: >-
+              {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+            s3_artifact_delivery_session_name: >-
+              secure-wazuh-windows-agent-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
+            s3_artifact_delivery_bucket: "{{ config.s3.bucket }}"
+            s3_artifact_delivery_object_key: "{{ config.s3.agent_msi_key }}"
+            s3_artifact_delivery_region: "{{ AWS_DEFAULT_REGION }}"
+            s3_artifact_delivery_checksum: "{{ config.s3.agent_msi_sha256 | lower | trim }}"
+            s3_artifact_delivery_destination: "{{ config.windows.msi_dest | string | trim }}"
+            s3_artifact_delivery_platform: 'windows'
+          ansible.builtin.include_role:
+            name: 's3_artifact_delivery'
+            tasks_from: 'fetch'
 
         # win_get_url has no mode control. Apply the Windows equivalent of the POSIX 0600
         # artifact mode explicitly: only SYSTEM and the built-in Administrators group retain
@@ -119,33 +123,33 @@
           no_log: false
           ansible.builtin.fail:
             msg: >-
-              {{
-                'Windows agent signing failed the bearer-URL redaction guard'
-                if (__artifact_presign_redaction_detected__ | default(false) | bool)
-                else 'Windows agent artifact preparation or HTTPS fetch failed'
-              }} on {{ inventory_hostname }} (original error hidden by no_log).
+              Windows agent artifact delivery failed on
+              {{ inventory_hostname }} (original error hidden by no_log).
+              The censored failure does not identify whether role assumption, signing, the
+              bearer-URL redaction guard, target transfer, or MSI permission hardening failed.
               Verify the artifact-reader role assumption, configured region, and Windows agent
               package. Sensitive configuration and bearer values are not printed.
 
       always:
 
         - name: 'S3 (win) | Scrub Any Remaining Windows Agent Artifact Credential'
-          ansible.builtin.include_tasks: >-
-            {{ playbook_dir }}/tasks/scrub-artifact-reader-session.yml
+          ansible.builtin.include_role:
+            name: 's3_artifact_delivery'
+            tasks_from: 'scrub_session'
 
         - name: 'S3 (win) | Scrub Any Remaining Windows Agent Bearer State'
           no_log: true
           ansible.builtin.set_fact:
-            __artifact_presign_result__: ''
-            __artifact_presign_redaction_detected__: ''
-            __artifact_fetch_result__: ''
-            __artifact_fetch_succeeded__: ''
-            __artifact_fetch_terminal_failure__: ''
+            __s3_artifact_delivery_presign_result__: ''
+            __s3_artifact_delivery_redaction_detected__: ''
+            __s3_artifact_delivery_fetch_result__: ''
+            __s3_artifact_delivery_succeeded__: ''
+            __s3_artifact_delivery_terminal_failure__: ''
 
         - name: 'S3 (win) | Scrub Any Remaining Windows Agent Bearer URL Fact'
           no_log: true
           ansible.builtin.set_fact:
-            __wazuh_agent_msi_url__: ''
+            __s3_artifact_delivery_url__: ''
             cacheable: false
 
     #endregion --- [ Main: S3 Staging ] ------------------------------------------------------ #
