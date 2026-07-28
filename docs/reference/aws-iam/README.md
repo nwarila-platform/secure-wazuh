@@ -44,6 +44,15 @@ consumer completes. No instance receives deploy or standalone artifact-reader au
 `-admin` inline policy separately retains artifact write, read, deletion, tagging, and multipart
 administration for operator work.
 
+Do not attach `secure-wazuh-artifact-read` directly to either deploy role. A standing artifact-read
+grant lets an artifact fetch succeed if it accidentally uses the ambient deploy credential, so a
+successful deployment cannot establish that the assumed-reader credential signed the request.
+Keeping the CI role free of direct artifact reads makes its assume-and-use path load-bearing. The
+`-admin` role is an effective-permission exception: its folder-admin policy includes reads over the
+same artifact prefixes for operator maintenance. A local deployment using that role therefore
+cannot establish the credential path from fetch success alone. Separating routine local deployment
+from artifact administration would remove that ambiguity.
+
 Set `secure-wazuh-artifact-reader`'s `MaxSessionDuration` role property to `3600`. That is the
 shortest value IAM accepts and the maximum available to this role-chained path. Signing is placed
 immediately before each fetch attempt rather than at play start. A fetch gets up to three complete
@@ -61,6 +70,42 @@ The `-admin` role is the human/break-glass path. Its trust allows `sts:AssumeRol
 root principal only when `aws:PrincipalArn` matches the organization's reserved
 `AWSReservedSSO_github_nwarila-platform_*` role. It is not assumed with web identity, so GitHub
 OIDC claim conditions do not belong in its trust.
+
+### Admin standing compute access
+
+The `-admin` role currently carries the same three compute-lifecycle policies as CI in addition to
+its inline folder-admin policy. The SSO permission-set assignments that determine which humans can
+reach the trusted principal are outside this repository. Their membership, authentication controls,
+session duration, and any additional gate must be established from account-side configuration
+before relying on them as compensating controls.
+
+There are three defensible dispositions:
+
+- Keep the current grants only with a recorded risk acceptance that names an owner and expiry,
+  identifies the account-side access controls, and explains why immediate human access to the
+  `RunInstances` boundary is necessary.
+- Reduce `-admin` to state and folder administration and let it assume a deploy role when compute
+  access is needed. This reduces active-session privilege only if the second hop has an independent
+  gate; an unconditional `sts:AssumeRole` grant leaves compute equally reachable. The committed CI
+  role currently trusts only GitHub OIDC, so this disposition also requires a separately trusted
+  human deploy role or a deliberate trust redesign.
+- Split break-glass administration from routine local deployment. Keep state and artifact
+  administration on the break-glass role, and give a separate, independently gated local-deploy
+  identity only the scoped state and compute policies plus artifact-reader assumption. Do not give
+  that local-deploy identity direct artifact reads.
+
+The recommended disposition is the split. State and artifact recovery do not inherently require
+the `RunInstances` authority described under accepted deploy residual risk, and combining them
+increases the impact of every break-glass session. Separate identities allow the local-deploy path
+to be disabled or time-gated without impairing state recovery, and make the reader-role assumption
+load-bearing for routine local deployments.
+
+Evidence that would settle the choice is: the actual SSO assignments and session controls; recent
+human-use records showing whether local compute operations are required and how often; a recovery
+exercise performed without compute grants; and positive and negative tests showing that the chosen
+local-deploy identity can complete deploy and teardown through the reader role while the
+break-glass identity is denied compute operations. Until that evidence exists, the standing
+duplicate compute boundary has no demonstrated break-glass requirement.
 
 ## GitHub OIDC trust
 
