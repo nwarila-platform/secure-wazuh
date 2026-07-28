@@ -387,18 +387,6 @@ jobs:
           set -euo pipefail
           ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 
-      - name: Clean controller Ansible module payloads
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          expected_local_temp="${RUNNER_TEMP:?}/secure-wazuh-ansible/local"
-          if [[ "${ANSIBLE_LOCAL_TEMP:?}" != "${expected_local_temp}" ]]; then
-            echo "Refusing to clean an unexpected ANSIBLE_LOCAL_TEMP path" >&2
-            exit 1
-          fi
-          rm -rf -- "${RUNNER_TEMP}/secure-wazuh-ansible"
-
       - name: Guard — /mnt/data is a real mountpoint
         working-directory: _dev-build
         env:
@@ -412,6 +400,18 @@ jobs:
           # Keep this final direct probe as an independent assertion of the resulting mount state.
           ansible wazuh_servers -i inventory/aws/aws_ec2.yml \
             -m ansible.builtin.command -a 'mountpoint -q /mnt/data'
+
+      - name: Clean controller Ansible module payloads
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_local_temp="${RUNNER_TEMP:?}/secure-wazuh-ansible/local"
+          if [[ "${ANSIBLE_LOCAL_TEMP:?}" != "${expected_local_temp}" ]]; then
+            echo "Refusing to clean an unexpected ANSIBLE_LOCAL_TEMP path" >&2
+            exit 1
+          fi
+          rm -rf -- "${RUNNER_TEMP}/secure-wazuh-ansible"
 
       # -----------------------------------------------------------------------
       # DESTROY — always tear the ephemeral environment down, pass or fail
