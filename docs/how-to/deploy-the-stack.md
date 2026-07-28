@@ -29,9 +29,10 @@ ansible -i inventory/proxmox.yml wazuh_servers -b -m command -a 'findmnt /mnt/da
 
 ## Procedure: set the operator secret and env
 
-The site playbook takes exactly one password, passed as an extra-var. If it is omitted, a
-lab default (`WazuhLab-Admin-2026!`) applies — replace that default before using retained
-production data or real users.
+The site playbook takes exactly one password, passed as an extra-var or through the
+`WAZUH_ADMIN_PASSWORD` environment variable. There is no built-in default: omitting both
+fails the run rather than standing up a stack whose admin password is published in this
+repository.
 
 ```bash
 ansible-playbook -i inventory/proxmox.yml playbooks/site.yml \
@@ -44,7 +45,7 @@ CI ([`deploy.yml`](../../.github/workflows/deploy.yml)) supplies it the same way
 ```yaml
 wazuh_server:
   secrets:
-    admin_password: "{{ wazuh_admin_password | default('WazuhLab-Admin-2026!') }}"
+    admin_password: "{{ wazuh_admin_password | default(lookup('ansible.builtin.env', 'WAZUH_ADMIN_PASSWORD'), true) }}"
 ```
 
 The manager API users (`wazuh`, `wazuh-wui`) are derived deterministically from this password, so they stay re-authenticatable across reruns without anything being written to disk.
