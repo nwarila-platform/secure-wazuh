@@ -237,22 +237,45 @@
         # A progressing transfer has no finite wall-clock bound under get_url's socket inactivity
         # timeout. Retry the complete mint-sign-fetch unit so an attempt never inherits an older
         # attempt's URL or role session.
+        - name: 'S3 | Freeze The Offline Bundle Inputs In The Server Role Context'
+          no_log: true
+          ansible.builtin.set_fact:
+            __server_bundle_artifact_inputs__:
+              reader_role_arn: >-
+                {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+              session_name: >-
+                secure-wazuh-server-bundle-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
+              bucket: "{{ config.s3.bucket }}"
+              object_key: "{{ config.s3.bundle_key }}"
+              region: "{{ AWS_DEFAULT_REGION }}"
+              checksum: "{{ config.s3.bundle_sha256 | lower | trim }}"
+              destination: >-
+                {{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}
+              platform: 'posix'
+            cacheable: false
+
         - name: 'S3 | Fetch The Offline Bundle With A Fresh Signature Per Attempt'
           vars:
             s3_artifact_delivery_reader_role_arn: >-
-              {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+              {{ __server_bundle_artifact_inputs__.reader_role_arn }}
             s3_artifact_delivery_session_name: >-
-              secure-wazuh-server-bundle-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
-            s3_artifact_delivery_bucket: "{{ config.s3.bucket }}"
-            s3_artifact_delivery_object_key: "{{ config.s3.bundle_key }}"
-            s3_artifact_delivery_region: "{{ AWS_DEFAULT_REGION }}"
-            s3_artifact_delivery_checksum: "{{ config.s3.bundle_sha256 | lower | trim }}"
+              {{ __server_bundle_artifact_inputs__.session_name }}
+            s3_artifact_delivery_bucket: "{{ __server_bundle_artifact_inputs__.bucket }}"
+            s3_artifact_delivery_object_key: "{{ __server_bundle_artifact_inputs__.object_key }}"
+            s3_artifact_delivery_region: "{{ __server_bundle_artifact_inputs__.region }}"
+            s3_artifact_delivery_checksum: "{{ __server_bundle_artifact_inputs__.checksum }}"
             s3_artifact_delivery_destination: >-
-              {{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}
-            s3_artifact_delivery_platform: 'posix'
+              {{ __server_bundle_artifact_inputs__.destination }}
+            s3_artifact_delivery_platform: "{{ __server_bundle_artifact_inputs__.platform }}"
           ansible.builtin.include_role:
             name: 's3_artifact_delivery'
             tasks_from: 'fetch'
+
+        - name: 'S3 | Scrub The Frozen Offline Bundle Inputs After Their Use'
+          no_log: true
+          ansible.builtin.set_fact:
+            __server_bundle_artifact_inputs__: {}
+            cacheable: false
 
         - name: 'S3 | Create Controller Staging For The Dashboard Listener Pair'
           delegate_to: 'localhost'
@@ -268,13 +291,26 @@
 
         # The bundle transfer may legally continue beyond both the URL lifetime and the prior
         # chained session. Mint a separate session immediately before the dashboard read group.
+        - name: 'S3 | Freeze The Dashboard Pair Inputs In The Server Role Context'
+          no_log: true
+          ansible.builtin.set_fact:
+            __dashboard_artifact_inputs__:
+              reader_role_arn: >-
+                {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+              session_name: >-
+                secure-wazuh-server-dashboard-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
+              bucket: "{{ config.s3.bucket }}"
+              object_prefix: "{{ config.s3.certs_prefix }}"
+              region: "{{ AWS_DEFAULT_REGION }}"
+            cacheable: false
+
         - name: 'S3 | Mint A Fresh Dashboard Reader Session Beside Its Use'
           vars:
             s3_artifact_delivery_reader_role_arn: >-
-              {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+              {{ __dashboard_artifact_inputs__.reader_role_arn }}
             s3_artifact_delivery_session_name: >-
-              secure-wazuh-server-dashboard-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
-            s3_artifact_delivery_region: "{{ AWS_DEFAULT_REGION }}"
+              {{ __dashboard_artifact_inputs__.session_name }}
+            s3_artifact_delivery_region: "{{ __dashboard_artifact_inputs__.region }}"
           ansible.builtin.include_role:
             name: 's3_artifact_delivery'
             tasks_from: 'mint_session'
@@ -291,13 +327,19 @@
             ansible_python_interpreter: "{{ ansible_playbook_python }}"
           s3_artifact:
             mode: 'get'
-            bucket: "{{ config.s3.bucket }}"
-            object_key: "{{ config.s3.certs_prefix }}/{{ item }}"
-            region: "{{ AWS_DEFAULT_REGION }}"
+            bucket: "{{ __dashboard_artifact_inputs__.bucket }}"
+            object_key: "{{ __dashboard_artifact_inputs__.object_prefix }}/{{ item }}"
+            region: "{{ __dashboard_artifact_inputs__.region }}"
             access_key: "{{ __s3_artifact_delivery_access_key__ }}"
             secret_key: "{{ __s3_artifact_delivery_secret_key__ }}"
             session_token: "{{ __s3_artifact_delivery_session_token__ }}"
             dest: "{{ __dashboard_ctrl_tmpdir__.path }}/{{ item }}"
+
+        - name: 'S3 | Scrub The Frozen Dashboard Pair Inputs After Their Use'
+          no_log: true
+          ansible.builtin.set_fact:
+            __dashboard_artifact_inputs__: {}
+            cacheable: false
 
         - name: 'S3 | Scrub The Dashboard Reader Session After Its Use'
           ansible.builtin.include_role:
@@ -338,6 +380,8 @@
         - name: 'S3 | Scrub Any Remaining Server Bearer State'
           no_log: true
           ansible.builtin.set_fact:
+            __server_bundle_artifact_inputs__: {}
+            __dashboard_artifact_inputs__: {}
             __s3_artifact_delivery_presign_result__: ''
             __s3_artifact_delivery_redaction_detected__: ''
             __s3_artifact_delivery_fetch_result__: ''

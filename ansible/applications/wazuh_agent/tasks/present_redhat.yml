@@ -110,21 +110,43 @@
       no_log: true
       block:
 
+        - name: 'S3 | Freeze The Linux Agent Inputs In The Agent Role Context'
+          no_log: true
+          ansible.builtin.set_fact:
+            __linux_agent_artifact_inputs__:
+              reader_role_arn: >-
+                {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+              session_name: >-
+                secure-wazuh-linux-agent-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
+              bucket: "{{ config.s3.bucket }}"
+              object_key: "{{ config.s3.agent_rpm_key }}"
+              region: "{{ AWS_DEFAULT_REGION }}"
+              checksum: "{{ config.s3.agent_rpm_sha256 | lower | trim }}"
+              destination: "{{ __agent_rpm_path__ }}"
+              platform: 'posix'
+            cacheable: false
+
         - name: 'S3 | Fetch The Linux Agent RPM With A Fresh Signature Per Attempt'
           vars:
             s3_artifact_delivery_reader_role_arn: >-
-              {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+              {{ __linux_agent_artifact_inputs__.reader_role_arn }}
             s3_artifact_delivery_session_name: >-
-              secure-wazuh-linux-agent-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
-            s3_artifact_delivery_bucket: "{{ config.s3.bucket }}"
-            s3_artifact_delivery_object_key: "{{ config.s3.agent_rpm_key }}"
-            s3_artifact_delivery_region: "{{ AWS_DEFAULT_REGION }}"
-            s3_artifact_delivery_checksum: "{{ config.s3.agent_rpm_sha256 | lower | trim }}"
-            s3_artifact_delivery_destination: "{{ __agent_rpm_path__ }}"
-            s3_artifact_delivery_platform: 'posix'
+              {{ __linux_agent_artifact_inputs__.session_name }}
+            s3_artifact_delivery_bucket: "{{ __linux_agent_artifact_inputs__.bucket }}"
+            s3_artifact_delivery_object_key: "{{ __linux_agent_artifact_inputs__.object_key }}"
+            s3_artifact_delivery_region: "{{ __linux_agent_artifact_inputs__.region }}"
+            s3_artifact_delivery_checksum: "{{ __linux_agent_artifact_inputs__.checksum }}"
+            s3_artifact_delivery_destination: "{{ __linux_agent_artifact_inputs__.destination }}"
+            s3_artifact_delivery_platform: "{{ __linux_agent_artifact_inputs__.platform }}"
           ansible.builtin.include_role:
             name: 's3_artifact_delivery'
             tasks_from: 'fetch'
+
+        - name: 'S3 | Scrub The Frozen Linux Agent Inputs After Their Use'
+          no_log: true
+          ansible.builtin.set_fact:
+            __linux_agent_artifact_inputs__: {}
+            cacheable: false
 
       rescue:
 
@@ -149,6 +171,7 @@
         - name: 'S3 | Scrub Any Remaining Linux Agent Bearer State'
           no_log: true
           ansible.builtin.set_fact:
+            __linux_agent_artifact_inputs__: {}
             __s3_artifact_delivery_presign_result__: ''
             __s3_artifact_delivery_redaction_detected__: ''
             __s3_artifact_delivery_fetch_result__: ''

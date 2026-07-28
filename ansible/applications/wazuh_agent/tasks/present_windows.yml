@@ -67,21 +67,43 @@
       no_log: true
       block:
 
+        - name: 'S3 (win) | Freeze The Windows Agent Inputs In The Agent Role Context'
+          no_log: true
+          ansible.builtin.set_fact:
+            __windows_agent_artifact_inputs__:
+              reader_role_arn: >-
+                {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+              session_name: >-
+                secure-wazuh-windows-agent-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
+              bucket: "{{ config.s3.bucket }}"
+              object_key: "{{ config.s3.agent_msi_key }}"
+              region: "{{ AWS_DEFAULT_REGION }}"
+              checksum: "{{ config.s3.agent_msi_sha256 | lower | trim }}"
+              destination: "{{ config.windows.msi_dest | string | trim }}"
+              platform: 'windows'
+            cacheable: false
+
         - name: 'S3 (win) | Fetch The Windows Agent MSI With A Fresh Signature Per Attempt'
           vars:
             s3_artifact_delivery_reader_role_arn: >-
-              {{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}
+              {{ __windows_agent_artifact_inputs__.reader_role_arn }}
             s3_artifact_delivery_session_name: >-
-              secure-wazuh-windows-agent-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
-            s3_artifact_delivery_bucket: "{{ config.s3.bucket }}"
-            s3_artifact_delivery_object_key: "{{ config.s3.agent_msi_key }}"
-            s3_artifact_delivery_region: "{{ AWS_DEFAULT_REGION }}"
-            s3_artifact_delivery_checksum: "{{ config.s3.agent_msi_sha256 | lower | trim }}"
-            s3_artifact_delivery_destination: "{{ config.windows.msi_dest | string | trim }}"
-            s3_artifact_delivery_platform: 'windows'
+              {{ __windows_agent_artifact_inputs__.session_name }}
+            s3_artifact_delivery_bucket: "{{ __windows_agent_artifact_inputs__.bucket }}"
+            s3_artifact_delivery_object_key: "{{ __windows_agent_artifact_inputs__.object_key }}"
+            s3_artifact_delivery_region: "{{ __windows_agent_artifact_inputs__.region }}"
+            s3_artifact_delivery_checksum: "{{ __windows_agent_artifact_inputs__.checksum }}"
+            s3_artifact_delivery_destination: "{{ __windows_agent_artifact_inputs__.destination }}"
+            s3_artifact_delivery_platform: "{{ __windows_agent_artifact_inputs__.platform }}"
           ansible.builtin.include_role:
             name: 's3_artifact_delivery'
             tasks_from: 'fetch'
+
+        - name: 'S3 (win) | Scrub The Frozen Windows Agent Inputs After Their Use'
+          no_log: true
+          ansible.builtin.set_fact:
+            __windows_agent_artifact_inputs__: {}
+            cacheable: false
 
         # win_get_url has no mode control. Apply the Windows equivalent of the POSIX 0600
         # artifact mode explicitly: only SYSTEM and the built-in Administrators group retain
@@ -114,6 +136,12 @@
 
       rescue:
 
+        - name: 'S3 (win) | Scrub The Frozen Windows Agent Inputs Before Remote Cleanup'
+          no_log: true
+          ansible.builtin.set_fact:
+            __windows_agent_artifact_inputs__: {}
+            cacheable: false
+
         - name: 'S3 (win) | Remove The MSI After Artifact Staging Failure'
           ansible.windows.win_file:
             path: "{{ config.windows.msi_dest | string | trim }}"
@@ -140,6 +168,7 @@
         - name: 'S3 (win) | Scrub Any Remaining Windows Agent Bearer State'
           no_log: true
           ansible.builtin.set_fact:
+            __windows_agent_artifact_inputs__: {}
             __s3_artifact_delivery_presign_result__: ''
             __s3_artifact_delivery_redaction_detected__: ''
             __s3_artifact_delivery_fetch_result__: ''
