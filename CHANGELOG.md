@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/nwarila-platform/secure-wazuh/compare/v1.0.0...v2.0.0) (2026-07-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **security:** no built-in admin password ([#14](https://github.com/nwarila-platform/secure-wazuh/issues/14))
+
+### Bug Fixes
+
+* **security:** no built-in admin password ([#14](https://github.com/nwarila-platform/secure-wazuh/issues/14)) ([2fd9622](https://github.com/nwarila-platform/secure-wazuh/commit/2fd9622c92186fcffda1c04537eaa258e0c197a3))
+
 ## 1.0.0 (2026-07-22)
 
 
