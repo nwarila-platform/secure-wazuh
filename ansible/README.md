@@ -22,14 +22,14 @@ ansible/
 │   │                                  Deliberately NO sibling group_vars/ — see its header.
 │   └── proxmox.yml                    permanent all-in-one inventory (target currently parked)
 ├── playbooks/
-│   └── deploy-aws-poc.yml             THE only playbook. Propagate run inputs → dispatch each OS
-│                                      bootstrap → data disk + AIO → both agents through one
-│                                      normal role entry → FIM trigger + cumulative proof.
+│   └── deploy-aws-poc.yml             THE only playbook. Resolve run inputs → platform prep →
+│                                      data disk + AIO → Linux + Windows agents with adjacent
+│                                      controller signing + HTTPS fetches → FIM proof.
 │                                      Zero --extra-vars; inputs come from this file, inventory,
 │                                      and the controller environment.
 ├── applications/
 │   ├── wazuh_server/                  vendored: collapsed all-in-one central role
-│   ├── wazuh_agent/                   composed from ansible-framework (Linux RPM + Windows MSI)
+│   ├── wazuh_agent/                   framework role with product fetch-task overlays
 │   └── linux_disk_manager/            composed from ansible-framework (step-0 storage)
 └── requirements.yml                   ansible.posix · community.general · amazon.aws · ansible.windows
 ```
@@ -43,10 +43,10 @@ history if an individual stage is ever needed again.
 The dynamic inventory puts every endpoint in `wazuh_agents`, then also classifies it in exactly
 one platform subset: `wazuh_agents_linux` or `wazuh_agents_windows`.
 
-`wazuh_agent` and `linux_disk_manager` are **not vendored here** — their source of truth is
-[`ansible-framework/applications/`](../docs/explanation/composition-model.md) and they are
-composed in at run time against the pin in `.github/.framework-pin`. Only `wazuh_server` (the
-product-specific central role) is carried in this repo.
+`linux_disk_manager` and the base `wazuh_agent` role are composed at run time from
+[`ansible-framework/applications/`](../docs/explanation/composition-model.md) at the pin in
+`.github/.framework-pin`. This repository overlays only `wazuh_agent`'s Linux and Windows
+installer task files for the controller-presign flow. `wazuh_server` remains product-specific.
 
 Each role's `tasks/main.yml` is the platform's generic loader and is intended to remain
 byte-identical across product and framework copies. It validates `ENV`, merges role defaults with
@@ -65,29 +65,31 @@ and where each value comes from.
 | var | purpose |
 |---|---|
 | `ENV` | Environment selector (`dev`/`test`/`prod`); the loader auto-loads `vars/redhat_<env>.yml` (Linux) / `vars/windows_<env>.yml` (Windows). Propagated **literally as `'dev'`** to every host — this playbook targets exactly one environment. |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Read from the runner env by the run-input propagation play in `deploy-aws-poc.yml` and passed to `amazon.aws` modules as arguments. |
-| `AWS_DEFAULT_REGION` | Region for the S3 download (unless the overlay sets `s3.region`). Resolves `AWS_REGION` first, then `AWS_DEFAULT_REGION`. |
-| `AWS_SESSION_TOKEN` | Optional (STS). |
+| `AWS_DEFAULT_REGION` | Controller region for session assumption, local signing, dashboard-pair retrieval, and the delegated EBS resolver. Resolves `AWS_REGION` first, then `AWS_DEFAULT_REGION`. |
+| `ANSIBLE_LOCAL_TEMP` | Absolute controller temp path also used as delegated localhost's `ansible_remote_tmp`. Workflows place it under `runner.temp`, outside the workspace, and clean it after each invocation. |
 | `ANSIBLE_S3_BUCKET` | Required controller environment variable naming the artifact bucket. GitHub workflows derive it from the org-global account-id input; local operators export it explicitly. |
+| `ARTIFACT_READER_ROLE_ARN` | Required controller environment variable identifying `secure-wazuh-artifact-reader`. The server, Linux agent, and Windows agent read groups each assume it immediately beside their artifact use. |
 | `GITHUB_RUN_ID` | Required inventory selector. GitHub provides it to every workflow step; local operators resolve it from the deployed commit-sha tag as documented below. |
 | `wazuh_admin_password` | The one Wazuh credential. Each playbook invocation mints a strong 32-character value when `WAZUH_ADMIN_PASSWORD` is absent or empty; a non-empty value remains an explicit override. Normal GitHub runs leave it unset, and the manager role converges from prior `rbac.db` state through its guarded authentication ladder. |
 
 The EBS volume's `/dev/disk/by-id` name is runtime-derived from its `Function` tag through
 `linux_disk_manager`'s AWS resolver.
 
-Credentials are **never exported into the target shell** — the roles pass them as `no_log`
-module args so sudo/audit/Wazuh logs never capture them. See
+The ambient deploy credential and every scoped artifact-reader session remain on the controller.
+Each package fetch attempt gets a fresh session and signature before the target downloads over
+HTTPS; the dashboard listener pair gets a separate fresh session and is downloaded and pushed
+from the controller. Step 0 fails closed unless the live instance profile has the expected
+SSM-only role and no legacy artifact policy. See
 [`../docs/how-to/provide-aws-credentials-safely.md`](../docs/how-to/provide-aws-credentials-safely.md).
 
 ## Target prerequisites
 
 - **Central hosts** need the `/mnt/data` data disk (`linux_disk_manager` provisions it before the
   `wazuh_server` role entry in Stage 1).
-- **boto3/botocore come from the bootstrap venv**, not dnf/pip on the target: the playbook's
-  Linux Bootstrap section builds `/opt/ansible/venv` (Python 3.12) and the S3 tasks borrow it via
-  a block-level `ansible_python_interpreter` override. The Windows path runs `s3_object` delegated
-  to the **controller** venv instead (a Windows target has no boto3). See
-  [`../docs/explanation/toolchain-rhel8.md`](../docs/explanation/toolchain-rhel8.md).
+- **No target needs amazon.aws, boto3, botocore, or `/opt/ansible/venv`.** Linux uses
+  `ansible.builtin.get_url`; Windows uses `ansible.windows.win_get_url`. The controller alone
+  carries the AWS SDK used for inventory, role assumption, signing, dashboard-pair retrieval, and
+  the delegated EBS resolver.
 - **Endpoint hosts** run only the agent role and do not need `/mnt/data`.
 
 ## Running it
@@ -110,9 +112,9 @@ the cumulative FIM proof — see
 ## Convergence
 
 Stable package, configuration, mount, and probe paths converge without unnecessary changes.
-`overwrite: different` on `s3_object`, explicit SHA-256 checks, `creates:` guards on extraction,
-marker-owned FIM regions, and `changed_when: false` probes provide that behavior. A repeat playbook
-run is intentionally not `changed=0`: fresh internal PKI, rotated credentials and keystores,
+`get_url` checksum enforcement, `creates:` guards on extraction, marker-owned FIM regions, and
+`changed_when: false` probes provide that behavior. A repeat playbook run is intentionally not
+`changed=0`: fresh internal PKI, rotated credentials and keystores,
 `securityadmin`, guarded manager-RBAC convergence, and the FIM proof marker execute per invocation.
 
 ## Verification

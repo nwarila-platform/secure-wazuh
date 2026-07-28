@@ -39,6 +39,15 @@
       "Resource": "arn:aws:iam::*:instance-profile/secure-wazuh-poc-profile"
     },
     {
+      "Sid": "InspectPocInstanceRolePolicies",
+      "Effect": "Allow",
+      "Action": [
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies"
+      ],
+      "Resource": "arn:aws:iam::*:role/secure-wazuh-poc-role"
+    },
+    {
       "Sid": "PassOnlyPocInstanceRoleToEc2",
       "Effect": "Allow",
       "Action": "iam:PassRole",
@@ -48,6 +57,12 @@
           "iam:PassedToService": "ec2.amazonaws.com"
         }
       }
+    },
+    {
+      "Sid": "AssumeOnlyScopedArtifactReader",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::<account-id>:role/secure-wazuh-artifact-reader"
     }
   ]
 }

@@ -1,0 +1,432 @@
+---
+# =========================================================================================== #
+# File: '{{ role_path }}/tasks/present_windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Install + enroll the Wazuh agent on a WINDOWS endpoint (native win_* path). Dispatched by the
+# shared tasks/main.yml loader with the merged role config in `config`. Mirrors the Linux
+# present_redhat.yml flow: mint a controller-only reader session -> sign once -> download and
+# verify directly on the target -> install -> auto-enroll -> real-time FIM -> service.
+# ossec.conf ownership: win_package's install-time WAZUH_MANAGER/WAZUH_REGISTRATION_SERVER/
+# WAZUH_AGENT_NAME properties only ever apply ONCE, at first install — win_package's own
+# idempotency is product-id-based and never re-applies `arguments` on a later run. So this file
+# OWNS two regions of ossec.conf declaratively, every run: the <client><server> block (manager
+# address/port/protocol) and the realtime FIM block. Both writes are atomic (temp file +
+# Move-Item), so a mid-write disconnect can't corrupt the file the way a direct WriteAllText can.
+# =========================================================================================== #
+
+#region ------ [ Script ] -------------------------------------------------------------------- #
+
+- name: 'INFO (win) | Entering OS Tasks (present_windows - wazuh_agent)'
+  vars:
+    # The manager is an explicit role input. The shared role does not infer consumer inventory
+    # topology; tasks/validate.yml requires this value before OS dispatch.
+    __win_manager_host__: "{{ config.manager.host | string | trim }}"
+    __win_agent_name__: >-
+      {{ (config.agent_name | default('') | string | trim)
+         if (config.agent_name | default('') | string | trim | length) > 0
+         else inventory_hostname }}
+    # config.windows.ossec_conf uses Windows backslash separators; Ansible's dirname/basename
+    # filters call the CONTROLLER's os.path (posixpath on a Linux controller) in-process — no
+    # shell involved — which does not split on backslash and would silently return the path
+    # unchanged. regex_replace swaps just the trailing filename instead of relying on OS-aware
+    # path helpers.
+    __win_authd_pass__: >-
+      {{ config.windows.ossec_conf | string | trim
+         | regex_replace('[^\\\\]+$', 'authd.pass') }}
+    __win_client_keys__: >-
+      {{ config.windows.ossec_conf | string | trim
+         | regex_replace('[^\\\\]+$', 'client.keys') }}
+  block:
+
+    #region ------ [ Initialization ] -------------------------------------------------------- #
+
+    #region ------ [ Initialization: Input Guards ] ------------------------------------------ #
+
+    # SSM inventory IDs are not agent-routable.
+    - name: 'BEGIN (win) | Assert Manager Endpoint Is Not An EC2 Instance-ID'
+      ansible.builtin.assert:
+        that:
+          - not (__win_manager_host__ is match('^i-[0-9a-fA-F]{8}([0-9a-fA-F]{9})?$'))
+        fail_msg: >-
+          wazuh_agent.manager.host is '{{ __win_manager_host__ }}', which looks like an EC2
+          instance-id, not a routable address. Set
+          wazuh_agent.manager.host to the manager's real IP or DNS name.
+        quiet: true
+
+    #endregion --- [ Initialization: Input Guards ] ------------------------------------------ #
+
+    #endregion --- [ Initialization ] -------------------------------------------------------- #
+
+    #region ------ [ Main ] ------------------------------------------------------------------ #
+
+    #region ------ [ Main: S3 Staging ] ------------------------------------------------------ #
+
+    # Mint and sign after the role loader. Task-level no_log is load-bearing: win_get_url can
+    # embed its bearer URL in failure text and in the registered result.
+    - name: 'S3 (win) | Fetch The SHA-256-Pinned Agent MSI Over HTTPS'
+      no_log: true
+      block:
+
+        - name: 'S3 (win) | Fetch The Windows Agent MSI With A Fresh Signature Per Attempt'
+          vars:
+            artifact_fetch_session_scope: 'windows-agent'
+            artifact_presign_bucket: "{{ config.s3.bucket }}"
+            artifact_presign_key: "{{ config.s3.agent_msi_key }}"
+            artifact_presign_fact: '__wazuh_agent_msi_url__'
+            artifact_fetch_platform: 'windows'
+            artifact_fetch_dest: "{{ config.windows.msi_dest | string | trim }}"
+            artifact_fetch_checksum: "{{ config.s3.agent_msi_sha256 | lower | trim }}"
+          ansible.builtin.include_tasks: >-
+            {{ playbook_dir }}/tasks/fetch-presigned-s3-object.yml
+
+        # win_get_url has no mode control. Apply the Windows equivalent of the POSIX 0600
+        # artifact mode explicitly: only SYSTEM and the built-in Administrators group retain
+        # access, and inherited directory ACEs are removed atomically with the replacement DACL.
+        - name: 'S3 (win) | Restrict The Downloaded MSI To System And Administrators'
+          ansible.windows.win_powershell:
+            error_action: 'stop'
+            parameters:
+              Path: "{{ config.windows.msi_dest | string | trim }}"
+            script: |
+              param([string]$Path)
+              $sections = (
+                [System.Security.AccessControl.AccessControlSections]::Access -bor
+                [System.Security.AccessControl.AccessControlSections]::Owner -bor
+                [System.Security.AccessControl.AccessControlSections]::Group
+              )
+              $desired = [System.Security.AccessControl.FileSecurity]::new()
+              $desired.SetSecurityDescriptorSddlForm(
+                'O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)'
+              )
+              $current = Get-Acl -LiteralPath $Path
+              if ($current.GetSecurityDescriptorSddlForm($sections) -ne
+                  $desired.GetSecurityDescriptorSddlForm($sections)) {
+                Set-Acl -LiteralPath $Path -AclObject $desired
+                $Ansible.Changed = $true
+              }
+              else {
+                $Ansible.Changed = $false
+              }
+
+      rescue:
+
+        - name: 'S3 (win) | Remove The MSI After Artifact Staging Failure'
+          ansible.windows.win_file:
+            path: "{{ config.windows.msi_dest | string | trim }}"
+            state: 'absent'
+
+        - name: 'S3 (win) | Fail With The Expected Windows Agent Object'
+          no_log: false
+          ansible.builtin.fail:
+            msg: >-
+              {{
+                'Windows agent signing failed the bearer-URL redaction guard'
+                if (__artifact_presign_redaction_detected__ | default(false) | bool)
+                else 'Windows agent artifact preparation or HTTPS fetch failed'
+              }} on {{ inventory_hostname }} (original error hidden by no_log).
+              Verify the artifact-reader role assumption, configured region, and Windows agent
+              package. Sensitive configuration and bearer values are not printed.
+
+      always:
+
+        - name: 'S3 (win) | Scrub Any Remaining Windows Agent Artifact Credential'
+          ansible.builtin.include_tasks: >-
+            {{ playbook_dir }}/tasks/scrub-artifact-reader-session.yml
+
+        - name: 'S3 (win) | Scrub Any Remaining Windows Agent Bearer State'
+          no_log: true
+          ansible.builtin.set_fact:
+            __artifact_presign_result__: ''
+            __artifact_presign_redaction_detected__: ''
+            __artifact_fetch_result__: ''
+            __artifact_fetch_succeeded__: ''
+            __artifact_fetch_terminal_failure__: ''
+
+        - name: 'S3 (win) | Scrub Any Remaining Windows Agent Bearer URL Fact'
+          no_log: true
+          ansible.builtin.set_fact:
+            __wazuh_agent_msi_url__: ''
+            cacheable: false
+
+    #endregion --- [ Main: S3 Staging ] ------------------------------------------------------ #
+
+    #region ------ [ Main: Package Installation ] -------------------------------------------- #
+
+    # WAZUH_MANAGER / WAZUH_REGISTRATION_SERVER / WAZUH_AGENT_NAME seed ossec.conf at first
+    # install only — win_package never re-applies `arguments` on a later run (its idempotency is
+    # product-id-based, not argument-based). 'Own The Manager <server> Block' below is what keeps
+    # ossec.conf converged on every run, including after a manager.host change post-install.
+    - name: 'PROCESS (win) | Install The Wazuh Agent MSI (auto-enroll Via Install Properties)'
+      ansible.windows.win_package:
+        path: "{{ config.windows.msi_dest | string | trim }}"
+        state: 'present'
+        arguments:
+          - '/qn'
+          - "WAZUH_MANAGER={{ __win_manager_host__ }}"
+          - "WAZUH_REGISTRATION_SERVER={{ __win_manager_host__ }}"
+          - "WAZUH_AGENT_NAME={{ __win_agent_name__ }}"
+
+    #endregion --- [ Main: Package Installation ] -------------------------------------------- #
+
+    #region ------ [ Main: Agent Configuration ] --------------------------------------------- #
+
+    - name: 'PROCESS (win) | Record Whether WazuhSvc Was Running Before Config Ownership'
+      register: '__agent_win_svc_pre__'
+      changed_when: false
+      ansible.windows.win_service_info:
+        name: "{{ config.windows.service_name | string | trim }}"
+
+    # JUSTIFIED R3 set_fact exception: a handler consumes this latch, and handlers cannot see
+    # block/task vars.
+    - name: 'PROCESS (win) | Latch Pre-Config Service State For The Restart Handler'
+      ansible.builtin.set_fact:
+        wazuh_agent_win_svc_was_running: >-
+          {{ (__agent_win_svc_pre__.services[0].state | default('')) == 'started' }}
+
+    # OWN the <client><server> block every run (see the file header WHY). No community.windows
+    # blockinfile-equivalent exists for a structured XML tag, so this uses the same win_powershell
+    # region-ownership technique as the FIM task below: read once, regex-replace, atomic write.
+    - name: 'PROCESS (win) | Own The Manager <server> Block In ossec.conf'
+      notify: 'wazuh-agent-windows-config-changed'
+      vars:
+        __win_manager_port__: "{{ config.manager.port | int }}"
+        __win_manager_protocol__: "{{ config.manager.protocol | string | trim }}"
+      ansible.windows.win_powershell:
+        error_action: 'stop'
+        parameters:
+          Path: "{{ config.windows.ossec_conf | string | trim }}"
+          ManagerHost: "{{ __win_manager_host__ }}"
+          ManagerPort: "{{ __win_manager_port__ }}"
+          ManagerProtocol: "{{ __win_manager_protocol__ }}"
+        script: |
+          param([string]$Path, [string]$ManagerHost, [int]$ManagerPort, [string]$ManagerProtocol)
+          $nl      = "`r`n"
+          $pattern = '(<client>\s*)<server>.*?</server>'
+          # Reconnect runway invariant: 12 * 10s = 120s exceeds remoted's 60s connection-overtake
+          # refusal plus its <=10s key-reload lag. wazuh/wazuh v4.14.5 citations:
+          # src/client-agent/start_agent.c:131-183, src/remoted/secure.c:488-497,647-663; knob
+          # parsing: src/config/client-config.c:262-280.
+          $block   = '<server>' + $nl +
+                     '      <address>' + $ManagerHost + '</address>' + $nl +
+                     '      <port>' + $ManagerPort + '</port>' + $nl +
+                     '      <protocol>' + $ManagerProtocol + '</protocol>' + $nl +
+                     '      <max_retries>12</max_retries>' + $nl +
+                     '      <retry_interval>10</retry_interval>' + $nl +
+                     '    </server>'
+          $content = [System.IO.File]::ReadAllText($Path)
+
+          # Guard: the vendor ossec.conf carries exactly one <client><server> block. Fail loudly
+          # rather than silently reconfiguring the wrong occurrence (or none) if that ever changes.
+          $matchCount = ([regex]::Matches($content, $pattern, 'Singleline')).Count
+          if ($matchCount -ne 1) {
+              $Ansible.Failed = $true
+              throw "expected exactly one <client><server>...</server> block, found $matchCount"
+          }
+
+          # MatchEvaluator form avoids '$'-token substitution issues in the replacement text.
+          $new = [regex]::Replace($content, $pattern, { param($m) $m.Groups[1].Value + $block }, 'Singleline')
+          if ($new -ne $content) {
+              $tmp = $Path + '.tmp'
+              try {
+                  [System.IO.File]::WriteAllText($tmp, $new)
+                  Move-Item -LiteralPath $tmp -Destination $Path -Force
+              } finally {
+                  if (Test-Path -LiteralPath $tmp) {
+                      Remove-Item -LiteralPath $tmp -Force
+                  }
+              }
+              $Ansible.Changed = $true
+          } else {
+              $Ansible.Changed = $false
+          }
+
+    - name: 'PROCESS (win) | Ensure Real-Time Watched Directories Exist'
+      loop: "{{ config.windows.fim_realtime_paths | default([]) }}"
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: 'directory'
+
+    # OWN a marker-delimited region rather than inserting per line (community.windows has no
+    # win_blockinfile). This is the Windows analogue of the Linux path's blockinfile and the server
+    # role's wholesale <syscheck> rewrite: the block is rebuilt from the declared list every run, so
+    # a path REMOVED from wazuh_agent.windows.fim_realtime_paths is dropped from ossec.conf too —
+    # insert-only win_lineinfile would strand it, and so would an add-only `when:` gate on this
+    # task (an emptied list must REMOVE the block, not just skip re-adding it — this task always
+    # runs, and the script itself decides add-vs-remove from Dirs.Count). .NET Read/WriteAllText
+    # keeps the file UTF-8 (no BOM); the write is atomic (temp + Move-Item) so a mid-write
+    # disconnect can't corrupt ossec.conf.
+    - name: 'PROCESS (win) | Own The Real-Time FIM Managed Region In ossec.conf'
+      notify: 'wazuh-agent-windows-config-changed'
+      vars:
+        __fim_begin__: '    <!-- BEGIN ANSIBLE MANAGED WAZUH AGENT REALTIME FIM -->'
+        __fim_end__: '    <!-- END ANSIBLE MANAGED WAZUH AGENT REALTIME FIM -->'
+      ansible.windows.win_powershell:
+        error_action: 'stop'
+        parameters:
+          Path: "{{ config.windows.ossec_conf | string | trim }}"
+          Dirs: "{{ config.windows.fim_realtime_paths | default([]) }}"
+          Begin: "{{ __fim_begin__ }}"
+          End: "{{ __fim_end__ }}"
+        script: |
+          param([string]$Path, [string[]]$Dirs, [string]$Begin, [string]$End)
+          $nl      = "`r`n"
+          $content = [System.IO.File]::ReadAllText($Path)
+          # Strip any prior managed region (+ its trailing newline); Singleline so '.' spans newlines.
+          $stripped = [regex]::Replace($content, [regex]::Escape($Begin) + '.*?' + [regex]::Escape($End) + '(\r?\n)?', '', 'Singleline')
+
+          if ($Dirs.Count -gt 0) {
+              # Guard: [regex]::Replace below inserts the managed block before EVERY </syscheck> match.
+              # A vendor ossec.conf is expected to carry exactly one; more than one (e.g. a commented-out
+              # sample stanza) would silently duplicate the managed block. Fail loudly instead of guessing.
+              $closeCount = ([regex]::Matches($stripped, '</syscheck>')).Count
+              if ($closeCount -ne 1) {
+                  $Ansible.Failed = $true
+                  throw "expected exactly one </syscheck>, found $closeCount"
+              }
+              $entries = ($Dirs | ForEach-Object { '    <directories realtime="yes" check_all="yes">' + $_ + '</directories>' }) -join $nl
+              $block   = $Begin + $nl + $entries + $nl + $End
+              # Re-insert the fresh block immediately before the closing </syscheck> (MatchEvaluator
+              # avoids '$'-token issues if a path contains a dollar sign).
+              $new = [regex]::Replace($stripped, '(?<lead>\s*)</syscheck>', { param($m) $nl + $block + $m.Groups['lead'].Value + '</syscheck>' }, 'Singleline')
+          } else {
+              # An emptied Dirs list means "own nothing": leave the region stripped rather than
+              # re-inserting empty BEGIN/END markers, so a path removed from config actually drops
+              # out of ossec.conf instead of stranding a hollow managed block forever.
+              $new = $stripped
+          }
+
+          if ($new -ne $content) {
+              $tmp = $Path + '.tmp'
+              try {
+                  [System.IO.File]::WriteAllText($tmp, $new)
+                  Move-Item -LiteralPath $tmp -Destination $Path -Force
+              } finally {
+                  if (Test-Path -LiteralPath $tmp) {
+                      Remove-Item -LiteralPath $tmp -Force
+                  }
+              }
+              $Ansible.Changed = $true
+          } else {
+              $Ansible.Changed = $false
+          }
+
+    #endregion --- [ Main: Agent Configuration ] --------------------------------------------- #
+
+    #region ------ [ Main: Enrollment ] ------------------------------------------------------ #
+
+    - name: 'PROCESS (win) | Check Agent Enrollment Key'
+      ansible.windows.win_stat:
+        path: "{{ __win_client_keys__ }}"
+      register: '__win_client_keys_stat__'
+
+    # The Windows agent auto-registers with the manager's authd on first SERVICE START — unlike
+    # Linux there is no separate agent-auth CLI task to bracket, so the block below spans staging
+    # authd.pass THROUGH the start + any config-changed restart + the retry/until verification,
+    # and removes it only in `always:` once the service is confirmed genuinely up (not merely
+    # "start requested"). That ordering matters: the internal enrollment attempt runs
+    # asynchronously inside the service process, so removing the secret immediately after the
+    # win_service task returns (before verification has had time to retry) could race it away
+    # before the agent ever reads it. authd is passwordless unless
+    # config.manager.enrollment_password is set. Never passed as an MSI property: msiexec
+    # arguments land on the process command line, which a STIG host's Security-log auditing (and
+    # Wazuh's own log collection) would capture — the Windows analogue of the Linux role's
+    # authd.pass-not-argv treatment.
+    - name: 'PROCESS (win) | Enroll Agent Via Service Start (authd.pass, no property secret)'
+      vars:
+        __win_needs_enroll__: >-
+          {{ not (__win_client_keys_stat__.stat.exists | default(false))
+             or (__win_client_keys_stat__.stat.size | default(0) | int) == 0 }}
+      block:
+
+        - name: 'PROCESS (win) | Stage Enrollment Password File (authd.pass)'
+          when: __win_needs_enroll__ and (config.manager.enrollment_password | default('') | length > 0)
+          no_log: true
+          ansible.windows.win_copy:
+            content: "{{ config.manager.enrollment_password }}"
+            dest: "{{ __win_authd_pass__ }}"
+
+        - name: 'END (win) | Ensure The Wazuh Agent Service Is Running And Automatic'
+          ansible.windows.win_service:
+            name: "{{ config.windows.service_name | string | trim }}"
+            state: 'started'
+            start_mode: 'auto'
+
+        - name: 'END (win) | Apply Pending Restart (If Config Changed) Before Finishing'
+          ansible.builtin.meta: 'flush_handlers'
+
+        # A crash-looping WazuhSvc would otherwise pass green: win_service state=started only
+        # proves the service accepted the start request, not that it stayed up. Retry mirrors the
+        # Linux sibling's post-flush systemctl is-active loop.
+        - name: 'END (win) | Verify Agent Service Is Running (Not Crash-Looping)'
+          ansible.windows.win_service_info:
+            name: "{{ config.windows.service_name | string | trim }}"
+          register: '__win_svc_info__'
+          changed_when: false
+          retries: 15
+          delay: 2
+          until: >-
+            (__win_svc_info__.services | default([]) | length) > 0
+            and (__win_svc_info__.services[0].state | default('') | lower) == 'started'
+
+        # Service-up does not prove manager connectivity; the agent's own state file is the contract.
+        # Windows's wazuh-agent.state filename differs from Linux by design, not by typo.
+        # This CONNECTED gate is proven live; see converge-reconnect.md for the full rationale.
+        - name: 'END (win) | Read Agent Connection State File'
+          register: '__win_agent_state__'
+          changed_when: false
+          ignore_errors: true
+          retries: 30
+          delay: 10
+          until: (__win_agent_state__.stdout | default('') | trim) == 'connected'
+          environment:
+            WAZUH_AGENT_STATE_FILE: "{{ config.windows.state_file }}"
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+
+            if (Test-Path -LiteralPath $env:WAZUH_AGENT_STATE_FILE) {
+              $match = Select-String -LiteralPath $env:WAZUH_AGENT_STATE_FILE -Pattern "^status='(.+)'"
+              if ($match) {
+                Write-Output $match.Matches[0].Groups[1].Value
+              } else {
+                Write-Output 'unknown'
+              }
+            } else {
+              Write-Output 'missing'
+            }
+
+        - name: 'END (win) | Verify Agent Is CONNECTED To The Manager'
+          ansible.builtin.assert:
+            that:
+              - (__win_agent_state__.stdout | default('') | trim) == 'connected'
+            quiet: true
+            fail_msg: >-
+              Agent service is running (previous task) but never reached status='connected' in
+              {{ config.windows.state_file }} (last read:
+              '{{ (__win_agent_state__.stdout | default('')) | trim }}'). Diagnose the reconnect
+              path on the manager in /var/ossec/logs/ossec.log: discriminate "Agent key already
+              in use" from "Decrypt the message fail" and ENC_IP_ERROR. A transient
+              connection-overtake/key-reload refusal should self-heal in <= ~90s inside this
+              agent's 120s retry runway. If it does not, check for a restart-within-runway
+              regression and verify the persisted manager/agent keys and enrolled source IP still
+              agree. Keep this CONNECTED gate load-bearing; do not weaken authd force-replacement
+              policy to make a duplicate enrollment pass.
+            success_msg: 'Agent is connected to the manager (status=connected).'
+
+      always:
+
+        - name: 'PROCESS (win) | Remove Staged authd.pass (No Stranded Enrollment Secret)'
+          when: __win_needs_enroll__ and (config.manager.enrollment_password | default('') | length > 0)
+          ansible.windows.win_file:
+            path: "{{ __win_authd_pass__ }}"
+            state: 'absent'
+
+    - name: 'PROCESS (win) | Remove Any Stranded authd.pass (Cross-Run Cleanup, Unconditional)'
+      ansible.windows.win_file:
+        path: "{{ __win_authd_pass__ }}"
+        state: 'absent'
+
+    #endregion --- [ Main: Enrollment ] ------------------------------------------------------ #
+
+    #endregion --- [ Main ] ------------------------------------------------------------------ #
+
+#endregion --- [ Script ] -------------------------------------------------------------------- #

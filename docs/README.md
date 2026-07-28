@@ -9,7 +9,7 @@ This directory follows the [Diátaxis](https://diataxis.fr) framework, adopted o
 | [Tutorials](tutorials/) | Learn by doing | "Walk me through a first deploy end to end." |
 | [How-to](how-to/) | Solve a specific problem | "How do I deploy the stack?" |
 | [Reference](reference/) | Look up facts | "Which S3 keys does the agent role read?" |
-| [Explanation](explanation/) | Understand the rationale | "Why is the bootstrap venv not the default interpreter?" |
+| [Explanation](explanation/) | Understand the rationale | "Why is the RHEL 8 Ansible line pinned?" |
 | [Decision records](decision-records/) | See what was decided and why | "Why the deny-all `.gitignore` strategy?" |
 
 ## Tutorials
@@ -18,8 +18,8 @@ _None yet — the end-to-end first deploy currently lives in [How-to → Deploy 
 
 ## How to
 
-- [Deploy the stack](how-to/deploy-the-stack.md) — provision the disk, bootstrap the venv, and run the all-in-one deploy end to end.
-- [Provide AWS credentials safely](how-to/provide-aws-credentials-safely.md) — get short-lived S3 creds into the runner env without leaking them.
+- [Deploy the stack](how-to/deploy-the-stack.md) — provision the disk and run the all-in-one deploy end to end.
+- [Provide AWS credentials safely](how-to/provide-aws-credentials-safely.md) — keep the scoped reader session on the controller while targets fetch over HTTPS.
 
 ## Reference
 
@@ -34,7 +34,7 @@ _None yet — the end-to-end first deploy currently lives in [How-to → Deploy 
 - [Agent reconnect](explanation/agent-reconnect.md) — how agents survive a manager OS replacement unattended, and why the force-replacement shortcut was rejected.
 - [Architecture](explanation/architecture.md) — what the stack deploys and why the central roles collapsed into one all-in-one role.
 - [Composition model](explanation/composition-model.md) — how the framework loader and shared roles are composed in at run time from the pinned `ansible-framework`.
-- [RHEL 8 toolchain](explanation/toolchain-rhel8.md) — why ansible-core is pinned to 2.16 and the bootstrap venv is not the default interpreter.
+- [RHEL 8 toolchain](explanation/toolchain-rhel8.md) — why ansible-core is pinned to 2.16 and AWS SDK work stays controller-side.
 
 ## Architecture decisions
 

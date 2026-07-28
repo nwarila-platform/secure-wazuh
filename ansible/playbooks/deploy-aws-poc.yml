@@ -9,9 +9,11 @@
 #   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 #
 # SELF-CONTAINED: it takes no --extra-vars and requires no operator-provided Wazuh secret. AWS
-# credentials and the required ANSIBLE_S3_BUCKET come from the controller environment. Each
-# invocation mints the credential the stack needs when WAZUH_ADMIN_PASSWORD is absent or empty;
-# an explicitly supplied non-empty value remains supported as an override.
+# identity, the artifact-reader role ARN, and the required ANSIBLE_S3_BUCKET come from the
+# controller environment. Each artifact read mints a fresh scoped controller session and signs
+# one short-lived URL immediately before the target HTTPS fetch. The stack also mints the
+# credential it needs when WAZUH_ADMIN_PASSWORD is absent or empty; an explicitly supplied
+# non-empty password remains supported as an override.
 # Step 0 fails closed unless the run-scoped inventory resolves the exact three-system topology.
 #
 # TWO-PHASE USAGE (the cumulative 4/4 proof):
@@ -26,9 +28,9 @@
 #     never touches.
 # =========================================================================================== #
 
-#region ------ [ Step 0: Propagate Run Inputs ] --------------------------------------------- #
+#region ------ [ Step 0: Resolve Run Inputs ] ----------------------------------------------- #
 
-- name: 'Step 0 - Propagate Environment And AWS Credentials Across All Systems'
+- name: 'Step 0 - Resolve Environment And Validate The Artifact Identity'
   hosts: 'localhost:all'
   gather_facts: false
   pre_tasks:
@@ -46,43 +48,120 @@
       ansible.builtin.assert:
         that:
           - "lookup('ansible.builtin.env', 'GITHUB_RUN_ID') | trim | length > 0"
+          - >-
+            lookup('ansible.builtin.env', 'ANSIBLE_LOCAL_TEMP') | trim
+            is match('^/.+')
           - "groups.get('wazuh_servers', []) | length == 1"
           - "groups.get('wazuh_agents', []) | length == 2"
           - "groups.get('wazuh_agents_linux', []) | length == 1"
           - "groups.get('wazuh_agents_windows', []) | length == 1"
         quiet: true
         fail_msg: >-
-          GITHUB_RUN_ID must be non-empty and its tagged deployment must resolve exactly one
-          Wazuh server, two total agents, one Linux agent, and one Windows agent; resolved
+          GITHUB_RUN_ID must be non-empty, ANSIBLE_LOCAL_TEMP must be an absolute controller temp
+          path, and the tagged deployment must resolve exactly one Wazuh server, two total agents,
+          one Linux agent, and one Windows agent; resolved
           {{ groups.get('wazuh_servers', []) | length }}/
           {{ groups.get('wazuh_agents', []) | length }}/
           {{ groups.get('wazuh_agents_linux', []) | length }}/
           {{ groups.get('wazuh_agents_windows', []) | length }}.
   tasks:
-    - name: 'INIT | Propagate Environment And AWS Credentials Across All Systems'
+    - name: 'INIT | Require The Scoped Artifact-Reader Role ARN'
       run_once: true
       no_log: true
+      ansible.builtin.assert:
+        that:
+          - >-
+            lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') | trim
+            is match('^arn:aws:iam::[0-9]{12}:role/secure-wazuh-artifact-reader$')
+        quiet: true
+        fail_msg: >-
+          ARTIFACT_READER_ROLE_ARN must identify the secure-wazuh-artifact-reader role.
+
+    - name: 'INIT | Inspect The Live Target Instance Profile For Legacy Artifact Authority'
+      run_once: true
+      delegate_to: 'localhost'
+      become: false
+      register: '__target_profile_guard__'
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      secure_wazuh_iam_profile_guard:
+        instance_profile_name: 'secure-wazuh-poc-profile'
+        expected_role_name: 'secure-wazuh-poc-role'
+        expected_managed_policy_arn: 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        forbidden_policy_name: 'secure-wazuh-artifact-read'
+
+    - name: 'INIT | Assert The Live Target Profile Has No Legacy Artifact Policy'
+      run_once: true
+      ansible.builtin.assert:
+        that:
+          - __target_profile_guard__.legacy_policy_absent | bool
+        quiet: true
+        fail_msg: >-
+          Refusing deployment because the live target instance profile has not passed the
+          legacy artifact-policy guard.
+
+    - name: 'INIT | Publish The Non-Secret Environment Inputs To This Invocation'
+      run_once: true
       ansible.builtin.set_fact:
         ENV: 'dev'
-        AWS_ACCESS_KEY_ID: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
-        AWS_SECRET_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
-        AWS_SESSION_TOKEN: "{{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') }}"
         AWS_DEFAULT_REGION: >-
           {{ lookup('ansible.builtin.env', 'AWS_REGION')
              | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) }}
+        cacheable: false
 
-#endregion --- [ Step 0: Propagate Run Inputs ] --------------------------------------------- #
+#endregion --- [ Step 0: Resolve Run Inputs ] ----------------------------------------------- #
 
-#region ------ [ Bootstrap: Every Target Through The OS Dispatcher ] ------------------------ #
+#region ------ [ Platform Preparation: No Target AWS SDK ] ---------------------------------- #
 
-- name: 'Bootstrap - Prepare Every Target Through Its Native OS Role'
-  hosts: 'all'
+- name: 'Platform Preparation - Prepare Linux Without An AWS SDK'
+  hosts: 'all:!wazuh_agents_windows'
   tasks:
-    - name: 'Bootstrap | Dispatch To This Target''s Supported OS Bootstrap'
+    # Pipelining lets this first module establish the configured STIG-compatible transfer base.
+    # The former OS bootstrap also built a Python 3.12 boto3 venv solely for target S3 modules;
+    # direct HTTPS artifact reads make that interpreter and public-PyPI install unnecessary.
+    - name: 'Platform | Create The Linux Ansible Transfer Base'
+      become: true
+      ansible.builtin.file:
+        path: '/opt/ansible/tmp'
+        state: 'directory'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0700'
+
+    # Role loaders set explicit SELinux contexts on their target temp directories. RHEL's
+    # platform-python binding is the only non-AWS Python prerequisite they need.
+    - name: 'Platform | Install The Platform-Python SELinux Binding'
+      become: true
+      ansible.builtin.dnf:
+        name: 'python3-libselinux'
+        state: 'present'
+        disable_gpg_check: false
+        sslverify: true
+        validate_certs: true
+
+    # The pinned framework deliberately splits this from the first file task: a fresh host
+    # cannot set an SELinux context until the immediately preceding package supplies the binding.
+    - name: 'Platform | Apply The Linux Ansible Transfer-Base SELinux Context'
+      become: true
+      ansible.builtin.file:
+        path: '/opt/ansible/tmp'
+        state: 'directory'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0700'
+        selevel: 's0'
+        serole: 'object_r'
+        setype: 'usr_t'
+        seuser: 'system_u'
+
+- name: 'Platform Preparation - Validate The Native Windows Session'
+  hosts: 'wazuh_agents_windows'
+  tasks:
+    - name: 'Platform | Dispatch The Windows Session Validation'
       ansible.builtin.include_role:
         name: 'os_bootstrap'
 
-#endregion --- [ Bootstrap: Every Target Through The OS Dispatcher ] ------------------------ #
+#endregion --- [ Platform Preparation: No Target AWS SDK ] ---------------------------------- #
 
 #region ------ [ Stage 1: Wazuh All-In-One Stack ] ------------------------------------------ #
 

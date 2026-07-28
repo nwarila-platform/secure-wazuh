@@ -124,9 +124,10 @@ jobs:
       id-token: write # required for AWS OIDC federation (no long-lived keys)
 
     env:
-      # Controller paths must be writable by the hosted runner. Target remote_tmp remains the
-      # STIG-compatible /opt path from the composed ansible.cfg.
-      ANSIBLE_LOCAL_TEMP: ${{ github.workspace }}/.ansible/tmp
+      # Module payloads can contain censored task arguments. Keep controller/delegated-localhost
+      # transfer temp in the runner-owned temporary tree, outside the workspace. Target
+      # remote_tmp remains the STIG-compatible /opt path from the composed ansible.cfg.
+      ANSIBLE_LOCAL_TEMP: ${{ runner.temp }}/secure-wazuh-ansible/local
       ANSIBLE_CACHE_PLUGIN_CONNECTION: ${{ github.workspace }}/.ansible/facts
       ANSIBLE_SSH_CONTROL_PATH_DIR: ${{ github.workspace }}/.ansible/cp
 
@@ -158,6 +159,7 @@ jobs:
           commit_sha="$(git rev-parse HEAD)"
           {
             echo "DEPLOY_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/github_${owner}_${stack}"
+            echo "ARTIFACT_READER_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/secure-wazuh-artifact-reader"
             echo "ANSIBLE_S3_BUCKET=${AWS_ACCOUNT_ID}-ansible"
             echo "TF_STATE_BUCKET=${AWS_ACCOUNT_ID}-terraform"
             # Org state-key convention is <owner>/<repo>/<target>.tfstate — derived, so it always
@@ -210,13 +212,14 @@ jobs:
         with:
           # The role ARN is derived from the org-global AWS_ACCOUNT_ID and the
           # github_<owner>_<repo> naming convention. Its trust is pinned to this repository and
-          # workflow file; its policy retains the existing EC2/EBS/VPC + S3 + state scope.
+          # workflow file; its policy retains the EC2/EBS/VPC and state scope and may assume the
+          # scoped artifact-reader role.
           role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-        # configure-aws-credentials exports AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY /
-        # _SESSION_TOKEN / AWS_REGION into the runner env for every later step — read by both the
-        # plain `terraform` invocations below and, via the per-play `lookup('ansible.builtin.env',
-        # ...)` credential bridge in deploy-aws-poc.yml, by Ansible.
+        # configure-aws-credentials exports the deploy identity for Terraform, inventory, SSM,
+        # controller-side EBS discovery, and each playbook invocation's use-boundary
+        # artifact-reader role assumptions. No deploy credential is copied to a target or used for
+        # an artifact read.
 
       # -----------------------------------------------------------------------
       # Terraform — ONE init, reused by every apply/destroy below (see the job-level comment)
@@ -310,10 +313,9 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
         run: |
           python -m pip install --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}"
-          # boto3/botocore: required by amazon.aws modules that run CONTROLLER-side on THIS
-          # runner (the Windows-agent MSI fetch and linux_disk_manager's AWS function-tag
-          # resolver — both delegate_to: localhost under ansible_playbook_python). Same
-          # requirement as deploy.yml's AWS job.
+          # boto3/botocore: required only on the controller for sts_assume_role, local S3
+          # presigning/dashboard-pair retrieval, dynamic inventory, and linux_disk_manager's
+          # delegated AWS Function-tag resolver. Same requirement as deploy.yml's AWS job.
           python -m pip install --no-cache-dir boto3 botocore
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
@@ -391,6 +393,18 @@ jobs:
           # the final cumulative view, and the ledger itself doesn't record which phase produced
           # which entry.
           cp "${POC_EVIDENCE_JSON}" "${{ github.workspace }}/poc-proof-phase1.json"
+
+      - name: "PHASE 1: clean controller Ansible module payloads"
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_local_temp="${RUNNER_TEMP:?}/secure-wazuh-ansible/local"
+          if [[ "${ANSIBLE_LOCAL_TEMP:?}" != "${expected_local_temp}" ]]; then
+            echo "Refusing to clean an unexpected ANSIBLE_LOCAL_TEMP path" >&2
+            exit 1
+          fi
+          rm -rf -- "${RUNNER_TEMP}/secure-wazuh-ansible"
 
       # -----------------------------------------------------------------------
       # OS-SWAP — force-replace ONLY the AIO's OS (refresh = true in aws.tfvars); both agents
@@ -493,6 +507,18 @@ jobs:
             exit 1
           fi
           echo "Phase 2 password-recovery rung evidence verified"
+
+      - name: "PHASE 2: clean controller Ansible module payloads"
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_local_temp="${RUNNER_TEMP:?}/secure-wazuh-ansible/local"
+          if [[ "${ANSIBLE_LOCAL_TEMP:?}" != "${expected_local_temp}" ]]; then
+            echo "Refusing to clean an unexpected ANSIBLE_LOCAL_TEMP path" >&2
+            exit 1
+          fi
+          rm -rf -- "${RUNNER_TEMP}/secure-wazuh-ansible"
 
       # -----------------------------------------------------------------------
       # DESTROY — always tear the environment down, pass or fail. Same state, same working dir.

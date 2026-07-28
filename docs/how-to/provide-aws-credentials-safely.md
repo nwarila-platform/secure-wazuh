@@ -1,104 +1,148 @@
 # How to provide AWS credentials safely
 
-**Type**: How-to (Diátaxis). For the objects these credentials read, see [`reference/s3-artifacts.md`](../reference/s3-artifacts.md); for how the deploy consumes them, see [`how-to/deploy-the-stack.md`](deploy-the-stack.md).
+**Type**: How-to (Diátaxis). For the objects involved, see
+[`reference/s3-artifacts.md`](../reference/s3-artifacts.md); for the deployment flow, see
+[`how-to/deploy-the-stack.md`](deploy-the-stack.md).
 
-The S3 downloads (offline bundle, dashboard listener pair, Linux agent RPM) run **on the target
-host**, so the target's boto3 needs AWS credentials at module-call time — with one exception: the
-Windows agent MSI download is **controller-delegated** (a Windows target has no boto3), so it runs
-on the controller/runner instead. Either way, supply credentials as `no_log` module arguments
-sourced from the runner environment — never as target (or controller) shell environment variables,
-and never echo them to stdout.
+The controller assumes `secure-wazuh-artifact-reader` for each host immediately beside each
+package-fetch attempt and keeps the resulting session in that host's controller-side variable
+context. It signs one 900-second GetObject URL for that host and attempt, and the target performs a
+plain HTTPS GET with no AWS SDK, deploy
+credential, standalone artifact-reader credential, or instance-profile S3 grant. The URL is
+itself a bearer token and necessarily contains the temporary access-key identifier and session
+token as signing query parameters.
 
-The unchanged artifact-read policy grants `functions/wazuh/*` and
-`applications/wazuh-agent/*`. Those prefixes contain only the offline bundle, dashboard listener
-pair and sidecars, and the two agent packages. Internal PKI never transits S3, and the dashboard
-listener pair is the only certificate material those credentials can read.
+The dashboard listener pair contains a private key and is deliberately not presigned. The
+controller re-mints immediately before downloading those small files and pushes them through
+Ansible. Internal PKI never transits S3.
 
-## Why the target shell must never hold the credentials
+## Why the target must never hold deploy or artifact-reader authority
 
-Wazuh captures `sudo` command lines as alerts. Every Ansible task that runs under `become` is a `sudo` invocation, and the process environment of that invocation is part of what the audit trail records. If AWS credentials are exported into the target shell environment, they land in `sudo`/audit-derived Wazuh alerts and are then indexed and retained.
+Wazuh captures `sudo` command lines and process environments as alerts. A credential exported
+into a target shell can therefore be indexed and retained. Module arguments are not a safe
+substitute: `no_log` censors callback output but does not stop Ansible serializing those arguments
+into a transient module payload.
 
-This is not hypothetical: an access key leaked exactly this way and had to be rotated. The fix was to stop exporting credentials into the target environment and instead pass them directly to the S3 module as arguments, where they are marked `no_log`.
+The deploy keeps both the ambient identity and scoped artifact-reader sessions on the controller.
+Targets receive only short-lived bearer URLs, and both signing and fetching are marked `no_log`.
+Each target still has its SSM-only instance-profile credential available through instance
+metadata; the boundary is that no deploy or artifact-reader authority reaches the target.
 
 ## The pattern
 
-Three pieces work together:
+1. **Step 0 validates both the role input and the live target profile but mints nothing.** A
+   controller-side, fail-closed guard requires `secure-wazuh-poc-profile` to contain exactly
+   `secure-wazuh-poc-role`, requires exactly one attachment with the AWS-managed
+   `AmazonSSMManagedInstanceCore` policy ARN, and rejects every inline policy, including the legacy
+   `secure-wazuh-artifact-read` name. Platform preparation, disk resolution, and host preparation
+   consume no artifact credential or URL lifetime.
 
-1. **The run-input propagation play in `playbooks/deploy-aws-poc.yml`** reads short-lived
-   credentials from the **controller/runner** process environment once and publishes them as
-   Ansible facts to every target:
-
-   ```yaml
-   AWS_ACCESS_KEY_ID:     "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
-   AWS_SECRET_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
-   AWS_SESSION_TOKEN:     "{{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') }}"
-   AWS_DEFAULT_REGION:    "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) }}"
-   ```
-
-   These four values are single-sited before any role runs. They deliberately do **not** live in
-   inventory: the plugin disables lookups inside `compose:`.
-
-   **Contract:** an unset source variable resolves to an empty string `''` — never `omit`, never undefined. Each consumer applies its own `| default(omit, true)` at the point of use; centralizing that conversion here would hand every consumer a truthy `omit` placeholder string instead of `''`.
-
-2. **The role's S3 block passes those variables as module arguments**, under a block that is marked `no_log: true`:
+2. **Each package attempt assumes the reader role beside its use.**
+   `amazon.aws.sts_assume_role` runs on delegated localhost under the ambient deploy identity:
 
    ```yaml
-   access_key:    "{{ AWS_ACCESS_KEY_ID | default(omit, true) }}"
-   secret_key:    "{{ AWS_SECRET_ACCESS_KEY | default(omit, true) }}"
-   session_token: "{{ AWS_SESSION_TOKEN | default(omit, true) }}"
+   - name: 'S3 SESSION | Mint A Fresh Scoped Artifact-Read Credential'
+     delegate_to: 'localhost'
+     no_log: true
+     amazon.aws.sts_assume_role:
+       role_arn: "{{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}"
+       role_session_name: >-
+         secure-wazuh-{{ artifact_reader_session_scope }}-{{ lookup('env', 'GITHUB_RUN_ID') }}
+       duration_seconds: 3600
    ```
 
-   The credentials reach boto3 as in-process arguments. They are not written to the target's environment, not passed on a command line, and are censored from task output.
+   Censored, non-cacheable facts hold the returned values in the current inventory host's
+   controller-side variable context. The assume-role register is overwritten immediately after
+   the copy; the three facts are overwritten in the attempt's `always` path.
 
-3. **The credentials never touch the target shell.** There is no `environment:` export of AWS
-   keys onto the target. The only deploy-level `environment:` export is the non-secret `TMPDIR`,
-   scoped to the `wazuh_server` role entry so its loader stages on `/mnt/data`; role tasks also
-   set non-secret JVM paths. `ENV` is an Ansible fact, never an OS process environment variable.
+3. **One local signing task creates a 900-second URL for the current attempt.** The custom module
+   calls botocore's local SigV4 implementation with the controller fact values and performs no S3
+   lookup. The secret key remains argument-spec `no_log`; the access-key identifier and session
+   token deliberately do not, because Ansible would otherwise replace their occurrences inside
+   the returned URL and corrupt the signature. The entire signing task remains `no_log`, and an
+   immediate censored assertion rejects an empty URL or any redaction marker before the fetch.
 
-## Procedure: populate the runner environment
+4. **The immediately following target task fetches over HTTPS and verifies while downloading.**
 
-Use short-lived credentials. In CI, prefer OIDC role assumption; locally, a role-backed profile is fine.
+   ```yaml
+   - name: 'S3 | Fetch The Offline Bundle With A Fresh Signature Per Attempt'
+     no_log: true
+     vars:
+       artifact_fetch_session_scope: 'server-bundle'
+       artifact_fetch_platform: 'posix'
+       artifact_fetch_dest: "{{ bundle_path }}"
+       artifact_fetch_checksum: "{{ trusted_bundle_sha256 | lower | trim }}"
+     ansible.builtin.include_tasks: >-
+       {{ playbook_dir }}/tasks/fetch-presigned-s3-object.yml
+   ```
 
-### In CI
+   The helper runs up to three sequential mint-sign-fetch includes with two 10-second delays.
+   A successful include prevents the later includes from expanding, so no later session or
+   signature is created. The 60-second setting is a socket inactivity timeout, not a wall-clock
+   transfer cap,
+   so there is no finite transfer-time bound or derived expiry margin. Each attempt instead owns
+   a fresh session and URL, and S3 evaluates that URL when its request begins. Linux bundle/RPM
+   and Windows MSI digests all use `lower | trim`; both download modules explicitly use
+   `force: false` and report the fetch unchanged. POSIX files land at mode `0600`; the Windows
+   MSI receives an explicit protected ACL granting full control only to SYSTEM and built-in
+   Administrators.
 
-Assume the deploy role via OIDC and let the standard AWS environment variables populate for the
-job. The workflow also exports `ANSIBLE_S3_BUCKET` from its existing org-global
-`AWS_ACCOUNT_ID`-derived bucket name. Nothing further is needed.
+5. **The dashboard private key never becomes a bearer URL, and there is no fallback.** After the
+   bundle fetch completes, the controller mints a separate fresh session to retrieve the
+   certificate, private key, and two sidecars into its guarded temp tree, then scrubs that session
+   and pushes the files to root-only target staging. The live-profile guard has already rejected
+   the legacy S3 policy. A URL cannot authorize more than
+   `secure-wazuh-artifact-read`; if that role lacks GetObject on a key, the HTTPS request fails
+   authorization rather than switching identities.
 
-### Locally, without echoing secrets to stdout
+The scoped session values are not exported to a target environment, passed on a target command
+line, or stored in the Ansible fact cache. `no_log` still does not prevent controller module
+arguments from reaching transient disk. The GitHub workflows therefore set controller-local and
+delegated-localhost transfer temp to
+`${{ runner.temp }}/secure-wazuh-ansible/local`, outside the workspace, and remove the parent tree
+with an `always()` step after every playbook invocation.
 
-Any tooling that captures process stdout — including agent tool layers — will capture credentials if you pipe them through stdout. Do **not** run the credential export in a context whose output is captured.
+The URL serializes into the target fetch module payload and, on both platform modules, can appear
+in the registered result or failure text. Task-level `no_log` is therefore load-bearing. The URL
+fact and fetch/signing registers are overwritten in `always` immediately after each attempt.
+Target task temp is transient and the 900-second expiry bounds any remnant's value. Targets retain
+their STIG-compatible `/opt/ansible/tmp` path. The only deploy-level target `environment:` export
+is the non-secret `TMPDIR`, scoped to `wazuh_server` staging on `/mnt/data`; `ENV` is an Ansible
+fact, not a shell environment variable.
 
-The playbook takes **no `--extra-vars`**, so there is no vars-file channel to smuggle credentials
-through: populate the runner process environment, export the required non-secret bucket name,
-then run the single command unchanged.
+## Procedure: populate the controller environment
+
+The controller needs a deploy identity that can assume the artifact-reader role. In CI, use OIDC
+role assumption; locally, use a role-backed profile. Do not print or pipe credential exports
+through captured output.
+
+The playbook takes no `--extra-vars`. Activate the deploy identity, export the two non-secret
+artifact inputs, and run the command unchanged:
 
 ```bash
+ansible_temp_root="$(mktemp -d "${TMPDIR:-/tmp}/secure-wazuh-ansible.XXXXXX")"
+export ANSIBLE_LOCAL_TEMP="${ansible_temp_root}/local"
+mkdir -p "${ANSIBLE_LOCAL_TEMP}"
+trap 'rm -rf -- "${ansible_temp_root}"' EXIT
 export ANSIBLE_S3_BUCKET='your-org-artifact-bucket-name'
+export ARTIFACT_READER_ROLE_ARN='arn:aws:iam::<account-id>:role/secure-wazuh-artifact-reader'
 ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 ```
 
-An interactive operator terminal that does not capture command output may `source` an export command directly; this is only unsafe when a tool layer records stdout into a transcript.
+GitHub workflows derive both non-secret values from their existing organization input. Each
+`ansible-playbook` invocation performs fresh use-boundary assumptions; the two end-to-end phases
+share no session or URL.
 
-## Verification
+## Failure behavior
 
-Confirm no credential material reached the target:
-
-```bash
-# The S3 tasks should show "censored due to no_log" rather than any key material.
-ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml -v 2>&1 \
-  | grep -i 'no_log' | head
-
-# After a run, spot-check that no recent Wazuh alert contains AWS key patterns.
-# Sudo-derived alerts should show only the ENV var and the interpreter path.
-```
-
-If an S3 download fails, the `no_log` block hides the underlying error. The role deliberately
-re-fails afterward with a **secret-free** message listing the expected object names—but not the
-account-shaped bucket—so a failed download stays diagnosable without exposing credentials.
+Signing, controller retrieval, and target fetches are censored because they handle a credential,
+private key, or bearer URL. Each path rescues a hidden failure with a constant, secret-free
+artifact label. It never prints caller-supplied object keys, the account-shaped bucket, scoped
+session, or URL, and does not retry indefinitely or switch to instance metadata or another
+credential chain.
 
 ## Related
 
-- [`reference/s3-artifacts.md`](../reference/s3-artifacts.md) — the objects and IAM scope these credentials need.
-- [`how-to/deploy-the-stack.md`](deploy-the-stack.md) — where credentials fit in the deploy flow.
-- [`explanation/toolchain-rhel8.md`](../explanation/toolchain-rhel8.md) — why boto3 runs from a dedicated venv on the target.
+- [`reference/s3-artifacts.md`](../reference/s3-artifacts.md) — object keys, hashes, and IAM scope.
+- [`how-to/deploy-the-stack.md`](deploy-the-stack.md) — where the artifact flow sits in deployment.
+- [`explanation/toolchain-rhel8.md`](../explanation/toolchain-rhel8.md) — why boto3 remains controller-side.

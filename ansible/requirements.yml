@@ -16,11 +16,11 @@ collections:
   # (the step-0 storage initializer). Pinned <8 for Python 3.6 target compatibility.
   - name: 'community.general'
     version: '<8.0.0'
-  # amazon.aws runs on the TARGET for the S3 artifact tasks (python3-boto3 / python3-botocore
-  # installed via dnf in each role's side_deps) AND on the CONTROLLER: ansible/inventory/aws/
-  # aws_ec2.yml (the AWS dynamic inventory) uses the amazon.aws.aws_ec2 inventory plugin, which
-  # parses/queries EC2 controller-side. Install it wherever ansible-inventory/ansible-playbook
-  # actually run (e.g. the local wazuh-ctl venv) — CI's existing
+  # amazon.aws runs only on the CONTROLLER: sts_assume_role mints each scoped artifact session,
+  # inventory/aws/aws_ec2.yml uses the aws_ec2 inventory plugin, and linux_disk_manager delegates
+  # its EBS Function-tag resolution there. Targets fetch package artifacts with get_url over
+  # HTTPS and need neither this collection nor boto3. Install it wherever
+  # ansible-inventory/ansible-playbook actually run — CI's existing
   # `ansible-galaxy collection install -r ansible/requirements.yml` step already covers both.
   #
   # Pinned <11.0.0 for a DIFFERENT reason than the community.general/ansible.posix ceilings above:
@@ -30,9 +30,9 @@ collections:
   # toolchain-rhel8.md — "do not bump these pins"). 10.3.2 (the newest <11 release; Galaxy always
   # resolves the newest version satisfying a range, so the 6.0.0 floor below is headroom, not the
   # version that actually installs) declares requires_ansible >=2.16.0 (confirmed) and carries
-  # every module/plugin option this repo uses: s3_object's access_key/secret_key/session_token
-  # args (amazon.aws.common.modules doc fragment) and the aws_ec2 plugin's regions/filters/
-  # hostnames/compose/groups/strict options.
+  # every module/plugin option this repo uses: sts_assume_role's duration_seconds and returned
+  # sts_creds, ec2_vol_info's filters, and the aws_ec2 plugin's
+  # regions/filters/hostnames/compose/groups/strict options.
   #
   # `ec2_tags` (the non-deprecated tag hostvar in >=11.2.0) is therefore NOT available under this
   # pin — ansible/inventory/aws/aws_ec2.yml's groups block deliberately uses the plain `tags`

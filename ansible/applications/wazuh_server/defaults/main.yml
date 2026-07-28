@@ -208,6 +208,7 @@ wazuh_server_defaults:
     - 'gzip'
     - 'lsof'
     - 'openssl'
+    - 'python3-libselinux'
     - 'tar'
   #endregion --- [ Side-deps ] ------------------------------------------------------------------ #
 

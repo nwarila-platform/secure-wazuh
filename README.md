@@ -66,8 +66,11 @@ Terraform frameworks; the generic Ansible loader and shared roles live in the pi
 - The Wazuh **offline bundle**, **dashboard listener pair + digest sidecars**, and standalone
   **agent RPM/MSI** uploaded to S3 (keys in
   [docs/reference/s3-artifacts.md](docs/reference/s3-artifacts.md)).
-- AWS credentials supplied to the runner **only** as module args — never exported into the
-  target shell (Wazuh logs sudo argv). See
+- An ambient AWS deploy identity on the controller that can assume
+  `secure-wazuh-artifact-reader`. The scoped session stays on the controller: it signs
+  short-lived package URLs and retrieves the dashboard listener pair for controller push.
+  Targets receive no deploy or artifact-reader authority; their instance profile remains
+  SSM-scoped and has no S3 permission. See
   [docs/how-to/provide-aws-credentials-safely.md](docs/how-to/provide-aws-credentials-safely.md).
 
 ## Getting Started
@@ -96,7 +99,7 @@ secure-wazuh/
 ├── ansible/
 │   ├── applications/
 │   │   ├── wazuh_server/       # collapsed all-in-one role (indexer+manager+filebeat+dashboard)
-│   │   └── wazuh_agent/        # endpoint agent role (composed from ansible-framework)
+│   │   └── wazuh_agent/        # product fetch-task overlays on the composed framework role
 │   ├── playbooks/              # deploy-aws-poc.yml — the one playbook, end to end
 │   └── inventory/              # aws/aws_ec2.yml (dynamic) · proxmox.yml (parked target)
 ├── terraform/

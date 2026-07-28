@@ -169,12 +169,9 @@ compose:
   # GitHub runner. ansible/inventory/proxmox.yml keeps its separate permanent-inventory path.
   ansible_ssh_private_key_file: "'~/.ssh/secure-wazuh-poc-key.pem'"
 
-  # RHEL/Rocky 8 STIG images ship only platform-python — see ansible/ansible.cfg's interpreter
-  # note. Set unconditionally: it is inert on the Windows endpoints (nothing there runs a Python
-  # module — the agent role's Windows entry is all win_*/raw), and every task that needs a
-  # different interpreter overrides it at block/task level (the roles' /opt/ansible/venv s3_object
-  # blocks, and `{{ ansible_playbook_python }}` on the controller-delegated calls), which outranks
-  # an inventory host var.
+  # RHEL/Rocky 8 STIG images ship platform-python with the distribution-supported bindings used
+  # by target modules. Set it unconditionally; it is inert on Windows endpoints, while every
+  # controller-delegated AWS call selects ansible_playbook_python at task scope.
   ansible_python_interpreter: "'/usr/libexec/platform-python'"
 
   # PER-PLATFORM, off the same discriminator the groups: block below uses. The Linux branches are

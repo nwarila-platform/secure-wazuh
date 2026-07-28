@@ -76,7 +76,7 @@ body:
     id: python_version
     attributes:
       label: Python version
-      placeholder: "e.g. 3.6.8 (target platform-python) / 3.12 (bootstrap venv)"
+      placeholder: "e.g. 3.6.8 (target platform-python) / 3.12 (controller)"
     validations:
       required: true
 

@@ -57,8 +57,8 @@ This keeps indexer data, manager state, and dashboard state on the durable disk 
 ## Trust and hardening posture
 
 - **Artifacts are verified before use.** The offline bundle and agent packages are checked against
-  configured SHA-256 pins after download. The dashboard certificate pair is checked against its
-  S3 sidecars before installation.
+  configured SHA-256 pins by their HTTPS download tasks. The dashboard certificate pair is checked
+  against its S3 sidecars before installation.
 - **Internal PKI rotates every run.** The internal CA and separate indexer-node, securityadmin, and manager-API certificates are minted on the target with RSA-3072/SHA-256. The CA private key is shredded after issuance. Internal PKI never transits S3; the dashboard listener pair and sidecars are the only certificate material S3 holds.
 - **Secrets rotate every run.** The playbook resolves one password per invocation (the `admin` superuser / dashboard login), normally minting it when no explicit environment override is supplied. Every OpenSearch internal service user is generated fresh and exists only as a bcrypt hash; manager API users are derived from that invocation's admin password, and the guarded authentication ladder converges prior `rbac.db` state.
 - **Minimal external surface.** The AWS AIO interface permits agent comms/enrollment (1514-1515) and dashboard HTTPS (443) from the deploy subnet. The manager API (55000) and indexer HTTP API (9200) stay closed at the interface; their AIO consumers use loopback.

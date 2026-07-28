@@ -80,11 +80,10 @@ jobs:
   # ---------------------------------------------------------------------------
   # Ansible Lint  (authoritative: lints the COMPOSED tree)
   # ---------------------------------------------------------------------------
-  # linux_disk_manager and wazuh_agent are composed in from the pinned
-  # ansible-framework (.github/.framework-pin), not vendored — so playbooks that
-  # reference them do not resolve on a bare clone. This job composes the tree the
-  # same way deploy.yml does (framework base + this repo's ansible/ overlay) and
-  # invokes the same explicit-file Make target used against a local composition.
+  # linux_disk_manager and the base wazuh_agent role are composed from the pinned
+  # ansible-framework (.github/.framework-pin); the product overlays two wazuh_agent task files.
+  # This job composes the tree the same way deploy.yml does (framework base + this repo's
+  # ansible/ overlay) and invokes the same explicit-file Make target used locally.
   # ---------------------------------------------------------------------------
   ansible-lint:
     name: Ansible Lint (composed tree)

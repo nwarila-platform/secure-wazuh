@@ -20,9 +20,9 @@ The permanent Proxmox target is **parked**: its job in [`deploy.yml`](../../.git
   runs, reproduce the workflow's pinned checkout and overlay steps in an ignored `_dev-build/`
   tree, then run every Ansible command from inside it. This repository does not ship a compose
   helper. See [`explanation/composition-model.md`](../explanation/composition-model.md).
-- **`boto3`/`botocore` on the controller.** The dynamic inventory plugin and the
-  controller-delegated Windows MSI fetch and `linux_disk_manager` EBS Function-tag resolver run
-  `amazon.aws` modules under the controller's own interpreter.
+- **`boto3`/`botocore` on the controller.** Dynamic inventory, artifact-reader assumption, local
+  signing, dashboard-pair retrieval, and the delegated EBS Function-tag resolver use the
+  controller's interpreter. Targets need no AWS SDK.
 - **The SSM Session Manager plugin on the controller.** None of the interface-owned security
   groups permits inbound SSH, so every SSH/SFTP/SCP call is tunnelled through
   `aws ssm start-session`; that ProxyCommand shells out to a separate binary the AWS CLI does not
@@ -35,10 +35,12 @@ The permanent Proxmox target is **parked**: its job in [`deploy.yml`](../../.git
   [`reference/s3-artifacts.md`](../reference/s3-artifacts.md). The bucket itself is never
   committed; workflows export `ANSIBLE_S3_BUCKET` from their existing account-id-derived value,
   and local operators export the bucket name explicitly (ADR-0004).
-- **AWS credentials in the runner environment** (`AWS_ACCESS_KEY_ID`,
-  `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` or `AWS_DEFAULT_REGION`, optional `AWS_SESSION_TOKEN`).
-  The run-input play reads them once and the roles pass them as `no_log` module arguments. Never
-  export them into the target shell — see
+- **An ambient AWS deploy identity and region on the controller.** Terraform, inventory, SSM, the
+  delegated EBS resolver, and `sts:AssumeRole` use the normal SDK configuration. The playbook never
+  copies that identity to a target. GitHub workflows also export `ARTIFACT_READER_ROLE_ARN`; local
+  operators export the same non-secret ARN. The playbook keeps each artifact-reader session on
+  the controller, signs a 900-second URL per host attempt, and pushes the dashboard listener pair —
+  see
   [`how-to/provide-aws-credentials-safely.md`](provide-aws-credentials-safely.md).
 - **No operator-supplied Wazuh secret.** Stage 1 mints the OpenSearch/dashboard `admin` password
   for each invocation. Other Wazuh credentials rotate with it, and the guarded manager-API ladder
@@ -51,7 +53,12 @@ Everything below runs from inside the composed tree.
 
 ```bash
 # Required non-secret artifact-bucket input for local operation.
+ansible_temp_root="$(mktemp -d "${TMPDIR:-/tmp}/secure-wazuh-ansible.XXXXXX")"
+export ANSIBLE_LOCAL_TEMP="${ansible_temp_root}/local"
+mkdir -p "${ANSIBLE_LOCAL_TEMP}"
+trap 'rm -rf -- "${ansible_temp_root}"' EXIT
 export ANSIBLE_S3_BUCKET='your-org-artifact-bucket-name'
+export ARTIFACT_READER_ROLE_ARN='arn:aws:iam::<account-id>:role/secure-wazuh-artifact-reader'
 
 # Static gates.
 PYTHONUTF8=1 yamllint .
@@ -65,12 +72,13 @@ ansible-inventory -i inventory/aws/aws_ec2.yml --graph
 ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 ```
 
-That one playbook runs, in order: propagate the `dev` tier and AWS credential bridge; bootstrap
-every target through `os_bootstrap`; provision and mount `/mnt/data`; mint the run's ephemeral
-admin password and deploy `wazuh_server`; deploy both agent platforms together through the normal
-`wazuh_agent` entry; run the inline Linux and Windows FIM trigger stages; append their markers to
-the cumulative ledger on `/mnt/data`; and prove every ledger entry reached `wazuh-alerts-*` as
-an endpoint-agent event (`agent.id != 000`).
+That one playbook runs, in order: propagate the `dev` tier; prepare Linux with platform-python
+only and validate the Windows session; provision and mount `/mnt/data`; mint the run's ephemeral
+admin password; then deploy the server and both agent platforms. Each package read mints a fresh
+controller session, signs once beside use, and fans the same URL out to its target batch. The
+dashboard pair instead moves through controller staging. The play then runs the Linux and Windows
+FIM triggers, appends their markers to the cumulative ledger on `/mnt/data`, and proves every
+ledger entry reached `wazuh-alerts-*` as an endpoint-agent event (`agent.id != 000`).
 
 This AWS target requires exactly one AIO, one Linux agent, and one Windows agent. Step 0 rejects an
 empty, partial, or duplicate run-scoped inventory before any target work begins.
@@ -117,6 +125,10 @@ the intended workflow run explicitly instead of letting one deployment satisfy a
 ### Two-phase usage (the cumulative 4/4 proof)
 
 Run the same command a second time after `terraform apply -var refresh_serial=1` replaces the AIO's OS disk. The agents are untouched by the swap and reconnect on their own; the stack reinstalls onto its re-attached data disk; the FIM section fires two more events and then proves **all four** cumulative ledger entries — the two pre-swap survivors and the two new ones — because the ledger lives on the data disk the swap never touches. This is what [`e2e-full.yml`](../../.github/workflows/e2e-full.yml) automates for eligible same-repository merge requests and manual dispatches.
+
+The second command starts `ansible-playbook` anew and performs the same three fresh
+artifact-reader role assumptions and signatures at their read boundaries. No fact, session, or
+URL is cached across the OS swap.
 
 ## Verification
 

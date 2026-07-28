@@ -43,12 +43,6 @@
 
     #region ------ [ 00 INIT / GUARDS (LEAN) ] ----------------------------------------------- #
 
-    - name: 'BEGIN | Assert Bootstrap Venv Is Present'
-      ansible.builtin.stat:
-        path: '/opt/ansible/venv/bin/python'
-      register: '__venv_python__'
-      failed_when: not (__venv_python__.stat.exists | default(false))
-
     # admin_password non-empty/length/complexity is now validated at loader INIT — see
     # tasks/validate.yml — before this file even starts, so it is not re-asserted here.
 
@@ -93,7 +87,6 @@
 
     #region ------ [ 02 HOST PREPARATION ] -------------------------------------------------- #
 
-    # side_deps are host utilities; boto3 comes from the bootstrap venv used by the S3 tasks.
     # None of side_deps come from EPEL. Querying EPEL forces a slow metadata refresh on a
     # freshly-reverted VM; skipping it drops install time and avoids SSH-multiplex timeouts.
     - name: 'PROCESS | Install Side Dependencies'
@@ -233,83 +226,130 @@
 
     #region ------ [ 03 S3 STAGING (one deduped block) ] ------------------------------------ #
 
-    # AWS creds and region are passed as module-args (access_key/secret_key/region) to
-    # amazon.aws.s3_object so they never enter the target's shell environment; this prevents
-    # sudo/audit/Wazuh-alert logs from capturing them. boto3 transfer checksums cover object
-    # movement, the bundle is still verified against the pinned config.s3.bundle_sha256 below,
-    # and the dashboard certificate pair is verified against its downloaded SHA-256 sidecars.
-    #
-    # The block-level `ansible_python_interpreter` override forces these tasks onto the
-    # bootstrap venv (Python 3.12) because the current amazon.aws collection's boto3 floor is
-    # above what RHEL 8 platform-python (3.6) can install. Every other task in the role uses
-    # platform-python — see ansible.cfg's interpreter_python note.
-    - name: 'S3 | Fetch Bundle + Dashboard Certificate Pair From S3'
+    # Each server host owns its package session, signature, and HTTPS GET. The dashboard listener
+    # pair is different because it contains a private key; the controller downloads those four
+    # tiny objects with its scoped session and pushes them through Ansible instead of issuing
+    # bearer URLs. The entire secret-bearing path is censored, with a fixed-key rescue below.
+    - name: 'S3 | Prepare The Bundle And Dashboard Listener Pair'
       no_log: true
-      vars:
-        ansible_python_interpreter: '/opt/ansible/venv/bin/python'
-      module_defaults:
-        amazon.aws.s3_object:
-          bucket: "{{ config.s3.bucket }}"
-          region: "{{ AWS_DEFAULT_REGION | default(config.s3.region | default(omit), true) }}"
-          access_key: "{{ AWS_ACCESS_KEY_ID | default(omit, true) }}"
-          secret_key: "{{ AWS_SECRET_ACCESS_KEY | default(omit, true) }}"
-          session_token: "{{ AWS_SESSION_TOKEN | default(omit, true) }}"
-          mode: 'get'
-          overwrite: 'different'
-          # The deploy identity is intentionally least-privilege: s3:GetObject on the pinned
-          # object keys only (plus prefix-scoped ListBucket). s3_object's default bucket
-          # existence precheck issues a HeadBucket call, which requires UNCONDITIONAL
-          # s3:ListBucket on the bucket and 403s under our prefix-scoped grant. Skip that
-          # precheck — a GetObject-only identity is exactly the case this flag is for — so we
-          # never have to widen IAM to allow listing the whole shared artifact bucket.
-          ignore_nonexistent_bucket: true
       block:
 
-        - name: 'S3 | Download Bundle'
-          changed_when: false
-          amazon.aws.s3_object:
-            object: "{{ config.s3.bundle_key }}"
-            dest: "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
+        # A progressing transfer has no finite wall-clock bound under get_url's socket inactivity
+        # timeout. Retry the complete mint-sign-fetch unit so an attempt never inherits an older
+        # attempt's URL or role session.
+        - name: 'S3 | Fetch The Offline Bundle With A Fresh Signature Per Attempt'
+          vars:
+            artifact_fetch_session_scope: 'server-bundle'
+            artifact_presign_bucket: "{{ config.s3.bucket }}"
+            artifact_presign_key: "{{ config.s3.bundle_key }}"
+            artifact_presign_fact: '__wazuh_bundle_url__'
+            artifact_fetch_platform: 'posix'
+            artifact_fetch_dest: "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
+            artifact_fetch_checksum: "{{ config.s3.bundle_sha256 | lower | trim }}"
+          ansible.builtin.include_tasks: >-
+            {{ playbook_dir }}/tasks/fetch-presigned-s3-object.yml
 
-        - name: 'S3 | Download Dashboard Certificate Pair + SHA-256 Sidecars'
+        - name: 'S3 | Create Controller Staging For The Dashboard Listener Pair'
+          delegate_to: 'localhost'
+          become: false
+          run_once: true
+          changed_when: false
+          register: '__dashboard_ctrl_tmpdir__'
+          environment:
+            TMPDIR: "{{ lookup('ansible.builtin.env', 'ANSIBLE_LOCAL_TEMP') }}"
+          ansible.builtin.tempfile:
+            state: 'directory'
+            prefix: 'secure-wazuh-dashboard-listener-'
+
+        # The bundle transfer may legally continue beyond both the URL lifetime and the prior
+        # chained session. Mint a separate session immediately before the dashboard read group.
+        - name: 'S3 | Mint A Fresh Dashboard Reader Session Beside Its Use'
+          vars:
+            artifact_reader_session_scope: 'server-dashboard'
+          ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/mint-artifact-reader-session.yml"
+
+        - name: 'S3 | Download The Dashboard Listener Pair To The Controller'
+          delegate_to: 'localhost'
+          become: false
+          run_once: true
           changed_when: false
           loop: "{{ __dashboard_cert_objects__ }}"
-          amazon.aws.s3_object:
-            object: "{{ config.s3.certs_prefix }}/{{ item }}"
-            dest: "{{ __pki_temp_dir__.path }}/{{ item }}"
+          environment:
+            TMPDIR: "{{ lookup('ansible.builtin.env', 'ANSIBLE_LOCAL_TEMP') }}"
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+          secure_wazuh_s3:
+            mode: 'get'
+            bucket: "{{ config.s3.bucket }}"
+            object_key: "{{ config.s3.certs_prefix }}/{{ item }}"
+            region: "{{ AWS_DEFAULT_REGION }}"
+            access_key: "{{ __artifact_read_access_key__ }}"
+            secret_key: "{{ __artifact_read_secret_key__ }}"
+            session_token: "{{ __artifact_read_session_token__ }}"
+            dest: "{{ __dashboard_ctrl_tmpdir__.path }}/{{ item }}"
 
-      # The block above is no_log (module args carry AWS creds), so a failed download is
-      # censored and undiagnosable. Re-fail here with the secret-free facts an operator
-      # needs: the fixed object keys that were expected.
-      # ADR-0004: the workflow/local environment supplies an account-id-shaped bucket; see the
-      # inline pointer below.
+        - name: 'S3 | Scrub The Dashboard Reader Session After Its Use'
+          ansible.builtin.include_tasks: >-
+            {{ playbook_dir }}/tasks/scrub-artifact-reader-session.yml
+
+        - name: 'S3 | Push The Dashboard Listener Pair From The Controller'
+          no_log: true
+          loop: "{{ __dashboard_cert_objects__ }}"
+          ansible.builtin.copy:
+            src: "{{ __dashboard_ctrl_tmpdir__.path }}/{{ item }}"
+            dest: "{{ __pki_temp_dir__.path }}/{{ item }}"
+            owner: 'root'
+            group: 'root'
+            mode: '0600'
+
       rescue:
 
-        - name: 'S3 | Fail With Expected Object Names (Download Error Is Hidden By no_log)'
-          no_log: false   # inherited block-level no_log would censor this message too; everything
-                           # interpolated below is a fixed, non-account-scoped object key/prefix —
-                           # see the ADR-0004 note above for why the bucket itself is excluded
+        - name: 'S3 | Fail With The Expected Server Object Names'
+          no_log: false
           ansible.builtin.fail:
             msg: >-
-              S3 download failed on {{ inventory_hostname }} (original error hidden by
-              no_log). Verify the configured bucket (wazuh_server.s3.bucket — supplied through
-              ANSIBLE_S3_BUCKET per ADR-0004; deliberately not printed because it is
-              account-id-shaped)
-              contains these objects:
-              {{ config.s3.bundle_key }},
-              {{ __dashboard_cert_objects__
-                 | map('regex_replace', '^', config.s3.certs_prefix ~ '/')
-                 | join(', ') }}.
-              Also confirm AWS credentials/region in the runner env.
+              {{
+                'Server artifact signing failed the bearer-URL redaction guard'
+                if (__artifact_presign_redaction_detected__ | default(false) | bool)
+                else 'Server artifact preparation or HTTPS fetch failed'
+              }} on {{ inventory_hostname }} (original error hidden by no_log).
+              Verify the artifact-reader role assumption, configured region, offline bundle,
+              and dashboard listener material. Sensitive configuration and bearer values are
+              not printed.
 
-    # Trust-on-first-use: the SHA256 in defaults is the operator's PR-reviewed known-good
-    # hash. Mismatch = S3 bundle was tampered with → abort install.
-    - name: 'S3 | Verify Downloaded Bundle Matches Trusted SHA256'
-      ansible.builtin.stat:
-        path: "{{ __temp_dir__.path }}/{{ config.s3.bundle_key | basename }}"
-        checksum_algorithm: 'sha256'
-      register: '__bundle_verify__'
-      failed_when: (__bundle_verify__.stat.checksum | lower) != (config.s3.bundle_sha256 | lower)
+      always:
+
+        - name: 'S3 | Scrub Any Remaining Server Artifact Credential'
+          ansible.builtin.include_tasks: >-
+            {{ playbook_dir }}/tasks/scrub-artifact-reader-session.yml
+
+        - name: 'S3 | Scrub Any Remaining Server Bearer State'
+          no_log: true
+          ansible.builtin.set_fact:
+            __artifact_presign_result__: ''
+            __artifact_presign_redaction_detected__: ''
+            __artifact_fetch_result__: ''
+            __artifact_fetch_succeeded__: ''
+            __artifact_fetch_terminal_failure__: ''
+
+        - name: 'S3 | Scrub Any Remaining Server Bearer URL Fact'
+          no_log: true
+          ansible.builtin.set_fact:
+            __wazuh_bundle_url__: ''
+            cacheable: false
+
+        - name: 'S3 | Remove Controller Staging For The Dashboard Listener Pair'
+          delegate_to: 'localhost'
+          become: false
+          run_once: true
+          no_log: true
+          changed_when: false
+          when: >-
+            (__dashboard_ctrl_tmpdir__ is defined)
+            and (__dashboard_ctrl_tmpdir__.path is defined)
+          ansible.builtin.file:
+            path: "{{ __dashboard_ctrl_tmpdir__.path }}"
+            state: 'absent'
 
     # Sidecars in this prefix use both digest-only and standard `sha256sum` records. Consume the
     # first whitespace-delimited token, validate that it is a SHA-256 digest, and compare it with

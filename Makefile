@@ -19,7 +19,8 @@
 ANSIBLE_LINT_ROOT ?= _dev-build
 
 # The deny-all guard scans the whole repository. Only rooted, known local artifacts are excluded:
-# local workspaces/state, caches, and the two framework-owned roles composed in at runtime.
+# local workspaces/state, caches, and framework-owned role content composed in at runtime. The
+# explicitly allowlisted wazuh_agent task overlays remain visible to git and the lint target.
 GUARD_EXCLUDE := ^(_handoff/|_dev-build/|\.ansible/|\.cache/|\.env$$|terraform/\.terraform/|terraform/[^/]+\.tfstate(\.backup)?$$|terraform/\.terraform\.tfstate\.lock\.info$$|ansible/applications/(wazuh_agent|linux_disk_manager)/|([^/]+/)*(__pycache__|\.cache)/|([^/]+/)*[^/]+\.(py[co]|retry)$$)
 
 help:

@@ -23,15 +23,18 @@ committed, and the tracked `<account-id>` value remains an invalid tripwire. The
 mechanism is amended:
 
 - Both GitHub workflows already receive the org-global `AWS_ACCOUNT_ID` input and derive the
-  artifact bucket alongside their other run targets. They now export that existing value as
-  `ANSIBLE_S3_BUCKET`.
-- Local operators make one equivalent non-secret export naming the artifact bucket before
-  running the unchanged zero-`--extra-vars` playbook command.
-- The `wazuh_server` and normal mixed-platform `wazuh_agent` role override sites both read
+  artifact bucket and artifact-reader role ARN alongside their other run targets. They export
+  those values as `ANSIBLE_S3_BUCKET` and `ARTIFACT_READER_ROLE_ARN`.
+- Local operators make equivalent non-secret exports naming the artifact bucket and reader role
+  before running the unchanged zero-`--extra-vars` playbook command.
+- The `wazuh_server` and normal platform-specific `wazuh_agent` role override sites both read
   `lookup('ansible.builtin.env', 'ANSIBLE_S3_BUCKET')`.
-- The controller-side `amazon.aws.aws_caller_info` tasks and the runtime STS identity dependency
-  are removed. There is no fallback: role validation rejects an empty bucket and the committed
-  tripwire before artifact download.
+- The controller-side `amazon.aws.aws_caller_info` tasks and the runtime STS caller-identity
+  dependency are removed. Separate artifact-reader role assumptions stay on the controller and
+  sign a short-lived URL for each host attempt at the server, Linux-agent, and Windows-agent
+  package boundaries. The dashboard listener pair is retrieved and pushed from the controller.
+  There is no fallback: role validation rejects an empty bucket and the committed tripwire before
+  artifact download.
 
 This reuses a value the workflows already computed instead of asking STS to rediscover it during
 Ansible execution. It also makes cross-account artifact access explicit: the supplied bucket may
@@ -76,8 +79,8 @@ into a *tracked* file — which ADR-0003's deny-all does not protect (it guards 
 edits to already-tracked ones). There is also a pre-existing three-way contradiction in the record
 about the bucket shape: int is `<account-id>-ansible` (not env-suffixed), test/prod are
 `CHANGE_ME-ansible-test`/`-prod` (env-suffixed), and `deploy.yml`'s comment asserts the test env uses
-the SAME non-env-suffixed bucket — while the instance-profile IAM matches only `*-ansible` and would
-*deny* an `<x>-ansible-test` bucket.
+the SAME non-env-suffixed bucket — while the then-current instance-profile IAM matched only
+`*-ansible` and would have *denied* an `<x>-ansible-test` bucket.
 
 ## Decision Drivers
 

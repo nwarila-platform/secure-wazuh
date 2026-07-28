@@ -19,20 +19,43 @@ with the materialized source before granting access to a deployment.
 
 | Role | Trust source | Required policies | Purpose |
 |---|---|---|---|
-| `github_nwarila-platform_secure-wazuh` | `roles/github_nwarila-platform_secure-wazuh.trust.json` | `github_nwarila-platform_secure-wazuh` · `secure-wazuh-artifact-read` · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | CI state, artifact read, deploy, proof, and destroy |
-| `github_nwarila-platform_secure-wazuh-admin` | `roles/github_nwarila-platform_secure-wazuh-admin.trust.json` | `secure-wazuh-folder-admin` (inline) · `secure-wazuh-artifact-read` · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | Operator folder and artifact administration, and local deploy with boxed credentials |
-| `secure-wazuh-poc-role` | `roles/secure-wazuh-poc-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) · `secure-wazuh-artifact-read` | EC2 instance profile for SSM and read-only artifact access |
+| `github_nwarila-platform_secure-wazuh` | `roles/github_nwarila-platform_secure-wazuh.trust.json` | `github_nwarila-platform_secure-wazuh` · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | CI state, deploy, proof, destroy, and scoped artifact-reader assumption |
+| `github_nwarila-platform_secure-wazuh-admin` | `roles/github_nwarila-platform_secure-wazuh-admin.trust.json` | `secure-wazuh-folder-admin` (inline) · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | Operator folder and artifact administration, local deploy, and scoped artifact-reader assumption |
+| `secure-wazuh-artifact-reader` | `roles/secure-wazuh-artifact-reader.trust.json` | `secure-wazuh-artifact-read` | Deploy-time artifact reads through fresh 3,600-second sessions |
+| `secure-wazuh-poc-role` | `roles/secure-wazuh-poc-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) | EC2 instance profile for SSM only; no standing S3 access |
 
 The three deploy policies on the `-admin` role support the local `deploy → test → destroy` path and
 should be detached when that path is retired. EC2 uses instance profile
 `secure-wazuh-poc-profile`, which contains `secure-wazuh-poc-role`; `iam:GetInstanceProfile` is
 pinned to the profile and `iam:PassRole` is pinned to the role. Role-name substrings are not an
-authorization boundary.
+authorization boundary. The instance role carries only `AmazonSSMManagedInstanceCore`; it has no
+artifact policy and cannot read the S3 bucket. Step 0 reads this live profile before any target
+work, requires exactly that role, and fails closed unless it has exactly one attachment whose ARN
+is the AWS-managed `AmazonSSMManagedInstanceCore` policy, with no inline policies. A retained
+`secure-wazuh-artifact-read` attachment therefore cannot pass deployment.
 
-`secure-wazuh-artifact-read` is the customer-managed policy the CI, `-admin`, and instance-profile
-roles require. The repository records the source documents and required attachment model; it
-cannot establish the live attachment state. The `-admin` inline policy separately defines artifact
-write, deletion, tagging, and multipart administration.
+`secure-wazuh-artifact-read` is attached only to `secure-wazuh-artifact-reader`. Its trust names
+exactly the CI and `-admin` deploy roles, and their shared discovery/IAM policy permits
+`sts:AssumeRole` on exactly this role ARN. Each S3 read group requests a fresh 3,600-second session
+and holds it on the controller. Every package attempt receives a fresh session and 900-second
+signature; the dashboard listener pair receives a separate fresh session, is retrieved on the
+controller, and is pushed. Registers, bearer facts, and session facts are overwritten after their
+consumer completes. No instance receives deploy or standalone artifact-reader authority. The
+`-admin` inline policy separately retains artifact write, read, deletion, tagging, and multipart
+administration for operator work.
+
+Set `secure-wazuh-artifact-reader`'s `MaxSessionDuration` role property to `3600`. That is the
+shortest value IAM accepts and the maximum available to this role-chained path. Signing is placed
+immediately before each fetch attempt rather than at play start. A fetch gets up to three complete
+mint-sign-fetch attempts with two 10-second delays. The 60-second module setting is a socket
+inactivity timeout, not a wall-clock transfer cap, so it does not create a finite transfer budget
+or expiry margin. Each retry instead owns a newly minted session and signature. Expiry is checked
+when the HTTP request begins, so an active transfer can finish after that point.
+
+The dashboard files follow the package fetch under a separately re-minted server session. They
+total only about 1.7 KiB and are retrieved directly by the controller, so they do not need a
+bearer URL. `MaxSessionDuration` is a role property and is materialized alongside, not inside,
+`roles/secure-wazuh-artifact-reader.trust.json`.
 
 The `-admin` role is the human/break-glass path. Its trust allows `sts:AssumeRole` from the account
 root principal only when `aws:PrincipalArn` matches the organization's reserved
@@ -110,8 +133,8 @@ source sizes and remaining headroom are:
 | `github_nwarila-platform_secure-wazuh.json` | 1,634 | 4,510 |
 | `secure-wazuh-artifact-read.json` | 800 | 5,344 |
 | `secure-wazuh-folder-admin.json` | 4,392 | 1,752 |
-| `secure-wazuh_deploy-ec2.json` | 5,471 | 673 |
-| `secure-wazuh_deploy-discovery-iam.json` | 1,090 | 5,054 |
+| `secure-wazuh_deploy-ec2.json` | 5,621 | 523 |
+| `secure-wazuh_deploy-discovery-iam.json` | 1,425 | 4,719 |
 | `secure-wazuh_deploy-sg-ssm-kms.json` | 3,678 | 2,466 |
 
 The EC2 policy defines these cost and security controls:
@@ -123,6 +146,8 @@ The EC2 policy defines these cost and security controls:
   IOPS/throughput inputs;
 - create authorization uses the request identity tag and lifecycle authorization uses the
   resource identity tag `nwarila:management:repository-id = 1307854438`;
+- the image authorization leg accepts only AMIs with the `amazon` or `aws-marketplace`
+  `ec2:Owner` alias, and the key-pair leg is pinned to `secure-wazuh-poc-key`;
 - ENI creation requires the repository identity tag on the new network-interface authorization
   leg. The `RunInstances` network-interface, subnet, and security-group legs and the
   `CreateNetworkInterface` subnet and security-group legs are restricted to the deploy VPC; both
@@ -132,8 +157,9 @@ The EC2 policy defines these cost and security controls:
 - console output is tag-scoped.
 
 The discovery and IAM policy keeps Terraform's EC2 read-only discovery action allowlist in
-`us-east-1`, limits instance-profile discovery to `secure-wazuh-poc-profile`, and permits passing
-only `secure-wazuh-poc-role` to EC2.
+`us-east-1`, limits instance-profile discovery to `secure-wazuh-poc-profile`, permits only the two
+role-policy list calls needed to reject the legacy policy on `secure-wazuh-poc-role`, permits
+passing only that role to EC2, and permits assuming only `secure-wazuh-artifact-reader`.
 
 Every CI and local apply must export `TF_VAR_resource_metadata` before Terraform creates any
 resource. The pinned framework supplies the identity tags through provider `default_tags` and
@@ -167,6 +193,24 @@ The second deploy policy defines the remaining surfaces:
   clone must resolve its own `alias/aws/ebs` target and replace the committed key ID before applying
   this policy.
 
+### Accepted deploy residual risk
+
+The deploy role's required EC2 permissions leave two paths that IAM cannot constrain:
+
+- `RunInstances` accepts arbitrary user data on an otherwise permitted image. Amazon EC2 exposes no
+  IAM condition key for user data, so compromised deploy credentials can use it to execute
+  attacker-controlled code on an `amazon` or `aws-marketplace` image.
+- The role must manage its repository-tagged security groups, but Amazon EC2 exposes no IAM
+  condition key for an ingress rule's CIDR. Compromised deploy credentials can therefore authorize
+  `0.0.0.0/0` directly. The framework's world-open ingress validation is a Terraform-time guard; it
+  does not constrain direct EC2 API calls.
+
+Reducing these risks requires account-side enforcement or a different deployment architecture. An
+SCP can deny whole EC2 operations or principals but cannot inspect user data or an ingress CIDR
+without corresponding EC2 condition keys. Examples that do reduce exposure are moving launch and
+security-group mutation behind a separately controlled path, or an event-driven reaper keyed on the
+repository identity tag that terminates nonconforming instances and revokes nonconforming rules.
+
 ## S3 policies
 
 - `github_nwarila-platform_secure-wazuh.json` grants state/lock access only under
@@ -175,7 +219,8 @@ The second deploy policy defines the remaining surfaces:
   `DenyDeleteStateFile` covers current objects and versions. The paired encryption Denies still
   require an explicit `AES256` request header; bucket-default encryption alone does not satisfy
   them.
-- `secure-wazuh-artifact-read.json` grants object/version reads and prefix listing under
+- `secure-wazuh-artifact-read.json` is attached only to `secure-wazuh-artifact-reader` and grants
+  object/version reads and prefix listing under
   `functions/wazuh/*` and `applications/wazuh-agent/*`, plus the bucket-location read in
   `<account-id>-ansible`. Those prefixes contain only the offline bundle, the dashboard listener
   pair and sidecars, and the two agent packages, so the unchanged prefix grant is minimal in

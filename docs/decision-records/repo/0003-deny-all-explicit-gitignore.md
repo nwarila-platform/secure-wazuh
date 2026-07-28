@@ -12,10 +12,10 @@
 | Review-by      | N/A (Accepted)                               |
 
 > **Amendment.** `wazuh_agent` has since joined `linux_disk_manager` as a framework-owned
-> role composed in at run time rather than vendored. Wherever this ADR's allowlist-check
-> description names only `linux_disk_manager/` as the guard's framework-owned exclusion
-> (the confirmation guard and the assumptions below), read `wazuh_agent/` as excluded for the
-> identical reason — the Makefile's `GUARD_EXCLUDE` pattern already covers both paths. See
+> base role composed in at run time. Two exact `wazuh_agent/tasks/present_*.yml` product overlays
+> are explicitly allowlisted; all other files under the role remain excluded by
+> `GUARD_EXCLUDE`. Wherever this ADR names only `linux_disk_manager/` as a framework-owned
+> exclusion, read the non-overlaid `wazuh_agent/` content as excluded for the same reason. See
 > [`explanation/composition-model.md`](../../explanation/composition-model.md) for the
 > current state.
 
@@ -217,8 +217,9 @@ revisited:
    worth its friction.
 3. The `make allowlist-check` guard remains part of `make ci` and runs on every pull
    request.
-4. The framework-owned `linux_disk_manager/` and `wazuh_agent/` roles continue to be composed in
-   at run time rather than tracked, so their exclusions from the guard remain correct.
+4. The framework-owned `linux_disk_manager/` and base `wazuh_agent/` roles continue to be composed
+   at run time, while exact product overlay files under `wazuh_agent/` remain explicitly
+   allowlisted.
 
 ## Supersedes
 

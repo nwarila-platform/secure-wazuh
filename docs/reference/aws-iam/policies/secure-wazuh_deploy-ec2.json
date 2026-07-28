@@ -65,14 +65,24 @@
       }
     },
     {
-      "Sid": "RunInstancesOtherSupportingResources",
+      "Sid": "RunInstancesImagesFromTrustedOwners",
       "Effect": "Allow",
       "Action": "ec2:RunInstances",
-      "Resource": [
-        "arn:aws:ec2:us-east-1:*:key-pair/*",
-        "arn:aws:ec2:us-east-1:*:image/*",
-        "arn:aws:ec2:us-east-1::image/*"
-      ]
+      "Resource": "arn:aws:ec2:us-east-1::image/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:Owner": [
+            "amazon",
+            "aws-marketplace"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "RunInstancesWithPinnedKeyPair",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:us-east-1:*:key-pair/secure-wazuh-poc-key"
     },
     {
       "Sid": "TagOnlyAtCreateTime",

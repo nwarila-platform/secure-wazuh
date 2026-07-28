@@ -1,0 +1,43 @@
+---
+# Mint a new artifact-only session on the controller for the current inventory host at the point
+# of use. The caller supplies a fixed artifact_reader_session_scope so CloudTrail can distinguish
+# read groups without placing any credential in a task name or process environment.
+
+- name: 'S3 SESSION | Mint A Fresh Scoped Artifact-Read Credential'
+  delegate_to: 'localhost'
+  become: false
+  no_log: true
+  register: '__artifact_reader_session__'
+  environment:
+    TMPDIR: "{{ lookup('ansible.builtin.env', 'ANSIBLE_LOCAL_TEMP') }}"
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  amazon.aws.sts_assume_role:
+    role_arn: "{{ lookup('ansible.builtin.env', 'ARTIFACT_READER_ROLE_ARN') }}"
+    role_session_name: "secure-wazuh-{{ artifact_reader_session_scope }}-{{ lookup('env', 'GITHUB_RUN_ID') }}"
+    duration_seconds: 3600
+
+- name: 'S3 SESSION | Hold The Fresh Scoped Credential On The Controller'
+  no_log: true
+  ansible.builtin.set_fact:
+    __artifact_read_access_key__: "{{ __artifact_reader_session__.sts_creds.access_key }}"
+    __artifact_read_secret_key__: "{{ __artifact_reader_session__.sts_creds.secret_key }}"
+    __artifact_read_session_token__: "{{ __artifact_reader_session__.sts_creds.session_token }}"
+    cacheable: false
+
+- name: 'S3 SESSION | Require A Complete Fresh Scoped Credential'
+  no_log: true
+  ansible.builtin.assert:
+    that:
+      - __artifact_read_access_key__ | trim | length > 0
+      - __artifact_read_secret_key__ | trim | length > 0
+      - __artifact_read_session_token__ | trim | length > 0
+    quiet: true
+    fail_msg: >-
+      The scoped artifact-reader role returned an incomplete credential for the requested
+      artifact read group.
+
+- name: 'S3 SESSION | Scrub The Assume-Role Module Result'
+  no_log: true
+  ansible.builtin.set_fact:
+    __artifact_reader_session__: ''

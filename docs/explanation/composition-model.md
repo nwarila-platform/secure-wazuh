@@ -8,10 +8,12 @@ secure-wazuh is the org's canonical exemplar of a **combined delivery repo**: it
 
 The repo carries only the product-specific delta:
 
-- **Ansible product role** — `wazuh_server` under `ansible/applications/`, plus the playbooks and inventory that wire it together.
+- **Ansible product delta** — `wazuh_server`, two `wazuh_agent` artifact-fetch task overlays, the
+  controller S3 helper, and the playbooks and inventory that wire them together.
 - **Terraform data, not code** — `terraform/proxmox.tfvars` and `terraform/aws.tfvars`. There are **no `.tf` files** in this repo. Variable declarations and resource logic live in the pinned frameworks.
 
-Everything else — the generic role loader, shared roles like `linux_disk_manager` and `wazuh_agent`, and every Terraform resource — belongs to a framework and is pulled in when a run happens.
+Everything else — the generic role loader, the base `linux_disk_manager` and `wazuh_agent` roles,
+and every Terraform resource — belongs to a framework and is pulled in when a run happens.
 
 ## The Ansible composition
 
@@ -19,7 +21,8 @@ The product roles resolve fully only when they sit **inside** the framework's di
 
 1. Read the framework pin at `.github/.framework-pin` — a single commit SHA; see that file for the exact value currently pinned.
 2. Lay down `ansible-framework` at that exact commit (this already includes `wazuh_agent` and `linux_disk_manager`).
-3. Overlay this repo's `ansible/applications/*` on top, so `wazuh_server` joins the framework's loader and shared roles.
+3. Overlay this repo's `ansible/` tree on top. `wazuh_server` joins the framework roles, and the
+   two product `wazuh_agent` task files replace only the package-fetch entries.
 4. Run Ansible from inside the resulting tree.
 
 Locally an operator can reproduce the workflow's checkout-and-overlay steps in the ignored
@@ -27,7 +30,10 @@ Locally an operator can reproduce the workflow's checkout-and-overlay steps in t
 inside its execution container; a local tree matches CI only when it uses the same pinned checkout
 and overlay steps.
 
-Because `linux_disk_manager` and `wazuh_agent` are framework-owned and composed in, they are present in the working tree at run time but are **not** deliverables of this repo. The allowlist guard in the `Makefile` excludes the `linux_disk_manager/` and `wazuh_agent/` paths for exactly this reason: it patrols the deliverable trees and would otherwise flag a framework-owned role as an un-allowlisted file.
+The base `linux_disk_manager` and `wazuh_agent` trees remain framework-owned. The two explicitly
+allowlisted `wazuh_agent/tasks/present_*.yml` files are product deliverables that replace their
+matching framework files during overlay. The `Makefile` still excludes other files under those
+framework-owned role paths so a local composition is not mistaken for product content.
 
 ## The Terraform composition
 

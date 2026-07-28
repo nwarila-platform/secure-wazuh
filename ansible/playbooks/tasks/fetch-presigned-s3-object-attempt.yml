@@ -1,0 +1,69 @@
+---
+# One retry attempt owns a fresh role session and signature. All secret-bearing registers and
+# per-host facts are overwritten in the always path before another attempt can begin.
+
+- name: 'S3 FETCH | Run One Fresh-Signature Attempt'
+  no_log: true
+  block:
+    - name: 'S3 FETCH | Delay Before A Later Attempt'
+      when: (__artifact_fetch_attempt__ | int) > 1
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: 'S3 FETCH | Mint The Attempt Credential'
+      vars:
+        artifact_reader_session_scope: "{{ artifact_fetch_session_scope }}"
+      ansible.builtin.include_tasks: 'mint-artifact-reader-session.yml'
+
+    - name: 'S3 FETCH | Sign The Attempt URL'
+      ansible.builtin.include_tasks: 'presign-s3-object.yml'
+
+    - name: 'S3 FETCH | Download The POSIX Artifact'
+      when: artifact_fetch_platform == 'posix'
+      changed_when: false
+      register: '__artifact_fetch_result__'
+      ansible.builtin.get_url:
+        url: "{{ hostvars[inventory_hostname][artifact_presign_fact] }}"
+        dest: "{{ artifact_fetch_dest }}"
+        checksum: "sha256:{{ artifact_fetch_checksum }}"
+        force: false
+        mode: '0600'
+        timeout: 60
+
+    - name: 'S3 FETCH | Download The Windows Artifact'
+      when: artifact_fetch_platform == 'windows'
+      changed_when: false
+      register: '__artifact_fetch_result__'
+      ansible.windows.win_get_url:
+        url: "{{ hostvars[inventory_hostname][artifact_presign_fact] }}"
+        dest: "{{ artifact_fetch_dest }}"
+        checksum: "{{ artifact_fetch_checksum }}"
+        checksum_algorithm: 'sha256'
+        force: false
+        url_timeout: 60
+
+    - name: 'S3 FETCH | Record The Successful Attempt'
+      ansible.builtin.set_fact:
+        __artifact_fetch_succeeded__: true
+
+  rescue:
+    - name: 'S3 FETCH | Record The Failed Attempt'
+      ansible.builtin.set_fact:
+        __artifact_fetch_succeeded__: false
+        __artifact_fetch_terminal_failure__: >-
+          {{ __artifact_presign_redaction_detected__ | default(false) | bool }}
+
+  always:
+    - name: 'S3 FETCH | Scrub The Bearer URL Fact'
+      ansible.builtin.set_fact:
+        "{{ artifact_presign_fact }}": ''
+        cacheable: false
+
+    - name: 'S3 FETCH | Scrub The Signing, Fetch, And Automatic Failure Results'
+      ansible.builtin.set_fact:
+        __artifact_presign_result__: ''
+        __artifact_fetch_result__: ''
+        ansible_failed_result: ''
+
+    - name: 'S3 FETCH | Scrub The Attempt Credential'
+      ansible.builtin.include_tasks: 'scrub-artifact-reader-session.yml'

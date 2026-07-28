@@ -32,7 +32,8 @@ mounts, service state). User overrides go in the `wazuh_server:` extra-var dict.
 - The `/mnt/data` data disk mounted (step 0 — `linux_disk_manager`). The role binds the
   indexer/manager/dashboard state onto subdirectories of `/mnt/data/wazuh`; it does not
   partition or format raw disks.
-- The bootstrap venv (`deploy-aws-poc.yml`'s Linux Bootstrap section) — the S3 download borrows its boto3.
+- Controller access to `secure-wazuh-artifact-reader`; the package URL is signed locally and the
+  dashboard listener pair is pushed from controller staging. No AWS SDK is installed on the host.
 - The offline bundle plus `dashboard.pem` / `dashboard-key.pem` and their SHA-256 sidecars in S3
   at the keys pinned in the env overlay. See
   [`../../../docs/reference/s3-artifacts.md`](../../../docs/reference/s3-artifacts.md).

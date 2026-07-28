@@ -3,11 +3,13 @@
 **Type**: Reference (Diátaxis). To use these artifacts in a deploy, see [`how-to/deploy-the-stack.md`](../how-to/deploy-the-stack.md); for safe credential handling, see [`how-to/provide-aws-credentials-safely.md`](../how-to/provide-aws-credentials-safely.md).
 
 S3 is the source of truth for package artifacts and the dashboard's browser-listener certificate
-pair. The Linux roles download them **on the target host** through `amazon.aws.s3_object`; the
-Windows agent path is the exception — its MSI download is **controller-delegated** (see "Objects
-the agent role reads" below). Fresh internal CA, indexer-node, securityadmin, and manager-API
-identities are minted on the AIO target every run. Internal PKI never transits S3. The dashboard
-listener pair is the only certificate material S3 holds.
+pair. The controller mints a fresh artifact-reader session and 900-second GetObject URL for each
+package-fetch attempt. Linux and Windows targets perform plain HTTPS GETs with no deploy or
+standalone artifact-reader credential and no AWS SDK. Their SSM-only instance profile still
+provides SSM-scoped credentials through instance metadata. The dashboard listener pair is not
+presigned because it contains private key material; the controller retrieves and pushes those
+four small files under a separate fresh session. Fresh internal CA, indexer-node, securityadmin,
+and manager-API identities are minted on the AIO target every run. Internal PKI never transits S3.
 
 ## Bucket naming
 
@@ -45,10 +47,11 @@ fingerprint matches. That exception proves custody and transfer without claiming
 production-trusted chain. Replace any placeholder with a certificate issued by a CA the intended
 browsers already trust before treating the listener as production-trusted.
 
-The role reads the first whitespace-delimited token from each sidecar and compares it with an
-independently computed SHA-256 of the matching PEM. This accepts both bare-digest and standard
-`sha256sum` output. The sidecars detect transfer or object mismatch but are
-not an independent trust anchor because they share the same S3 custody boundary.
+The controller pushes all four files into root-only target staging. The role reads the first
+whitespace-delimited token from each sidecar and compares it with an independently computed
+SHA-256 of the matching PEM. This accepts both bare-digest and standard `sha256sum` output. The
+sidecars detect transfer or object mismatch but are not an independent trust anchor because they
+share the same S3 custody boundary.
 
 ## Certificate custody
 
@@ -74,22 +77,23 @@ standalone package per platform:
 | Standalone agent RPM (Linux) | `s3.agent_rpm_key` | `applications/wazuh-agent/wazuh-agent-4.14.5-1.x86_64.rpm` |
 | Standalone agent MSI (Windows) | `s3.agent_msi_key` | `applications/wazuh-agent/wazuh-agent-4.14.5-1.msi` |
 
-The RPM downloads **on the target host** like the server role's objects. The MSI download is
-**controller-delegated**: a Windows target has no boto3, so `tasks/present_windows.yml` runs
-`amazon.aws.s3_object` with `delegate_to: localhost` against the controller/runner venv's
-boto3 (the same AWS creds, passed as `no_log` module args), then `win_copy` pushes the
-SHA-256-verified MSI to the Windows target.
+The controller signs each package key immediately before every attempt. Linux uses
+`ansible.builtin.get_url`; Windows uses `ansible.windows.win_get_url`. Both modules normalize and
+receive the trusted SHA-256 identically, so corrupt bytes fail during download rather than
+reaching the package installer. Each failed attempt's bearer URL and temporary session are
+scrubbed before the next attempt is minted.
 
 ## SHA-256 pins
 
-Package artifacts are verified against a PR-reviewed known-good hash after download. A mismatch aborts the install (it means the object was tampered with or the wrong artifact was uploaded).
+Package artifacts are verified against a trusted hash during download. A mismatch aborts the
+transfer before installation.
 
 | Pin | Overlay key | Applies to |
 |---|---|---|
-| Bundle hash | `s3.bundle_sha256` | The downloaded `wazuh-offline.tar.gz` (server role). Current `dev`: `1a60b8c407a56ed45a1e431256f6c49cba083a329874be7b532ec48a56069bea`. |
+| Bundle hash | `s3.bundle_sha256` | The `get_url` transfer of `wazuh-offline.tar.gz` (server role). Current `dev`: `1a60b8c407a56ed45a1e431256f6c49cba083a329874be7b532ec48a56069bea`. |
 | Dashboard pair digests | `<PEM>.sha256` companion objects | The downloaded dashboard certificate and private key. These are verified before installation. |
 | Agent RPM hash | `s3.agent_rpm_sha256` | The downloaded agent RPM (Linux agent role). The agent role additionally asserts this is a real 64-character hex value before downloading. |
-| Agent MSI hash | `s3.agent_msi_sha256` | The downloaded agent MSI (Windows agent role). Same real-64-character-hex assertion, checked in the common `tasks/validate.yml` before the controller-delegated download. |
+| Agent MSI hash | `s3.agent_msi_sha256` | The downloaded agent MSI (Windows agent role). Same real-64-character-hex assertion, checked before the target HTTPS fetch. |
 
 When you re-upload an artifact, recompute the hash with `sha256sum` and update the matching overlay key in the same PR.
 
@@ -109,16 +113,22 @@ s3://<bucket>/applications/wazuh-agent/wazuh-agent-<version>-1.msi         # age
 
 The roles consume these object subsets:
 
-- **AIO server job**: read `s3://<bucket>/<bundle_key>` and exactly the four dashboard pair/sidecar
-  objects listed above.
-- **Agent job (Linux)**: read `s3://<bucket>/applications/wazuh-agent/wazuh-agent-<version>-1.x86_64.rpm`.
-- **Agent job (Windows)**: read `s3://<bucket>/applications/wazuh-agent/wazuh-agent-<version>-1.msi` — granted to the CONTROLLER identity, since the download is delegated there, not to the Windows target.
+- **AIO server job**: mint and sign immediately before each
+  `s3://<bucket>/<bundle_key>` fetch attempt, then retrieve exactly the four dashboard
+  pair/sidecar objects under a separate controller session for push.
+- **Agent job (Linux)**: sign
+  `s3://<bucket>/applications/wazuh-agent/wazuh-agent-<version>-1.x86_64.rpm` once per attempt.
+- **Agent job (Windows)**: sign
+  `s3://<bucket>/applications/wazuh-agent/wazuh-agent-<version>-1.msi` once per attempt.
 
-The unchanged `secure-wazuh-artifact-read` policy grants object/version reads and listing under
-`functions/wazuh/*` and `applications/wazuh-agent/*`, plus the bucket-location read. Those prefixes
-now contain only the offline bundle, the four dashboard pair/sidecar objects, and the two agent
-packages listed above. The prefix grant is therefore already minimal in practice and is not being
-narrowed.
+`secure-wazuh-artifact-read` is attached only to `secure-wazuh-artifact-reader`. It grants
+object/version reads and listing under `functions/wazuh/*` and `applications/wazuh-agent/*`, plus
+the bucket-location read. Those prefixes now contain only the offline bundle, the four dashboard
+pair/sidecar objects, and the two agent packages listed above. The prefix grant is therefore
+minimal in practice. The EC2 instance profile has no S3 policy; if the scoped session is missing or
+expires, signing or controller retrieval fails. Step 0 reads the live profile and fails the deploy
+if its expected role still carries the legacy artifact policy. A presigned URL has no independent
+permission: GetObject must be allowed to the signer or the target HTTPS request is denied.
 If a job also publishes artifacts, it additionally needs S3 write on the relevant object keys.
 
 ## Related

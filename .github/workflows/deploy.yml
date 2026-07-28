@@ -12,9 +12,9 @@
 #
 # The AWS job COMPOSES Ansible at run time: the generic loader + shared roles — including
 # `wazuh_agent` and `linux_disk_manager` — live in the pinned `ansible-framework` (SHA in
-# .github/.framework-pin); this repo's ONE product-specific role (`wazuh_server`) is overlaid
-# on top into a throwaway `_dev-build/` tree. Local operators can reproduce these steps in the
-# ignored directory; this repository does not ship a compose helper.
+# .github/.framework-pin); this repo overlays `wazuh_server`, the two product artifact-fetch task
+# entries for `wazuh_agent`, and its controller helper into a throwaway `_dev-build/` tree. Local
+# operators can reproduce these steps in the ignored directory.
 # The whole AWS target is two committed files: playbooks/deploy-aws-poc.yml and
 # inventory/aws/aws_ec2.yml. No --extra-vars, ever.
 #
@@ -123,9 +123,10 @@ jobs:
       # The repo commits the framework pins (.framework-pin + .aws-tf-framework-pin, both SHAs);
       # role ARN, bundle bucket, stack, and owner are derived.
       TF_DIR: .frameworks/aws-tf/terraform
-      # Controller paths must be writable by the hosted runner. Target remote_tmp remains the
-      # STIG-compatible /opt path from the composed ansible.cfg.
-      ANSIBLE_LOCAL_TEMP: ${{ github.workspace }}/.ansible/tmp
+      # Module payloads can contain censored task arguments. Keep controller/delegated-localhost
+      # transfer temp in the runner-owned temporary tree, outside the workspace. Target
+      # remote_tmp remains the STIG-compatible /opt path from the composed ansible.cfg.
+      ANSIBLE_LOCAL_TEMP: ${{ runner.temp }}/secure-wazuh-ansible/local
       ANSIBLE_CACHE_PLUGIN_CONNECTION: ${{ github.workspace }}/.ansible/facts
       ANSIBLE_SSH_CONTROL_PATH_DIR: ${{ github.workspace }}/.ansible/cp
 
@@ -155,6 +156,7 @@ jobs:
           commit_sha="$(git rev-parse HEAD)"
           {
             echo "DEPLOY_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/github_${owner}_${stack}"
+            echo "ARTIFACT_READER_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/secure-wazuh-artifact-reader"
             echo "ANSIBLE_S3_BUCKET=${AWS_ACCOUNT_ID}-ansible"
             echo "TF_STATE_BUCKET=${AWS_ACCOUNT_ID}-terraform"
             # Org state-key convention is <owner>/<repo>/<target>.tfstate — derived, so it always
@@ -204,13 +206,13 @@ jobs:
           # The role ARN is derived from the org-global AWS_ACCOUNT_ID and the
           # github_<owner>_<repo> naming convention. Its trust requires this workflow file's
           # job_workflow_ref claim and the immutable repository ID; its permissions retain the
-          # existing EC2/EBS/VPC + S3 + Terraform-state limits.
+          # EC2/EBS/VPC and Terraform-state limits and may assume the scoped artifact-reader role.
           role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-        # configure-aws-credentials exports AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY /
-        # _SESSION_TOKEN / AWS_REGION into the runner env for every later step, which is exactly
-        # what deploy-aws-poc.yml's per-play `lookup('ansible.builtin.env', ...)` credential
-        # bridge reads for the offline-bundle download.
+        # configure-aws-credentials exports the deploy identity for Terraform, inventory, SSM,
+        # controller-side EBS discovery, and the playbook's use-boundary artifact-reader role
+        # assumptions. The deploy credential is never copied to a target or used for an artifact
+        # read.
 
       # -----------------------------------------------------------------------
       # Terraform — apply the ephemeral environment
@@ -293,11 +295,9 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
         run: |
           python -m pip install --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}"
-          # boto3/botocore: required by amazon.aws modules that run CONTROLLER-side on THIS
-          # runner — the Windows-agent MSI fetch's delegate_to: localhost amazon.aws.s3_object
-          # and linux_disk_manager's AWS Function-tag resolver (same interpreter).
-          # Target-side boto3 (RHEL dnf side_deps + the /opt/ansible/venv that
-          # deploy-aws-poc.yml's Linux Bootstrap section builds) is a separate dependency.
+          # boto3/botocore: required only on the controller for sts_assume_role, local S3
+          # presigning/dashboard-pair retrieval, dynamic inventory, and linux_disk_manager's
+          # delegated AWS Function-tag resolver. Targets fetch package artifacts over HTTPS.
           python -m pip install --no-cache-dir boto3 botocore
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
@@ -370,14 +370,10 @@ jobs:
         working-directory: _dev-build
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
-          # AWS_* for the offline bundle come from the OIDC step above (runner env), read by the
-          # playbook's run-input credential bridge and passed as no_log module args — never
-          # exported into a target shell.
-          # Belt-and-suspenders: the "Configure AWS credentials (OIDC)" step above already
-          # exports AWS_REGION into the runner env for every later step, and that bridge prefers
-          # AWS_REGION over this — so this explicit alias is redundant today. Kept deliberately as
-          # a fallback in case a future change to the OIDC action or step ordering ever stops
-          # exporting AWS_REGION here.
+          # Each S3 read group assumes its own artifact-reader session on the controller. The
+          # deploy identity remains controller-only, and no deploy credential is placed on a host.
+          # The OIDC step exports AWS_REGION for every later step; keep this non-secret alias so
+          # region resolution remains explicit if that action's exports or ordering change.
           AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           # This single-phase workflow does not mint WAZUH_ADMIN_PASSWORD. With no supplied value,
           # Stage 1 uses its strong random fallback; if a caller supplies a non-empty environment
@@ -385,6 +381,18 @@ jobs:
         run: |
           set -euo pipefail
           ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
+
+      - name: Clean controller Ansible module payloads
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_local_temp="${RUNNER_TEMP:?}/secure-wazuh-ansible/local"
+          if [[ "${ANSIBLE_LOCAL_TEMP:?}" != "${expected_local_temp}" ]]; then
+            echo "Refusing to clean an unexpected ANSIBLE_LOCAL_TEMP path" >&2
+            exit 1
+          fi
+          rm -rf -- "${RUNNER_TEMP}/secure-wazuh-ansible"
 
       - name: Guard — /mnt/data is a real mountpoint
         working-directory: _dev-build
