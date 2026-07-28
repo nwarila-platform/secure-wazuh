@@ -35,9 +35,11 @@
     wazuh_server:
       secrets:
         # The ONE operator-provided secret. CI/GitOps passes it as -e wazuh_admin_password
-        # (see .github/workflows/deploy.yml); the lab default keeps a bare local run working.
-        # Replace the lab default before any run against retained data or real users.
-        admin_password: "{{ wazuh_admin_password | default('WazuhLab-Admin-2026!') }}"
+        # (see .github/workflows/deploy.yml), then the WAZUH_ADMIN_PASSWORD environment
+        # variable. There is deliberately no built-in fallback: a shipped default becomes the
+        # live credential of every deployment that does not override it, and this repository is
+        # public. Supplying neither fails the run rather than standing up a known password.
+        admin_password: "{{ wazuh_admin_password | default(lookup('ansible.builtin.env', 'WAZUH_ADMIN_PASSWORD'), true) }}"
   pre_tasks:
     - name: 'PREP | Ensure Loader Staging Root Exists On The Data Disk'
       become: true
