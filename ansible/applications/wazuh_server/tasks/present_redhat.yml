@@ -289,8 +289,9 @@
             state: 'directory'
             prefix: 'secure-wazuh-dashboard-listener-'
 
-        # The bundle transfer may legally continue beyond both the URL lifetime and the prior
-        # chained session. Mint a separate session immediately before the dashboard read group.
+        # `config` is an include-param owned by wazuh_server and is undefined after include_role
+        # enters s3_artifact_delivery. Freeze the public get contract here so its values are
+        # concrete before the role scope changes. One list gives all four objects one session.
         - name: 'S3 | Freeze The Dashboard Pair Inputs In The Server Role Context'
           no_log: true
           ansible.builtin.set_fact:
@@ -300,51 +301,37 @@
               session_name: >-
                 secure-wazuh-server-dashboard-{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}
               bucket: "{{ config.s3.bucket }}"
-              object_prefix: "{{ config.s3.certs_prefix }}"
               region: "{{ AWS_DEFAULT_REGION }}"
+              controller_objects:
+                - object_key: "{{ config.s3.certs_prefix }}/dashboard.pem"
+                  destination: "{{ __dashboard_ctrl_tmpdir__.path }}/dashboard.pem"
+                - object_key: "{{ config.s3.certs_prefix }}/dashboard.pem.sha256"
+                  destination: "{{ __dashboard_ctrl_tmpdir__.path }}/dashboard.pem.sha256"
+                - object_key: "{{ config.s3.certs_prefix }}/dashboard-key.pem"
+                  destination: "{{ __dashboard_ctrl_tmpdir__.path }}/dashboard-key.pem"
+                - object_key: "{{ config.s3.certs_prefix }}/dashboard-key.pem.sha256"
+                  destination: "{{ __dashboard_ctrl_tmpdir__.path }}/dashboard-key.pem.sha256"
             cacheable: false
 
-        - name: 'S3 | Mint A Fresh Dashboard Reader Session Beside Its Use'
+        - name: 'S3 | Download The Dashboard Listener Pair To The Controller'
           vars:
             s3_artifact_delivery_reader_role_arn: >-
               {{ __dashboard_artifact_inputs__.reader_role_arn }}
             s3_artifact_delivery_session_name: >-
               {{ __dashboard_artifact_inputs__.session_name }}
+            s3_artifact_delivery_bucket: "{{ __dashboard_artifact_inputs__.bucket }}"
             s3_artifact_delivery_region: "{{ __dashboard_artifact_inputs__.region }}"
+            s3_artifact_delivery_controller_objects: >-
+              {{ __dashboard_artifact_inputs__.controller_objects }}
           ansible.builtin.include_role:
             name: 's3_artifact_delivery'
-            tasks_from: 'mint_session'
-
-        - name: 'S3 | Download The Dashboard Listener Pair To The Controller'
-          delegate_to: 'localhost'
-          become: false
-          run_once: true
-          changed_when: false
-          loop: "{{ __dashboard_cert_objects__ }}"
-          environment:
-            TMPDIR: "{{ lookup('ansible.builtin.env', 'ANSIBLE_LOCAL_TEMP') }}"
-          vars:
-            ansible_python_interpreter: "{{ ansible_playbook_python }}"
-          s3_artifact:
-            mode: 'get'
-            bucket: "{{ __dashboard_artifact_inputs__.bucket }}"
-            object_key: "{{ __dashboard_artifact_inputs__.object_prefix }}/{{ item }}"
-            region: "{{ __dashboard_artifact_inputs__.region }}"
-            access_key: "{{ __s3_artifact_delivery_access_key__ }}"
-            secret_key: "{{ __s3_artifact_delivery_secret_key__ }}"
-            session_token: "{{ __s3_artifact_delivery_session_token__ }}"
-            dest: "{{ __dashboard_ctrl_tmpdir__.path }}/{{ item }}"
+            tasks_from: 'get'
 
         - name: 'S3 | Scrub The Frozen Dashboard Pair Inputs After Their Use'
           no_log: true
           ansible.builtin.set_fact:
             __dashboard_artifact_inputs__: {}
             cacheable: false
-
-        - name: 'S3 | Scrub The Dashboard Reader Session After Its Use'
-          ansible.builtin.include_role:
-            name: 's3_artifact_delivery'
-            tasks_from: 'scrub_session'
 
         - name: 'S3 | Push The Dashboard Listener Pair From The Controller'
           no_log: true
@@ -372,27 +359,11 @@
 
       always:
 
-        - name: 'S3 | Scrub Any Remaining Server Artifact Credential'
-          ansible.builtin.include_role:
-            name: 's3_artifact_delivery'
-            tasks_from: 'scrub_session'
-
-        - name: 'S3 | Scrub Any Remaining Server Bearer State'
+        - name: 'S3 | Scrub Any Remaining Frozen Server Artifact Inputs'
           no_log: true
           ansible.builtin.set_fact:
             __server_bundle_artifact_inputs__: {}
             __dashboard_artifact_inputs__: {}
-            __s3_artifact_delivery_presign_result__: ''
-            __s3_artifact_delivery_redaction_detected__: ''
-            __s3_artifact_delivery_fetch_result__: ''
-            __s3_artifact_delivery_succeeded__: ''
-            __s3_artifact_delivery_terminal_failure__: ''
-            ansible_failed_result: ''
-
-        - name: 'S3 | Scrub Any Remaining Server Bearer URL Fact'
-          no_log: true
-          ansible.builtin.set_fact:
-            __s3_artifact_delivery_url__: ''
             cacheable: false
 
         - name: 'S3 | Remove Controller Staging For The Dashboard Listener Pair'

@@ -22,6 +22,9 @@ ansible/
 │   │                                  Deliberately NO sibling group_vars/ — see its header.
 │   └── proxmox.yml                    permanent all-in-one inventory (target currently parked)
 ├── playbooks/
+│   ├── library/
+│   │   └── secure_wazuh_iam_profile_guard.py
+│   │                                  controller-side live-profile fail-closed guard
 │   └── deploy-aws-poc.yml             THE only playbook. Resolve run inputs → platform prep →
 │                                      data disk + AIO → Linux + Windows agents with adjacent
 │                                      controller signing + HTTPS fetches → FIM proof.
@@ -31,7 +34,7 @@ ansible/
 │   ├── wazuh_server/                  vendored: collapsed all-in-one central role
 │   ├── wazuh_agent/                   framework role with product fetch-task overlays
 │   ├── linux_disk_manager/            composed from ansible-framework (step-0 storage)
-│   └── s3_artifact_delivery/          composed shared mint/sign/fetch helper role
+│   └── s3_artifact_delivery/          composed shared target-fetch/controller-get helper role
 └── requirements.yml                   ansible.posix · community.general · amazon.aws · ansible.windows
 ```
 

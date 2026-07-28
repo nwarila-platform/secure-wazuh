@@ -27,12 +27,11 @@ The product roles resolve fully only when they sit **inside** the framework's di
    two product `wazuh_agent` task files replace only the package-fetch entries.
 4. Run Ansible from inside the resulting tree.
 
-The dashboard listener path currently invokes the shared role's internal `mint_session` and
-`scrub_session` task files and reads its internal `__s3_artifact_delivery_*__` credential facts.
-Those details are not a published role interface. This coupling exists because the public `fetch`
-entry point sends a bearer URL to the target, while dashboard private-key material must remain a
-controller download followed by a file push. A future public controller-side `get` entry point
-should own that sequence and remove the internal dependency.
+The dashboard listener path uses the shared role's public controller-side `get` entry point. One
+invocation downloads the certificate, private key, and both digest sidecars under one scoped
+session before `wazuh_server` pushes them from controller staging. Entering the role also places
+its controller-download module on Ansible's role search path, so the consumer does not add the
+framework role's `library/` directory to `ansible.cfg`.
 
 Locally an operator can reproduce the workflow's checkout-and-overlay steps in the ignored
 `_dev-build/` folder. This repository does not ship a compose helper. CI performs the composition

@@ -1,5 +1,5 @@
 # =========================================================================================== #
-# File: '{{ role_path }}/tasks/main.yml'                                      | Version 3.2.0 #
+# File: '{{ role_path }}/tasks/main.yml'                                      | Version 3.2.1 #
 # --- [ Description ] ----------------------------------------------------------------------- #
 #                                                                                             #
 #                        NO ROLE CUSTOMIZATIONS SHOULD HAPPEN IN THIS FILE                    #
@@ -70,6 +70,31 @@
             quiet: true
 
         #endregion --- [ Initialization: Validating Required Input(s) ] ------------------------------ #
+
+        # A role may legitimately omit defaults/main.yml. When that file exists, however,
+        # Ansible must have loaded the '<role_name>_defaults' dictionary expected by this
+        # shared loader. Detect the file on the controller and fail before gathering facts
+        # if a directory rename left the hand-written variable name behind.
+        - name: 'INIT | Validating Role Defaults Contract'
+          vars:
+            __defaults_file__: "{{ lookup('ansible.builtin.first_found', __defaults_resolve__) }}"
+            __defaults_variable__: "{{ role_name ~ '_defaults' }}"
+            __defaults_resolve__:
+              files:
+                - 'main.yml'
+              paths:
+                - "{{ role_path }}/defaults"
+              skip: true
+
+          ansible.builtin.assert:
+            that:
+              - (__defaults_file__ | length == 0) or (vars[__defaults_variable__] is defined)
+            fail_msg: >-
+              Role '{{ role_name }}' has defaults/main.yml but does not define
+              '{{ __defaults_variable__ }}'. The shared loader derives this variable name
+              from the role directory. Define '{{ __defaults_variable__ }}' or restore the
+              matching role directory name.
+            quiet: true
 
         #region ------ [ Initialization: Loading Required Operating System (OS) Facts ] ------------ #
 
@@ -145,7 +170,7 @@
 
         # Seed '<role_name>_running' with the role's default values from defaults/main.yml.
         # These are the lowest-precedence settings; overlays and overrides merge on top.
-        # Falls back to an empty dict if no defaults are defined for this role.
+        # Falls back to an empty dict only when this role ships no defaults/main.yml.
         # The defaults dictionary may contain secrets; set_fact prints the entire value at -v.
         - name: 'INIT | Initialize running configuration'
           no_log: true

@@ -87,10 +87,11 @@ metadata; the boundary is that no deploy or artifact-reader authority reaches th
    Administrators.
 
 5. **The dashboard private key never becomes a bearer URL, and there is no fallback.** After the
-   bundle fetch completes, the controller mints a separate fresh session to retrieve the
-   certificate, private key, and two sidecars into its guarded temp tree, then scrubs that session
-   and pushes the files to root-only target staging. The live-profile guard has already rejected
-   the legacy S3 policy. A URL cannot authorize more than
+   bundle fetch completes, one public `s3_artifact_delivery` `get` invocation mints a separate
+   fresh session and retrieves the certificate, private key, and two sidecars into the guarded
+   controller temp tree. The role scrubs its session and download state before `wazuh_server`
+   pushes the files to root-only target staging. The live-profile guard has already rejected the
+   legacy S3 policy. A URL cannot authorize more than
    `secure-wazuh-artifact-read`; if that role lacks GetObject on a key, the HTTPS request fails
    authorization rather than switching identities.
 
