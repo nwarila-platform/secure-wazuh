@@ -1,9 +1,20 @@
 # Proof of Concept — live e2e evidence
 
-> Regenerated automatically by the e2e-full workflow on each proven MR.
+> Evidence rendered by the e2e-full workflow; provenance identifies the triggering event.
 
 **Provenance:** [workflow run](https://github.com/nwarila-platform/secure-wazuh/actions/runs/30165136898) · run `30165136898` · event `workflow_dispatch` · commit `63ffe48`
 **Date:** 2026-07-25
+
+## Additional runtime proof
+
+[Run 30316886760](https://github.com/nwarila-platform/secure-wazuh/actions/runs/30316886760)
+completed the two-phase path with:
+
+- fresh on-target internal CA, indexer-node, securityadmin, and manager-API identities in each
+  phase, with the CA key destroyed after issuance;
+- the dashboard serving its configured S3-custodied listener certificate on 443;
+- the guarded rung-3 `rbac.db` recovery marker present and checked; and
+- FIM reaching realtime readiness in both phases.
 
 ## Phase 1 — initial deploy, fresh FIM proof
 

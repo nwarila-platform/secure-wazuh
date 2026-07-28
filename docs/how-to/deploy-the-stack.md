@@ -15,7 +15,11 @@ The permanent Proxmox target is **parked**: its job in [`deploy.yml`](../../.git
 ## Prerequisites
 
 - **A controller with the pinned toolchain.** Install the development dependencies from `requirements-dev.txt`: `ansible-core >=2.16,<2.17`, `ansible-lint 24.x`, `yamllint`. The runtime collections (`ansible.posix <2`, `community.general <8`, `amazon.aws`, `ansible.windows`) come from `ansible/requirements.yml`. The version ceiling is deliberate — see [`explanation/toolchain-rhel8.md`](../explanation/toolchain-rhel8.md).
-- **A composed run tree.** The product roles under `ansible/applications/` resolve fully only when overlaid onto the pinned `ansible-framework` loader. CI composes this automatically; for local runs, build the `_dev-build/` tree with the dev compose helper and run every Ansible command from inside it. See [`explanation/composition-model.md`](../explanation/composition-model.md).
+- **A composed run tree.** The product roles under `ansible/applications/` resolve fully only when
+  overlaid onto the pinned `ansible-framework` loader. CI composes this automatically. For local
+  runs, reproduce the workflow's pinned checkout and overlay steps in an ignored `_dev-build/`
+  tree, then run every Ansible command from inside it. This repository does not ship a compose
+  helper. See [`explanation/composition-model.md`](../explanation/composition-model.md).
 - **`boto3`/`botocore` on the controller.** The dynamic inventory plugin and the
   controller-delegated Windows MSI fetch and `linux_disk_manager` EBS Function-tag resolver run
   `amazon.aws` modules under the controller's own interpreter.
@@ -26,7 +30,8 @@ The permanent Proxmox target is **parked**: its job in [`deploy.yml`](../../.git
 - **Artifacts staged in S3.** Upload the `wazuh-offline.tar.gz` bundle and record its SHA-256 in
   `s3.bundle_sha256`; upload `dashboard.pem`, `dashboard-key.pem`, and each PEM's `.sha256`
   sidecar under `s3.certs_prefix`; upload the agent RPM/MSI and record their SHA pins. The
-  internal PKI is minted on the AIO target and needs no S3 objects. Object names and pins are catalogued in
+  internal PKI is minted on the AIO target and never transits S3; the dashboard listener pair is
+  the only certificate material S3 holds. Object names and pins are catalogued in
   [`reference/s3-artifacts.md`](../reference/s3-artifacts.md). The bucket itself is never
   committed; workflows export `ANSIBLE_S3_BUCKET` from their existing account-id-derived value,
   and local operators export the bucket name explicitly (ADR-0004).
@@ -35,9 +40,10 @@ The permanent Proxmox target is **parked**: its job in [`deploy.yml`](../../.git
   The run-input play reads them once and the roles pass them as `no_log` module arguments. Never
   export them into the target shell — see
   [`how-to/provide-aws-credentials-safely.md`](provide-aws-credentials-safely.md).
-- **No operator secret.** This target needs none: Stage 1 mints the OpenSearch/dashboard `admin`
-  password for each invocation. Other credentials rotate with it, and the guarded manager-API
-  ladder converges values already stored in persistent `rbac.db`.
+- **No operator-supplied Wazuh secret.** Stage 1 mints the OpenSearch/dashboard `admin` password
+  for each invocation. Other Wazuh credentials rotate with it, and the guarded manager-API ladder
+  converges values already stored in persistent `rbac.db`. AWS access and connection credentials
+  remain prerequisites as listed above.
 
 ## Procedure: deploy
 
@@ -110,7 +116,7 @@ the intended workflow run explicitly instead of letting one deployment satisfy a
 
 ### Two-phase usage (the cumulative 4/4 proof)
 
-Run the same command a second time after `terraform apply -var refresh_serial=1` replaces the AIO's OS disk. The agents are untouched by the swap and reconnect on their own; the stack reinstalls onto its re-attached data disk; the FIM section fires two more events and then proves **all four** cumulative ledger entries — the two pre-swap survivors and the two new ones — because the ledger lives on the data disk the swap never touches. This is what [`e2e-full.yml`](../../.github/workflows/e2e-full.yml) automates per merge request.
+Run the same command a second time after `terraform apply -var refresh_serial=1` replaces the AIO's OS disk. The agents are untouched by the swap and reconnect on their own; the stack reinstalls onto its re-attached data disk; the FIM section fires two more events and then proves **all four** cumulative ledger entries — the two pre-swap survivors and the two new ones — because the ledger lives on the data disk the swap never touches. This is what [`e2e-full.yml`](../../.github/workflows/e2e-full.yml) automates for eligible same-repository merge requests and manual dispatches.
 
 ## Verification
 
@@ -118,9 +124,9 @@ The playbook gates itself during the run (it fails the play rather than leaving 
 
 - **Indexer cluster is green or yellow.** The play asserts this before Filebeat starts. A single-node AIO box reports green once shards allocate.
 - **Dashboard answers on 443.** A TLS-validated login smoke test runs at the end of the role
-  against `127.0.0.1`, validating the distinct dashboard listener certificate. The current
-  self-signed dev placeholder is trusted only when its exact configured SHA-256 fingerprint
-  matches; an issued replacement must chain through the target's normal CA store.
+  against `127.0.0.1`, validating the distinct dashboard listener certificate. If the
+  self-signed dev placeholder is used, it is trusted only when its exact configured SHA-256
+  fingerprint matches; an issued replacement must chain through the target's normal CA store.
 - **The manager indexer connector initializes.** The role requires a fresh post-start success
   record proving that the manager's own connector authenticated, connected, and initialized its
   `wazuh-states-*` index path. Filebeat's separate output test cannot satisfy this gate.
@@ -128,6 +134,10 @@ The playbook gates itself during the run (it fails the play rather than leaving 
   `wazuh_agents_linux` and `wazuh_agents_windows` classify those endpoints for the platform FIM
   trigger stages. The local manager also runs agent `000` for on-box FIM.
 - **File integrity monitoring emits events.** The playbook's own proof section already asserts this end to end, per agent, and fails the run if any ledger entry is missing its alert. Its `PROVEN:` summary names the linux/windows split.
+
+[Run 30316886760](https://github.com/nwarila-platform/secure-wazuh/actions/runs/30316886760)
+completed both phases with a green cluster, the dashboard serving its configured listener
+certificate on 443, the marked `rbac.db` recovery rung, and realtime FIM readiness in each phase.
 
 ## Verification: idempotency
 

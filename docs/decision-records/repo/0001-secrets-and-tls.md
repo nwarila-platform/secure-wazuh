@@ -2,7 +2,7 @@
 
 | Field          | Value                                       |
 | -------------- | ------------------------------------------- |
-| Status         | Accepted (partially implemented — see banner) |
+| Status         | Accepted (runtime model implemented; listener issuance is external) |
 | Date           | 2026-07-21                                  |
 | Authors        | Smarter > Harder (@NWarila)                 |
 | Decision-maker | Smarter > Harder (sole portfolio maintainer) |
@@ -11,12 +11,16 @@
 | Reversibility  | Medium                                      |
 | Review-by      | N/A (Accepted)                              |
 
-> **Implementation status.** The `wazuh_server` role implements the runtime design and reads only
-> the dashboard listener pair and its digest sidecars from the certificate prefix. Every run mints
-> a fresh internal CA plus separate indexer-node, securityadmin, and manager-API identities on the
-> target, then shreds the CA key. Legacy internal-PKI objects remain in S3 as first-run fallback,
-> and the current read policy still grants the whole function prefix. Remove those legacy objects
-> and narrow the policy only after a successful deployment proves the on-target mint.
+> **Implementation status.** [Run 30316886760](https://github.com/nwarila-platform/secure-wazuh/actions/runs/30316886760)
+> proved the two-tier runtime: every invocation mints a fresh internal CA plus separate
+> indexer-node, securityadmin, and manager-API identities on the target, then destroys the CA key
+> after issuance. Internal PKI never transits S3. The certificate prefix contains only
+> `dashboard.pem`, `dashboard-key.pem`, and their `.sha256` sidecars, so the dashboard listener key
+> is the single private key in external custody. The same run proved that the dashboard serves that
+> certificate on 443, the guarded `rbac.db` recovery rung executes and emits its required marker,
+> and file-integrity monitoring reaches realtime in both phases. The run proves certificate
+> service, not production trust; the dev configuration still permits only the exact
+> fingerprint-pinned self-signed placeholder as an exception to normal CA trust.
 
 ## TL;DR
 
@@ -86,9 +90,9 @@ therefore need a recoverable secret at runtime. The question is not "can we elim
 all plaintext" (we cannot) but "how small can we make the irreducible plaintext, and
 how well can we contain what remains."
 
-Finally, the delivery model (ADR-0002) redeploys the stack on **every commit to main**
-— in place on the permanent Proxmox instance and from zero on the ephemeral AWS
-proof-of-concept. That makes "rotate on every run" cheap and desirable, but it collides
+Finally, the active AWS delivery path (ADR-0002) redeploys the stack from zero on each
+applicable commit to `main`; the intended permanent Proxmox path is currently parked.
+That makes "rotate on every run" cheap and desirable, but it collides
 with one piece of durable state: the Wazuh **manager RBAC database** on the persistent
 data volume, which is not wiped between runs. The role must therefore converge that
 credential state safely when a new invocation resolves a different desired password.
@@ -172,10 +176,12 @@ hops stop presenting client certificates:
   and `opensearch.ssl.certificateAuthorities` set to the internal CA. No client
   certificate.
 
-Net effect: the role reads no internal-PKI private key from S3. Legacy internal keys and
-certificates remain under the current prefix-wide read grant only as fallback until the first
-successful on-target mint; removing those objects and narrowing the grant are explicit follow-up
-work.
+Net effect: internal PKI never transits S3. The legacy internal keys and certificates have been
+deleted, and the certificate prefix contains only the dashboard listener pair and its digest
+sidecars. The tracked read policy still grants `functions/wazuh/*` and
+`applications/wazuh-agent/*`; those prefixes contain only the offline bundle, the four dashboard
+pair/sidecar objects, and the two agent packages, so the deployed grant is already minimal in
+practice and is not being narrowed.
 
 ### Part B — Plaintext off disk, best-effort
 
@@ -294,8 +300,9 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
    key from object storage.
 2. **Single external key.** The dashboard 443 certificate/key MUST be the only PKI
    object pulled from S3, and the S3/IAM policy SHOULD grant read on no other private
-   key. The role meets the read-path requirement now; legacy object removal and policy
-   narrowing remain pending until the minted PKI succeeds in deployment.
+   key. The legacy internal-PKI objects are deleted. The certificate prefix holds only the
+   dashboard listener pair and sidecars, and the artifact-read policy's two granted prefixes hold
+   only the seven objects consumed by the roles.
 3. **No client certs on internal hops.** Filebeat's indexer output, the manager indexer
    connector, and the dashboard's `opensearch.*` backend config MUST authenticate with a
    keystore-held password and MUST set their CA-verification setting to the internal CA.
@@ -322,13 +329,13 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
 
 ### Positive
 
-- The role's S3 read path contains only the dashboard listener key; legacy external custody
-  remains until the post-validation object and IAM cleanup.
-- Browser consumers reach a trusted dashboard; operators are never trained to accept
-  certificate warnings.
+- Internal PKI never transits S3; the dashboard listener key is the single externally-custodied
+  private key.
+- The listener has a distinct certificate path suitable for an issued browser-trusted chain. The
+  dev exception, when used, is limited to one explicitly pinned self-signed placeholder.
 - More secrets sit at rest as bcrypt hashes or in keystores; the irreducible plaintext
   is reduced to a single, contained file.
-- Internal PKI rotates for free on every commit-to-main deploy, bounding the lifetime of
+- Internal PKI rotates for free on every active AWS deploy, bounding the lifetime of
   any compromised internal key to one cycle.
 - Convergent redeploys handle durable manager RBAC state without a manual reset.
 
@@ -384,13 +391,13 @@ None (current).
 
 ## Implementing PRs
 
-**Landed**: the two-tier on-target PKI and dashboard-only certificate read path, password +
-CA-verify internal clients, bcrypt/keystore-first plaintext containment, and the rotate-every-run
-model with deterministic manager-API users.
-
-**Pending after successful deployment validation**: remove every legacy internal-PKI object and
-retained version from S3, then narrow the deployed read policy from the whole function prefix to
-the exact artifacts each role consumes.
+**Landed and runtime-proven**: the two-tier on-target PKI, dashboard-only external certificate
+custody, password + CA-verify internal clients, bcrypt/keystore-first plaintext containment, and
+the rotate-every-run model with deterministic manager-API users. Run 30316886760 proved fresh
+on-target issuance and CA-key destruction, dashboard certificate service on 443, marked
+`rbac.db` recovery, and realtime FIM in both phases. Legacy internal-PKI objects are deleted from
+S3. The unchanged artifact-read policy grants the two populated Wazuh prefixes, which contain only
+the seven role-consumed objects.
 
 ## Related ADRs
 

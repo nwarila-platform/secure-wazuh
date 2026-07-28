@@ -17,7 +17,7 @@ with the materialized source before granting access to a deployment.
 
 ## Role-to-policy map
 
-| Role | Trust source | Attached policies | Purpose |
+| Role | Trust source | Required policies | Purpose |
 |---|---|---|---|
 | `github_nwarila-platform_secure-wazuh` | `roles/github_nwarila-platform_secure-wazuh.trust.json` | `github_nwarila-platform_secure-wazuh` · `secure-wazuh-artifact-read` · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | CI state, artifact read, deploy, proof, and destroy |
 | `github_nwarila-platform_secure-wazuh-admin` | `roles/github_nwarila-platform_secure-wazuh-admin.trust.json` | `secure-wazuh-folder-admin` (inline) · `secure-wazuh-artifact-read` · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | Operator folder and artifact administration, and local deploy with boxed credentials |
@@ -29,9 +29,10 @@ should be detached when that path is retired. EC2 uses instance profile
 pinned to the profile and `iam:PassRole` is pinned to the role. Role-name substrings are not an
 authorization boundary.
 
-`secure-wazuh-artifact-read` is one customer-managed policy attached to the CI, `-admin`, and
-instance-profile roles. The `-admin` inline policy separately retains artifact write, deletion,
-tagging, and multipart administration.
+`secure-wazuh-artifact-read` is the customer-managed policy the CI, `-admin`, and instance-profile
+roles require. The repository records the source documents and required attachment model; it
+cannot establish the live attachment state. The `-admin` inline policy separately defines artifact
+write, deletion, tagging, and multipart administration.
 
 The `-admin` role is the human/break-glass path. Its trust allows `sts:AssumeRole` from the account
 root principal only when `aws:PrincipalArn` matches the organization's reserved
@@ -53,11 +54,12 @@ of these claims:
 
 ### Repository OIDC claims
 
-This repository emits the ID-embedded subject form
-`repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:<ref>`. Any `sub` condition must account for this
-form. The `job_workflow_ref` claim is present on ordinary, non-reusable workflow jobs and has the
-value `<owner>/<repo>/.github/workflows/<file>@<ref>`. The `repository_id` claim is `1307854438`
-and is emitted on every run.
+The live workflows emit GitHub's standard repository subject form,
+`repo:<owner>/<repo>:<context>`. The ID-embedded alternative in the source trust document has not
+been a live token subject; it remains an additional accepted pattern, not a description of emitted
+behavior. The `job_workflow_ref` claim is present on ordinary, non-reusable workflow jobs and has
+the value `<owner>/<repo>/.github/workflows/<file>@<ref>`. The `repository_id` claim is
+`1307854438` and is emitted on every run.
 
 The repository-scoped `sub` gate does not restrict branches. Apply the document as a complete
 replacement so no ref-based or temporary feature-branch subjects remain.
@@ -173,8 +175,11 @@ The second deploy policy defines the remaining surfaces:
   `DenyDeleteStateFile` covers current objects and versions. The paired encryption Denies still
   require an explicit `AES256` request header; bucket-default encryption alone does not satisfy
   them.
-- `secure-wazuh-artifact-read.json` grants only Wazuh object/version reads, prefix listing, and
-  bucket-location reads in `<account-id>-ansible`.
+- `secure-wazuh-artifact-read.json` grants object/version reads and prefix listing under
+  `functions/wazuh/*` and `applications/wazuh-agent/*`, plus the bucket-location read in
+  `<account-id>-ansible`. Those prefixes contain only the offline bundle, the dashboard listener
+  pair and sidecars, and the two agent packages, so the unchanged prefix grant is minimal in
+  practice.
 - `secure-wazuh-folder-admin.json` retains the admin role's repository-folder and Wazuh-artifact
   object administration, including multipart cleanup; scoped bucket listing and location reads;
   confinement, public/cross-account, charge-incurring, bucket-lifecycle, and encryption Denies.
@@ -196,13 +201,14 @@ The deployments use public subnet `subnet-0e1c8aae192deff26` in
 `security_groups` is reserved for pre-created group IDs, and all three interfaces currently set it
 to `[]`.
 
-The AIO interface admits TCP 1514/1515 from `10.1.10.0/24`; the Linux and Windows agent
-interfaces admit no inbound traffic. All three interface groups independently allow all outbound
-traffic. None permits inbound SSH, so administrative access is SSH over SSM.
+The AIO interface admits TCP 1514/1515 and TCP 443 from `10.1.10.0/24`; it does not admit inbound
+SSH, 9200, 9300, or 55000. The Linux and Windows agent interfaces admit no inbound traffic. All
+three interface groups independently allow all outbound traffic, so administrative access is SSH
+over SSM.
 
 ## Cost and count backstops
 
-IAM cannot cap instance count. The live us-east-1 Running On-Demand Standard quota is 32 vCPUs.
-A 4-vCPU quota is a target that must be requested and verified separately before it can be treated
-as an account-side backstop. The Budgets alarm and deploy → test → destroy discipline remain in
-place.
+IAM cannot cap instance count, and this repository does not establish the account's live EC2 quota
+or budget-alarm state. A 4-vCPU quota and a budget alarm are separate account-side backstops that
+must exist before they can be relied upon. The workflow itself supplies the repository-visible
+deploy → prove → destroy path.

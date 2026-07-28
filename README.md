@@ -1,8 +1,8 @@
 # secure-wazuh
 
 > STIG- and FIPS-hardened **Wazuh 4.14.5** SIEM, delivered end-to-end from one repository:
-> **Terraform provisions, Ansible configures, GitOps drives it** — a permanent Proxmox
-> instance and an ephemeral AWS proof-of-concept, both from a single commit to `main`.
+> **Terraform provisions, Ansible configures, GitOps drives it** — an active ephemeral AWS
+> proof-of-concept, with the permanent Proxmox target currently parked.
 
 [![CI](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/ci.yml/badge.svg)](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/ci.yml)
 [![Security](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/security.yaml/badge.svg)](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/security.yaml)
@@ -31,14 +31,14 @@
 ## Overview
 
 `secure-wazuh` is the reference implementation for a **combined Terraform + Ansible
-product-delivery** repository in the nwarila-platform org. It stands up a complete,
-hardened Wazuh all-in-one SIEM — OpenSearch indexer, manager, Filebeat, and dashboard on
-a single node — and keeps two environments in lockstep from the same source of truth:
+product-delivery** repository in the nwarila-platform org. Its active AWS path stands up a
+complete, hardened Wazuh all-in-one SIEM — OpenSearch indexer, manager, Filebeat, and dashboard on
+a single node — from the same source that retains the parked Proxmox target data:
 
-| Target | Lifecycle | On every commit to `main` |
+| Target | Lifecycle | Current state |
 |---|---|---|
-| **Proxmox** | Permanent, live | Redeploy **in place** |
-| **AWS** | Ephemeral PoC | Deploy → **test** → **destroy** |
+| **Proxmox** | Intended permanent target | Parked; the workflow job is gated off and no playbook drives it |
+| **AWS** | Ephemeral PoC | Applicable pushes deploy → **prove** → **destroy** |
 
 The repo is deliberately thin: it owns the **product roles** and the **per-target data**,
 and composes the reusable logic in at run time. Resource logic lives in the pinned
@@ -54,7 +54,7 @@ Terraform frameworks; the generic Ansible loader and shared roles live in the pi
 | **All-in-one** | Indexer + manager + Filebeat + dashboard on one node (fail-fast on unsupported multi-node) |
 | **File Integrity Monitoring** | Realtime (inotify) FIM that emits change **events** with **zero audit records** (`whodata="no"`) |
 | **Secrets** | Each playbook invocation resolves one dashboard-admin password, normally minting it; service credentials rotate per run, while guarded recovery converges persistent manager RBAC state |
-| **TLS** | Rotate-every-run internal PKI minted on the target; the role reads only the dashboard listener pair from S3, with legacy internal fallback objects pending removal after deployment validation (see [ADR&nbsp;0001](docs/decision-records/repo/0001-secrets-and-tls.md)) |
+| **TLS** | Rotate-every-run internal PKI minted only on the target; it never transits S3, whose only certificate material is the dashboard listener pair and sidecars (see [ADR&nbsp;0001](docs/decision-records/repo/0001-secrets-and-tls.md)) |
 | **Supply chain** | Offline package bundle + pinned SHA256; deny-all explicit `.gitignore`; org security workflows (CodeQL, Scorecard, IaC scan) |
 | **Reproducibility** | Pinned `ansible-framework` commit (`.github/.framework-pin`); pinned RHEL-8 ansible-core 2.16 toolchain |
 
@@ -63,7 +63,8 @@ Terraform frameworks; the generic Ansible loader and shared roles live in the pi
 - A Linux control host (WSL Ubuntu on Windows) with the dev toolchain: `make install`.
 - The persistent data volume provisioned at `/mnt/data` (handled by the framework's
   `linux_disk_manager` role — disk selected by stable WWN, mounted by UUID).
-- The Wazuh **offline bundle** and the **dashboard listener pair + digest sidecars** uploaded to S3 (keys in
+- The Wazuh **offline bundle**, **dashboard listener pair + digest sidecars**, and standalone
+  **agent RPM/MSI** uploaded to S3 (keys in
   [docs/reference/s3-artifacts.md](docs/reference/s3-artifacts.md)).
 - AWS credentials supplied to the runner **only** as module args — never exported into the
   target shell (Wazuh logs sudo argv). See
@@ -81,8 +82,8 @@ make ci
 # 3. Deploy to the AWS PoC (composes the pinned ansible-framework, then runs the stack and
 #    proves a real FIM event on each endpoint). Zero --extra-vars: the whole target is two
 #    files — the dynamic inventory and the one playbook.
-#    The dev compose helper builds a local _dev-build/ mirror of the CI execution container.
-#    (compose scripts are dev-only and intentionally untracked; see the composition model doc.)
+#    Reproduce the workflow's pinned checkout and overlay in an ignored local _dev-build/ tree.
+#    This repository does not ship a compose helper; see the composition model doc.
 cd _dev-build && ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
 ```
 
@@ -118,29 +119,32 @@ secure-wazuh/
 
 ## Deployment — the GitOps loop
 
-A push to `main` triggers [`deploy.yml`](.github/workflows/deploy.yml):
+An applicable push to `main`, or a manual dispatch, triggers
+[`deploy.yml`](.github/workflows/deploy.yml):
 
-1. **Proxmox job** — `terraform apply -var-file=proxmox.tfvars` against the pinned Proxmox
-   framework (in place, never destroyed), then composes and runs the Ansible stack.
+1. **Proxmox job** — skipped by its `if: false` gate. The target data remains committed, but no
+   playbook currently drives it.
 2. **AWS job** — `terraform apply -var-file=aws.tfvars` against the pinned AWS framework,
-   composes and runs the stack, **tests** it (cluster green + dashboard 200 + a real
-   FIM-event proof), then **`terraform destroy`** (`always()`) to tear the PoC down.
+   composes and runs the stack, **tests** it (cluster-health gate + TLS-validated dashboard
+   response + a real FIM-event proof), then **`terraform destroy`** (`always()`) to tear the PoC
+   down.
 
 Rationale and the full pattern: [ADR&nbsp;0002](docs/decision-records/repo/0002-combined-terraform-ansible-delivery.md).
 
 [`deploy.yml`](.github/workflows/deploy.yml) derives its AWS role and state-bucket names from
-organization-scoped configuration, authenticates with OIDC, composes both pinned frameworks,
+organization-scoped configuration, authenticates with OIDC, composes the pinned AWS and Ansible frameworks,
 and destroys the ephemeral AWS stack after proof.
 
 ## Proof of Concept — live evidence
 
-Every merge request self-proves against real AWS: [`e2e-full.yml`](.github/workflows/e2e-full.yml)
+Eligible same-repository merge requests self-prove against real AWS:
+[`e2e-full.yml`](.github/workflows/e2e-full.yml)
 deploys the full 3-system PoC (AIO + a Linux agent + a Windows agent), fires a real File Integrity
 Monitoring event on **both** endpoint platforms, force-replaces the AIO's OS drive mid-run
 (`terraform apply -var refresh_serial=1`) to prove agents reconnect and indexer data survives a
 manager rebuild, validates all four cumulative events, then **always** destroys the environment —
-a disposable, genuinely-exercised deploy rather than a mocked test. For MRs touching the workflow's
-configured `paths:`, it fires once per MR (open, reopen, or draft→ready-for-review); apply the
+a disposable, genuinely-exercised deploy rather than a mocked test. For same-repository MRs touching
+the workflow's configured `paths:`, it fires on open, reopen, or the draft→ready transition; apply the
 `rerun-poc` label for an on-demand re-run. Cost is
 roughly $1 per run and $0 standing. Results land straight in the MR as
 [`docs/reference/poc-evidence.md`](docs/reference/poc-evidence.md); full logs are in the
@@ -149,12 +153,13 @@ Actions workflow.
 
 ## Developer Workflow
 
-- **Branch + PR.** `main` is protected; commits follow
+- **Branch + PR.** Commits follow
   [Conventional Commits](https://www.conventionalcommits.org) (scope = role name or
-  `framework`), enforced by `pre-commit` and release automation.
-- **Compose model.** Product roles resolve only inside the composed tree. The dev helper
-  builds `_dev-build/` (framework@`.framework-pin` + this repo's roles overlaid) — an
-  on-disk mirror of the CI execution container. Both are git-ignored.
+  `framework`), enforced by `pre-commit` and release automation. Branch-protection state is an
+  external repository setting and is not asserted here.
+- **Compose model.** Product roles resolve only inside the composed tree. A local operator can
+  reproduce CI's framework@`.framework-pin` plus product-role overlay in ignored `_dev-build/`;
+  this repository does not ship a compose helper.
 - **`make` targets.** `make lint`, `make ci`, `make allowlist-check`, `make pre-commit`.
 
 ## Documentation

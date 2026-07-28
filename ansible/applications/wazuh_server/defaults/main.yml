@@ -197,7 +197,7 @@ wazuh_server_defaults:
     manager_username: 'wazuh-wui'
     bind_address: '0.0.0.0'
     service_state: 'started'
-    # Exact SHA-256 X.509 fingerprint of the current self-signed dev listener placeholder.
+    # Exact SHA-256 X.509 fingerprint configured for the self-signed dev listener placeholder.
     # Set to an empty string when the placeholder is retired; issued certificates use the
     # target's normal trust store and never enter the leaf-pinning exception.
     dev_placeholder_fingerprint: 'C2:2B:8D:FF:DF:94:7A:96:5A:79:D1:11:65:F3:80:B3:55:A3:81:2A:5C:75:45:0C:D4:E2:A5:E4:22:17:D9:E1'

@@ -4,8 +4,8 @@ Deploys a STIG- and FIPS-hardened Wazuh 4.14.5 all-in-one SIEM onto RHEL/Rocky 8
 Linux and Windows endpoint agents. The central stack (indexer + manager + Filebeat +
 dashboard) is **one role on one host** (`wazuh_server`). S3 is the source of truth for the
 offline bundle, the dashboard listener pair, and the per-version agent RPM/MSI. The internal PKI
-is minted on the AIO target every run and is not read from S3; legacy internal fallback objects
-remain pending removal after deployment validation. See
+is minted on the AIO target every run and never transits S3. The dashboard listener pair and its
+sidecars are the only certificate material S3 holds. See
 [`../docs/explanation/architecture.md`](../docs/explanation/architecture.md).
 
 ## Layout
@@ -107,12 +107,13 @@ Run the playbook a second time after an AIO OS-swap (`terraform apply -var refre
 the cumulative FIM proof — see
 [`../docs/how-to/deploy-the-stack.md`](../docs/how-to/deploy-the-stack.md).
 
-## Idempotency
+## Convergence
 
-Every role is idempotent: a clean run followed by the same playbook (no revert) reports
-`changed=0`. Patterns relied on: rotate-every-run write-only ops (keystores, securityadmin),
-`overwrite: different` on `s3_object` + explicit SHA-256 verification, `creates:` guards on
-extraction, marker-owned managed regions (FIM stanzas), and `changed_when: false` on probes.
+Stable package, configuration, mount, and probe paths converge without unnecessary changes.
+`overwrite: different` on `s3_object`, explicit SHA-256 checks, `creates:` guards on extraction,
+marker-owned FIM regions, and `changed_when: false` probes provide that behavior. A repeat playbook
+run is intentionally not `changed=0`: fresh internal PKI, rotated credentials and keystores,
+`securityadmin`, guarded manager-RBAC convergence, and the FIM proof marker execute per invocation.
 
 ## Verification
 

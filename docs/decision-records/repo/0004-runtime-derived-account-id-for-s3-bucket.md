@@ -12,7 +12,9 @@
 | Review-by      | N/A (Accepted)                                          |
 
 > **Status note.** Accepted 2026-07-23. The 2026-07-26 amendment below replaces the
-> caller-identity delivery mechanism while preserving the decision's security boundary.
+> caller-identity delivery mechanism while preserving the decision's security boundary. Run
+> 30316886760 completed the amended `ANSIBLE_S3_BUCKET` path through successful artifact
+> downloads; the superseded caller-identity mechanism was never the live path.
 
 ## Amendment — 2026-07-26: consume the workflow's existing bucket export
 
@@ -163,8 +165,8 @@ retained); rewrite `s3-artifacts.md` "Bucket naming" to the derivation rule; add
 piece to `provide-aws-credentials-safely.md`. MERGE (keep) the override sentence as the escape hatch.
 KEEP the SHA-pin `CHANGE_ME` values (load-bearing).
 
-## Verification status
+## Runtime status
 
-**Static only.** Produced and reviewed with the live infrastructure torn down, so the sole verification
-authority (a real `ansible-playbook` run ending in a successful S3 download) is **`unknown:
-not-run-against-live`**. Ratify, then verify on the next live deploy before marking implemented.
+The amended workflow-export mechanism is live-proven by run 30316886760, which reached successful
+artifact downloads and completed both deployment phases. The original caller-identity mechanism
+recorded in the historical body above was superseded before becoming the live path.

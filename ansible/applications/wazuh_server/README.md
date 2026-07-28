@@ -46,8 +46,8 @@ admin password, with guarded `rbac.db` recovery when prior state holds another v
 mints an RSA-3072/SHA-256 internal CA and separate indexer-node, securityadmin, and manager-API
 certificates on the target, then shreds the CA key after issuance. Filebeat, the manager indexer
 connector, and the dashboard backend authenticate from their keystores and verify the internal CA;
-the role reads only the separate dashboard 443 listener pair from S3. Legacy internal fallback
-objects remain pending removal after deployment validation.
+internal PKI never transits S3. The separate dashboard 443 listener pair and sidecars are the only
+certificate material S3 holds, making its listener key the single externally-custodied private key.
 See [ADR-0001](../../../docs/decision-records/repo/0001-secrets-and-tls.md).
 
 ## Example

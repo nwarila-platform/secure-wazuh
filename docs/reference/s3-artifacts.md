@@ -6,8 +6,8 @@ S3 is the source of truth for package artifacts and the dashboard's browser-list
 pair. The Linux roles download them **on the target host** through `amazon.aws.s3_object`; the
 Windows agent path is the exception — its MSI download is **controller-delegated** (see "Objects
 the agent role reads" below). Fresh internal CA, indexer-node, securityadmin, and manager-API
-identities are minted on the AIO target every run and are not uploaded by the role. Legacy
-internal-PKI objects are still retained in the live bucket as deployment fallback.
+identities are minted on the AIO target every run. Internal PKI never transits S3. The dashboard
+listener pair is the only certificate material S3 holds.
 
 ## Bucket naming
 
@@ -40,27 +40,29 @@ Current `dev` cert prefix:
 |---|---|
 | `s3.certs_prefix` | `functions/wazuh/certs` |
 
-The current dev dashboard pair is a self-signed placeholder for `secure-wazuh-poc`, with SANs for
-that name, localhost, the AIO's dev address, and loopback. The custody and verification mechanism
-is real; its trust chain is not. Replace it with a certificate issued by a CA the intended browsers
-already trust before treating the listener as production-trusted. The temporary leaf-pinning
-exception applies only when this certificate's exact configured SHA-256 fingerprint matches.
+The dev configuration permits a self-signed placeholder only when its exact configured SHA-256
+fingerprint matches. That exception proves custody and transfer without claiming a
+production-trusted chain. Replace any placeholder with a certificate issued by a CA the intended
+browsers already trust before treating the listener as production-trusted.
 
 The role reads the first whitespace-delimited token from each sidecar and compares it with an
-independently computed SHA-256 of the matching PEM. This accepts both the current bare-digest
-format and standard `sha256sum` output. The sidecars detect transfer or object mismatch but are
+independently computed SHA-256 of the matching PEM. This accepts both bare-digest and standard
+`sha256sum` output. The sidecars detect transfer or object mismatch but are
 not an independent trust anchor because they share the same S3 custody boundary.
 
-## Legacy internal-PKI fallback
+## Certificate custody
 
-The live certificate prefix still contains the prior internal-PKI set: two private keys, three
-certificates, and five sidecars. The server role no longer reads those objects, but the deployed
-read policy still grants the whole function prefix. They remain temporarily because they are the
-only fallback until a deployment proves the on-target mint and rotation path.
+The prior internal-PKI objects have been deleted. The live certificate prefix contains exactly
+four objects:
 
-After that successful deployment, remove the legacy objects and retained versions, verify their
-absence, and narrow the read policy to the exact bundle, dashboard pair/sidecars, and agent
-packages consumed by the roles.
+- `dashboard.pem`
+- `dashboard.pem.sha256`
+- `dashboard-key.pem`
+- `dashboard-key.pem.sha256`
+
+The role mints the internal CA and all three internal identities on the target every run, and
+destroys the CA private key after issuance. None of that material is downloaded from or uploaded
+to S3. `dashboard-key.pem` is therefore the single private key in external custody.
 
 ## Objects the agent role reads
 
@@ -103,17 +105,20 @@ s3://<bucket>/applications/wazuh-agent/wazuh-agent-<version>-1.x86_64.rpm   # ag
 s3://<bucket>/applications/wazuh-agent/wazuh-agent-<version>-1.msi         # agent role (Windows)
 ```
 
-## IAM scope
+## Role consumption and IAM scope
 
-The intended least-privilege grants are:
+The roles consume these object subsets:
 
 - **AIO server job**: read `s3://<bucket>/<bundle_key>` and exactly the four dashboard pair/sidecar
   objects listed above.
 - **Agent job (Linux)**: read `s3://<bucket>/applications/wazuh-agent/wazuh-agent-<version>-1.x86_64.rpm`.
 - **Agent job (Windows)**: read `s3://<bucket>/applications/wazuh-agent/wazuh-agent-<version>-1.msi` — granted to the CONTROLLER identity, since the download is delegated there, not to the Windows target.
 
-The tracked read policy currently grants the whole function prefix, including the retained
-internal-PKI fallback. Narrow it only after the successful deployment and cleanup described above.
+The unchanged `secure-wazuh-artifact-read` policy grants object/version reads and listing under
+`functions/wazuh/*` and `applications/wazuh-agent/*`, plus the bucket-location read. Those prefixes
+now contain only the offline bundle, the four dashboard pair/sidecar objects, and the two agent
+packages listed above. The prefix grant is therefore already minimal in practice and is not being
+narrowed.
 If a job also publishes artifacts, it additionally needs S3 write on the relevant object keys.
 
 ## Related

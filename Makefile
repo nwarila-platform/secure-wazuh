@@ -14,7 +14,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help install lint yamllint ansible-lint tf-fmt allowlist-check docs-layout pre-commit ci clean
 
-# The dev compose helper and CI both build this framework-plus-product tree.
+# Local composed trees and CI use this framework-plus-product layout.
 # Override when a caller uses a different throwaway composition path.
 ANSIBLE_LINT_ROOT ?= _dev-build
 
@@ -53,7 +53,7 @@ yamllint:
 # and hosted lint cannot silently select different files.
 ansible-lint:
 	@root="$$(cd "$(ANSIBLE_LINT_ROOT)" 2>/dev/null && pwd)" || { \
-	  printf 'ERROR: %s is not a composed Ansible tree; run the dev compose helper first\n' \
+	  printf 'ERROR: %s is not a composed Ansible tree; compose it first (rsync the pinned framework, then ansible/ over it)\n' \
 	    "$(ANSIBLE_LINT_ROOT)" >&2; \
 	  exit 1; \
 	}; \
