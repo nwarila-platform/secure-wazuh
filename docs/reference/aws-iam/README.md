@@ -146,10 +146,10 @@ of these claims:
 - the immutable repository identity `repository_id = 1307854438`;
 - `job_workflow_ref` matching either
   `nwarila-platform/secure-wazuh/.github/workflows/deploy.yml@*` or
-  `nwarila-platform/secure-wazuh/.github/workflows/e2e-full.yml@*`.
+  `nwarila-platform/secure-wazuh/.github/workflows/aws-deploy.yml@*`.
 
 The `deploy.yml` pattern remains in the source trust, but that workflow no longer contains an AWS
-job or grants `id-token: write`. `e2e-full.yml` is the only credentialed AWS workflow.
+job or grants `id-token: write`. `aws-deploy.yml` is the only credentialed AWS workflow.
 
 ### Repository OIDC claims
 
@@ -165,16 +165,19 @@ replacement so no ref-based or temporary feature-branch subjects remain.
 
 Branch selection stays in the workflows' trigger logic instead of the role trust. Their `paths:`
 filters cover `.github/.framework-pin`, `.github/.aws-tf-framework-pin`, `ansible/**`,
-`terraform/**`, and the workflow file itself. The Wazuh version is the `bundle_key` in
+`terraform/aws.tfvars`, and the workflow file itself. The Terraform filter names that one file
+deliberately: `terraform/**` also matched `terraform/proxmox.tfvars`, so editing a Proxmox variable
+fired a real AWS deploy. `ansible/**` stays whole because the Compose step rsyncs it wholesale onto
+the framework tree, so any file under it can shadow framework content. The Wazuh version is the `bundle_key` in
 `ansible/applications/wazuh_server/vars/redhat_dev.yml`, so version changes remain covered by the
-`ansible/**` filter. A `pull_request` run of `e2e-full.yml` can therefore authenticate without a
+`ansible/**` filter. A `pull_request` run of `aws-deploy.yml` can therefore authenticate without a
 loose `pull_request` subject: the trust does not key authorization on the event.
 
 The `@*` suffix is a deliberate, accepted risk: it admits any ref's copy of those two workflow
 files, including a modified version. Repository write access already equals deploy authority here,
 so pinning specific refs would add IAM churn without adding a real boundary.
 
-Before applying the trust, inspect an `e2e-full.yml` token and confirm that `repository_id` and
+Before applying the trust, inspect an `aws-deploy.yml` token and confirm that `repository_id` and
 `job_workflow_ref` have the exact values required by the document. Confirm that workflow can
 authenticate after application.
 
@@ -182,7 +185,7 @@ The event-path boundary forbids any workflow that combines
 `pull_request_target` with `id-token: write`. The organization setting that sends write tokens to
 workflows from fork pull requests MUST remain disabled. With that required setting, GitHub does not
 mint an ID token to fork `pull_request` runs; the `id-token` permission is write-or-none. The
-same-repository guard in `e2e-full.yml` also excludes fork PRs before the credentialed job, but it
+same-repository guard in `aws-deploy.yml` also excludes fork PRs before the credentialed job, but it
 does not replace that organization-level dependency.
 
 ## Deploy policy split and controls

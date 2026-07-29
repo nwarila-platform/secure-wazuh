@@ -4,7 +4,7 @@
 # =============================================================================
 # This workflow now contains only the intended permanent Proxmox target, which
 # remains parked until it has a playbook again. The superseded AWS
-# deploy/prove/destroy job has been removed; `.github/workflows/e2e-full.yml` is
+# deploy/prove/destroy job has been removed; `.github/workflows/aws-deploy.yml` is
 # the active AWS path, and this workflow no longer provides an AWS CI gate.
 #
 # Terraform is DATA-ONLY here: this repo ships terraform/proxmox.tfvars and NO

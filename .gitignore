@@ -54,7 +54,7 @@
 !/.github/workflows/
 !/.github/workflows/ci.yml
 !/.github/workflows/deploy.yml
-!/.github/workflows/e2e-full.yml
+!/.github/workflows/aws-deploy.yml
 !/.github/workflows/release-please.yml
 !/.github/workflows/security.yaml
 
@@ -113,6 +113,12 @@
 # --------------------------------------------------------------------------- #
 !/tools/
 !/tools/check_docs_layout.py
+
+# IAM substitution gate and policy tests. The gate is the control that stops a partial clone from
+# silently granting this repository authority over a sibling's resources, so it is tracked.
+!/scripts/
+!/scripts/check-iam-literals.sh
+!/scripts/test-iam-policies.sh
 
 # --------------------------------------------------------------------------- #
 #  Ansible — product roles + playbooks + inventory (loader/shared roles composed in).
