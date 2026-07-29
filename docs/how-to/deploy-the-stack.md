@@ -124,7 +124,7 @@ the intended workflow run explicitly instead of letting one deployment satisfy a
 
 ### Two-phase usage (the cumulative 4/4 proof)
 
-Run the same command a second time after `terraform apply -var refresh_serial=1` replaces the AIO's OS disk. The agents are untouched by the swap and reconnect on their own; the stack reinstalls onto its re-attached data disk; the FIM section fires two more events and then proves **all four** cumulative ledger entries — the two pre-swap survivors and the two new ones — because the ledger lives on the data disk the swap never touches. This is what [`e2e-full.yml`](../../.github/workflows/e2e-full.yml) automates for eligible same-repository merge requests and manual dispatches.
+Run the same command a second time after `terraform apply -var refresh_serial=1` replaces the AIO's OS disk. The agents are untouched by the swap and reconnect on their own; the stack reinstalls onto its re-attached data disk; the FIM section fires two more events and then proves **all four** cumulative ledger entries — the two pre-swap survivors and the two new ones — because the ledger lives on the data disk the swap never touches. This is what [`aws-deploy.yml`](../../.github/workflows/aws-deploy.yml) automates for eligible same-repository merge requests and manual dispatches.
 
 The second command starts `ansible-playbook` anew and performs the same three fresh
 artifact-reader role assumptions and signatures at their read boundaries. No fact, session, or

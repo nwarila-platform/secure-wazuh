@@ -35,7 +35,7 @@
 # bucket, stack, and owner are derived at runtime.
 # -----------------------------------------------------------------------------
 
-name: e2e-full
+name: AWS Deploy
 
 # Fires automatically ONCE per merge request: at MR-open, at reopen, and at draft->ready-for-
 # review (the `types:` list below). `synchronize` — GitHub's "new commit pushed to this MR"
@@ -59,16 +59,28 @@ on:
   pull_request:
     types: [opened, reopened, ready_for_review, labeled]
     paths:
+      # ansible/** stays WHOLE, deliberately. The Compose step rsyncs this directory wholesale
+      # onto the pinned framework tree, where any file can shadow framework content — so the set
+      # of ansible/ files affecting this deploy is "all of them, including paths that do not
+      # exist yet". Enumerating subdirectories would bet on today's layout and silently stop
+      # triggering when a new top-level path appears. paths: has no negation, so the price of
+      # that safety is that a README edit still costs one run. That is the correct trade: too
+      # broad wastes a dollar and announces itself; too narrow skips the proof in silence.
       - ansible/**
-      - terraform/**
+      # terraform/** was over-broad — it also matched terraform/proxmox.tfvars, so editing a
+      # Proxmox variable fired a real AWS deploy. Every terraform apply in this workflow passes
+      # exactly this one file.
+      - terraform/aws.tfvars
       - .github/.framework-pin
       - .github/.aws-tf-framework-pin
-      - .github/workflows/e2e-full.yml
+      # Must track this workflow's filename: a stale entry here means edits to the deploy
+      # workflow itself never trigger their own proof.
+      - .github/workflows/aws-deploy.yml
 
 # Least privilege at the workflow level; the one job elevates only what it needs.
 permissions: {}
 
-# The PoC is a singleton with one state key and one set of identity tags. Serialize e2e-full runs so
+# The PoC is a singleton with one state key and one set of identity tags. Serialize AWS Deploy runs so
 # an apply, OS-swap, or destroy never overlaps another run or is interrupted mid-mutation.
 concurrency:
   group: secure-wazuh-aws-poc
@@ -95,8 +107,8 @@ jobs:
   # this across multiple jobs would force a fresh checkout (and a fresh init) per job, which is
   # exactly what this single-job design avoids.
   # ===========================================================================
-  e2e-full:
-    name: AWS (e2e-full, two-phase deploy / OS-swap / destroy)
+  aws-deploy:
+    name: AWS (two-phase deploy / OS-swap / destroy)
     # Same-repository PRs run for each deliberate one-shot event. For `labeled`, only
     # `rerun-poc` passes; fork PRs never enter this credentialed job. workflow_dispatch has no
     # pull_request object and passes through the event-name branch without dereferencing one.
@@ -229,8 +241,8 @@ jobs:
           terraform_wrapper: false
 
       # Every run uses the singleton secure-wazuh/aws.tfstate. The workflow concurrency group
-      # prevents two e2e-full runs from touching that state at the same time.
-      - name: Terraform init (e2e-full — singleton aws.tfstate)
+      # prevents two AWS Deploy runs from touching that state at the same time.
+      - name: Terraform init (AWS Deploy — singleton aws.tfstate)
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
@@ -572,7 +584,7 @@ jobs:
           {
             echo "# Proof of Concept — live e2e evidence"
             echo
-            echo "> Regenerated automatically by the e2e-full workflow on each proven MR."
+            echo "> Regenerated automatically by the AWS Deploy workflow on each proven MR."
             echo
             echo "**Provenance:** [workflow run](${RUN_URL}) · run \`${RUN_ID}\` · event \`${EVENT_NAME}\` · commit \`${sha_short}\`"
             echo "**Date:** ${gen_date}"
@@ -683,7 +695,7 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         continue-on-error: true
         run: |
-          snap="${{ github.workspace }}/e2e-full-failure-state.json"
+          snap="${{ github.workspace }}/aws-deploy-failure-state.json"
           terraform state pull > "$snap"
           sed -i 's/\b[0-9]\{12\}\b/<acct>/g' "$snap"
 
@@ -691,7 +703,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: e2e-full-failure-state
-          path: e2e-full-failure-state.json
+          name: aws-deploy-failure-state
+          path: aws-deploy-failure-state.json
           retention-days: 14
           if-no-files-found: warn

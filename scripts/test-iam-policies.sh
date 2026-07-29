@@ -87,6 +87,20 @@ print(eval(sys.argv[2], {"d": d, "json": json}))' "${WORK}/roles/${file}" "${exp
     [ "${got}" = "${want}" ] && ok "${name}" "${got}" || bad "${name}" "${got}" "${want}"
 }
 CI_TRUST="github_nwarila-platform_${THIS_REPO}.trust.json"
+
+# The trust pins the workflow FILE PATH. A rename that misses this leaves CI unable to assume the
+# role, and the failure presents as a credentials error rather than a rename error. Tie the two
+# together so the filesystem and the trust cannot drift apart silently.
+wf_ref="$(python3 -S -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+print(d['Statement'][0]['Condition']['StringLike']['token.actions.githubusercontent.com:job_workflow_ref'])" "${WORK}/roles/${CI_TRUST}")"
+wf_path="${REPO_ROOT}/$(printf '%s' "${wf_ref}" | sed -E 's|^[^/]+/[^/]+/||; s|@.*$||')"
+if [ -f "${wf_path}" ]; then
+    ok "trust names a workflow that EXISTS" "$(basename "${wf_path}")"
+else
+    bad "trust names a workflow that EXISTS" "missing: $(basename "${wf_path}")" "the file"
+fi
 ADMIN_TRUST="github_nwarila-platform_${THIS_REPO}-admin.trust.json"
 POC_TRUST="${THIS_REPO}-poc-role.trust.json"
 C='d["Statement"][0]["Condition"]'

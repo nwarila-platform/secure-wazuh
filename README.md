@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/ci.yml/badge.svg)](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/ci.yml)
 [![Security](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/security.yaml/badge.svg)](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/security.yaml)
-[![e2e-full](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/e2e-full.yml/badge.svg)](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/e2e-full.yml)
+[![AWS Deploy](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/aws-deploy.yml/badge.svg)](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/aws-deploy.yml)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://pre-commit.com/)
 [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg)](https://www.conventionalcommits.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -109,7 +109,7 @@ secure-wazuh/
 │   └── aws.tfvars              # ephemeral PoC inputs      (aws-terraform-framework)
 ├── docs/                       # Diátaxis: tutorials / how-to / reference / explanation / ADRs
 ├── .github/
-│   ├── workflows/              # ci · release-please · security · parked deploy · e2e-full AWS proof
+│   ├── workflows/              # ci · release-please · security · parked deploy · AWS Deploy proof
 │   └── .framework-pin          # exact ansible-framework commit CI composes against
 ├── .gitignore                  # deny-all EXPLICIT allowlist (only ** is a glob)
 ├── Makefile                    # install · lint · ci · allowlist-check · clean
@@ -128,7 +128,7 @@ secure-wazuh/
 `if: false` gate prevents a runner from being scheduled, and the workflow has no AWS job,
 credential, or current playbook path.
 
-[`e2e-full.yml`](.github/workflows/e2e-full.yml) is the active AWS path. It runs by manual dispatch
+[`aws-deploy.yml`](.github/workflows/aws-deploy.yml) is the active AWS path. It runs by manual dispatch
 or for its eligible same-repository pull-request events and configured path filters; it does not
 run on pushes to `main`. The credentialed job authenticates with OIDC, applies the pinned AWS
 framework, composes and runs the stack, proves it, force-replaces the AIO OS volume, proves the
@@ -139,7 +139,7 @@ Rationale and the full pattern: [ADR&nbsp;0002](docs/decision-records/repo/0002-
 ## Proof of Concept — live evidence
 
 Eligible same-repository merge requests self-prove against real AWS:
-[`e2e-full.yml`](.github/workflows/e2e-full.yml)
+[`aws-deploy.yml`](.github/workflows/aws-deploy.yml)
 deploys the full 3-system PoC (AIO + a Linux agent + a Windows agent), fires a real File Integrity
 Monitoring event on **both** endpoint platforms, force-replaces the AIO's OS drive mid-run
 (`terraform apply -var refresh_serial=1`) to prove agents reconnect and indexer data survives a
@@ -149,7 +149,7 @@ the workflow's configured `paths:`, it fires on open, reopen, or the draft→rea
 `rerun-poc` label for an on-demand re-run. Cost is
 roughly $1 per run and $0 standing. Results land straight in the MR as
 [`docs/reference/poc-evidence.md`](docs/reference/poc-evidence.md); full logs are in the
-[`e2e-full`](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/e2e-full.yml)
+[`AWS Deploy`](https://github.com/nwarila-platform/secure-wazuh/actions/workflows/aws-deploy.yml)
 Actions workflow.
 
 ## Developer Workflow

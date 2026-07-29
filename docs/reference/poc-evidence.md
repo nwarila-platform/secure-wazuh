@@ -1,6 +1,6 @@
 # Proof of Concept — live e2e evidence
 
-> Evidence rendered by the e2e-full workflow; provenance identifies the triggering event.
+> Evidence rendered by the AWS Deploy workflow; provenance identifies the triggering event.
 
 **Provenance:** [workflow run](https://github.com/nwarila-platform/secure-wazuh/actions/runs/30165136898) · run `30165136898` · event `workflow_dispatch` · commit `63ffe48`
 **Date:** 2026-07-25

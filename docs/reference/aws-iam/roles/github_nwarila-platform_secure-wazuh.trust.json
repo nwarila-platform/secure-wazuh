@@ -15,7 +15,7 @@
         },
         "StringLike": {
           "token.actions.githubusercontent.com:sub": "repo:nwarila-platform/secure-wazuh:*",
-          "token.actions.githubusercontent.com:job_workflow_ref": "nwarila-platform/secure-wazuh/.github/workflows/e2e-full.yml@*"
+          "token.actions.githubusercontent.com:job_workflow_ref": "nwarila-platform/secure-wazuh/.github/workflows/aws-deploy.yml@*"
         }
       }
     }
