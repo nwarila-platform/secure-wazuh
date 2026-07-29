@@ -226,6 +226,45 @@
 
     #region ------ [ 03 S3 STAGING (one deduped block) ] ------------------------------------ #
 
+    # Re-read the same run-scoped instance set immediately before the first artifact use. This
+    # narrows the interval in which an instance-profile or bucket-policy change could invalidate
+    # Step 0's proof without duplicating the inventory's run-id selector or topology definition.
+    - name: 'S3 | Re-Assert The Run-Scoped Instances Have No Standing Artifact Authority'
+      run_once: true
+      delegate_to: 'localhost'
+      become: false
+      register: '__prefetch_profile_guard__'
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      secure_wazuh_iam_profile_guard:
+        instance_profile_name: 'secure-wazuh-poc-profile'
+        run_instance_ids: >-
+          {{
+            (
+              groups.get('wazuh_servers', [])
+              + groups.get('wazuh_agents', [])
+            )
+            | map('extract', hostvars, 'instance_id')
+            | list
+          }}
+        region: "{{ hostvars[groups['wazuh_servers'][0]].placement.region }}"
+        artifact_bucket: "{{ config.s3.bucket }}"
+        expected_role_name: 'secure-wazuh-poc-role'
+        expected_managed_policy_arn: 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        forbidden_policy_name: 'secure-wazuh-artifact-read'
+
+    - name: 'S3 | Accept The Re-Asserted Artifact Boundary'
+      run_once: true
+      ansible.builtin.assert:
+        that:
+          - __prefetch_profile_guard__.legacy_policy_absent | bool
+          - __prefetch_profile_guard__.run_instances_bound | bool
+          - __prefetch_profile_guard__.bucket_policy_grant_absent | bool
+        quiet: true
+        fail_msg: >-
+          Refusing artifact delivery because the run-scoped instances have not passed the
+          instance-profile and bucket-policy guard.
+
     # Each server host owns its package session, signature, and HTTPS GET. The dashboard listener
     # pair is different because it contains a private key; the controller downloads those four
     # tiny objects with its scoped session and pushes them through Ansible instead of issuing

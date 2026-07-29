@@ -10,7 +10,9 @@ context. It signs one 900-second GetObject URL for that host and attempt, and th
 plain HTTPS GET with no AWS SDK, deploy
 credential, standalone artifact-reader credential, or instance-profile S3 grant. The URL is
 itself a bearer token and necessarily contains the temporary access-key identifier and session
-token as signing query parameters.
+token as signing query parameters. It is not a reusable AWS credential set: it authorizes one
+read-only object until expiry. Malware on the receiving host can nevertheless replay that URL
+against that object during its lifetime.
 
 The dashboard listener pair contains a private key and is deliberately not presigned. The
 controller re-mints immediately before downloading those small files and pushes them through
@@ -26,16 +28,20 @@ into a transient module payload.
 The deploy keeps both the ambient identity and scoped artifact-reader sessions on the controller.
 Targets receive only short-lived bearer URLs, and both signing and fetching are marked `no_log`.
 Each target still has its SSM-only instance-profile credential available through instance
-metadata; the boundary is that no deploy or artifact-reader authority reaches the target.
+metadata. The boundary is that no deploy or reusable artifact-reader credential reaches the
+target; the one-object bearer capability does.
 
 ## The pattern
 
-1. **Step 0 validates both the role input and the live target profile but mints nothing.** A
-   controller-side, fail-closed guard requires `secure-wazuh-poc-profile` to contain exactly
-   `secure-wazuh-poc-role`, requires exactly one attachment with the AWS-managed
-   `AmazonSSMManagedInstanceCore` policy ARN, and rejects every inline policy, including the legacy
-   `secure-wazuh-artifact-read` name. Platform preparation, disk resolution, and host preparation
-   consume no artifact credential or URL lifetime.
+1. **Step 0 validates the role input and the run-scoped hosts but mints nothing.** The guard uses
+   the same server-plus-agent groups whose exact shape Step 0 already asserted. It requires every
+   inventory instance ID to exist, carry one common `secure-wazuh-poc-profile`, and match the
+   profile object being inspected. That profile must contain exactly `secure-wazuh-poc-role`;
+   the role must have only the AWS-managed `AmazonSSMManagedInstanceCore` attachment and no inline
+   policy, including the legacy `secure-wazuh-artifact-read` name. The guard also reads the
+   artifact bucket policy and rejects any resource-based Allow for the instance role. A missing
+   bucket policy is safe; an unreadable policy is a hard failure. Platform preparation, disk
+   resolution, and host preparation consume no artifact credential or URL lifetime.
 
 2. **Each package attempt assumes the reader role beside its use.** The composed framework's
    `applications/s3_artifact_delivery/tasks/mint_session.yml` at the commit named by
@@ -86,7 +92,12 @@ metadata; the boundary is that no deploy or artifact-reader authority reaches th
    MSI receives an explicit protected ACL granting full control only to SYSTEM and built-in
    Administrators.
 
-5. **The dashboard private key never becomes a bearer URL, and there is no fallback.** After the
+5. **The boundary is re-asserted immediately before the first fetch.** The server role repeats
+   the instance-profile, exact-policy-set, and bucket-policy checks against the same run-scoped
+   inventory IDs directly before artifact staging. This narrows, but cannot eliminate, the
+   check/use race.
+
+6. **The dashboard private key never becomes a bearer URL, and there is no fallback.** After the
    bundle fetch completes, one public `s3_artifact_delivery` `get` invocation mints a separate
    fresh session and retrieves the certificate, private key, and two sidecars into the guarded
    controller temp tree. The role scrubs its session and download state before `wazuh_server`
@@ -103,12 +114,21 @@ delegated-localhost transfer temp to
 with an `always()` step after every playbook invocation.
 
 The URL serializes into the target fetch module payload and, on both platform modules, can appear
-in the registered result or failure text. Task-level `no_log` is therefore load-bearing. The URL
-fact and fetch/signing registers are overwritten in `always` immediately after each attempt.
-Target task temp is transient and the 900-second expiry bounds any remnant's value. Targets retain
-their STIG-compatible `/opt/ansible/tmp` path. The only deploy-level target `environment:` export
-is the non-secret `TMPDIR`, scoped to `wazuh_server` staging on `/mnt/data`; `ENV` is an Ansible
-fact, not a shell environment variable.
+in the registered result or failure text. Task-level `no_log` is therefore load-bearing for
+Ansible output. The URL fact and fetch/signing registers are overwritten in `always` immediately
+after each attempt. Target task temp is transient and the 900-second expiry bounds any remnant's
+value.
+
+On the Windows STIG target, `win_get_url` runs through PowerShell while script-block logging and
+transcription are required. Those target-owned controls can retain the module argument, including
+the complete bearer URL, in the Windows event log beyond the URL's expiry; `no_log` does not
+govern or erase that record. The expired record is not a reusable credential, but malware that
+reads it before expiry can replay the one-object, read-only URL. This is a residual exposure, not
+fixed by controller result scrubbing.
+
+Targets retain their STIG-compatible `/opt/ansible/tmp` path. The only deploy-level target
+`environment:` export is the non-secret `TMPDIR`, scoped to `wazuh_server` staging on `/mnt/data`;
+`ENV` is an Ansible fact, not a shell environment variable.
 
 ## Procedure: populate the controller environment
 

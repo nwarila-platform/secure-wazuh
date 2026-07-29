@@ -29,10 +29,14 @@ should be detached when that path is retired. EC2 uses instance profile
 `secure-wazuh-poc-profile`, which contains `secure-wazuh-poc-role`; `iam:GetInstanceProfile` is
 pinned to the profile and `iam:PassRole` is pinned to the role. Role-name substrings are not an
 authorization boundary. The instance role carries only `AmazonSSMManagedInstanceCore`; it has no
-artifact policy and cannot read the S3 bucket. Step 0 reads this live profile before any target
-work, requires exactly that role, and fails closed unless it has exactly one attachment whose ARN
-is the AWS-managed `AmazonSSMManagedInstanceCore` policy, with no inline policies. A retained
-`secure-wazuh-artifact-read` attachment therefore cannot pass deployment.
+artifact policy. Step 0 takes the instance IDs from the exact run-scoped server-plus-agent
+topology, requires every instance to carry one common profile, and requires that profile object to
+be `secure-wazuh-poc-profile`. It then requires exactly `secure-wazuh-poc-role`, exactly one
+attachment whose ARN is the AWS-managed `AmazonSSMManagedInstanceCore` policy, and no inline
+policies. It also reads the artifact bucket policy and rejects a resource-based Allow naming the
+instance role. Absence of a bucket policy is acceptable; an unreadable policy is not. A retained
+`secure-wazuh-artifact-read` attachment or bucket-policy grant therefore cannot pass deployment.
+The complete boundary is checked again immediately before the first artifact fetch.
 
 `secure-wazuh-artifact-read` is attached only to `secure-wazuh-artifact-reader`. Its trust names
 exactly the CI and `-admin` deploy roles, and their shared discovery/IAM policy permits
@@ -40,7 +44,9 @@ exactly the CI and `-admin` deploy roles, and their shared discovery/IAM policy 
 and holds it on the controller. Every package attempt receives a fresh session and 900-second
 signature; the dashboard listener pair receives a separate fresh session, is retrieved on the
 controller, and is pushed. Registers, bearer facts, and session facts are overwritten after their
-consumer completes. No instance receives deploy or standalone artifact-reader authority. The
+consumer completes. No instance receives a deploy or reusable standalone artifact-reader
+credential. A package target does receive a bearer URL containing the temporary access-key
+identifier and session token; it can be replayed for its one read-only object until expiry. The
 `-admin` inline policy separately retains artifact write, read, deletion, tagging, and multipart
 administration for operator work.
 
@@ -183,7 +189,7 @@ source sizes and remaining headroom are:
 | `secure-wazuh-artifact-read.json` | 800 | 5,344 |
 | `secure-wazuh-folder-admin.json` | 4,392 | 1,752 |
 | `secure-wazuh_deploy-ec2.json` | 5,621 | 523 |
-| `secure-wazuh_deploy-discovery-iam.json` | 1,425 | 4,719 |
+| `secure-wazuh_deploy-discovery-iam.json` | 1,557 | 4,587 |
 | `secure-wazuh_deploy-sg-ssm-kms.json` | 3,678 | 2,466 |
 
 The EC2 policy defines these cost and security controls:
@@ -207,8 +213,27 @@ The EC2 policy defines these cost and security controls:
 
 The discovery and IAM policy keeps Terraform's EC2 read-only discovery action allowlist in
 `us-east-1`, limits instance-profile discovery to `secure-wazuh-poc-profile`, permits only the two
-role-policy list calls needed to reject the legacy policy on `secure-wazuh-poc-role`, permits
-passing only that role to EC2, and permits assuming only `secure-wazuh-artifact-reader`.
+role-policy list calls needed to reject the legacy policy on `secure-wazuh-poc-role`, permits the
+artifact-bucket policy read needed to reject a resource-based role grant, permits passing only that
+role to EC2, and permits assuming only `secure-wazuh-artifact-reader`.
+
+`ec2:DescribeInstances` stays in the existing `DescribeEc2ForTerraformAndDiscovery` statement.
+The profile guard therefore needs no additional EC2 statement. Add the S3 read to
+`github_nwarila-platform_secure-wazuh_deploy-discovery-iam`, which is attached to both deploy
+roles:
+
+```json
+{
+  "Sid": "InspectArtifactBucketPolicy",
+  "Effect": "Allow",
+  "Action": "s3:GetBucketPolicy",
+  "Resource": "arn:aws:s3:::<account-id>-ansible"
+}
+```
+
+This read-only boundary inspection belongs with discovery and IAM reads, not in
+`github_nwarila-platform_secure-wazuh_deploy-ec2`. The latter is reserved for EC2 mutations and
+has only 523 compact characters of headroom.
 
 Every CI and local apply must export `TF_VAR_resource_metadata` before Terraform creates any
 resource. The pinned framework supplies the identity tags through provider `default_tags` and

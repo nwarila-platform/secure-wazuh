@@ -6,10 +6,13 @@ S3 is the source of truth for package artifacts and the dashboard's browser-list
 pair. The controller mints a fresh artifact-reader session and 900-second GetObject URL for each
 package-fetch attempt. Linux and Windows targets perform plain HTTPS GETs with no deploy or
 standalone artifact-reader credential and no AWS SDK. Their SSM-only instance profile still
-provides SSM-scoped credentials through instance metadata. The dashboard listener pair is not
-presigned because it contains private key material; the controller retrieves and pushes those
-four small files under a separate fresh session. Fresh internal CA, indexer-node, securityadmin,
-and manager-API identities are minted on the AIO target every run. Internal PKI never transits S3.
+provides SSM-scoped credentials through instance metadata. Each target does receive the bearer URL
+as a module argument. It embeds the temporary access-key identifier and session token and can be
+replayed for its one read-only object until expiry, but it is not a reusable AWS credential set.
+The dashboard listener pair is not presigned because it contains private key material; the
+controller retrieves and pushes those four small files under a separate fresh session. Fresh
+internal CA, indexer-node, securityadmin, and manager-API identities are minted on the AIO target
+every run. Internal PKI never transits S3.
 
 ## Bucket naming
 
@@ -126,9 +129,12 @@ object/version reads and listing under `functions/wazuh/*` and `applications/waz
 the bucket-location read. Those prefixes now contain only the offline bundle, the four dashboard
 pair/sidecar objects, and the two agent packages listed above. The prefix grant is therefore
 minimal in practice. The EC2 instance profile has no S3 policy; if the scoped session is missing or
-expires, signing or controller retrieval fails. Step 0 reads the live profile and fails the deploy
-if its expected role still carries the legacy artifact policy. A presigned URL has no independent
-permission: GetObject must be allowed to the signer or the target HTTPS request is denied.
+expires, signing or controller retrieval fails. Step 0 binds the inspected profile to every
+instance ID in the already validated run-scoped topology, rejects an instance with no profile or a
+different profile, and rejects both role-attached artifact authority and a bucket-policy Allow for
+the instance role. The same checks run again immediately before the first artifact fetch. A
+presigned URL cannot expand the signer's permission: GetObject must be allowed to the signer or the
+target HTTPS request is denied.
 If a job also publishes artifacts, it additionally needs S3 write on the relevant object keys.
 
 ## Related

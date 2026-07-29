@@ -69,8 +69,10 @@ Terraform frameworks; the generic Ansible loader and shared roles live in the pi
 - An ambient AWS deploy identity on the controller that can assume
   `secure-wazuh-artifact-reader`. The scoped session stays on the controller: it signs
   short-lived package URLs and retrieves the dashboard listener pair for controller push.
-  Targets receive no deploy or artifact-reader authority; their instance profile remains
-  SSM-scoped and has no S3 permission. See
+  Targets receive no deploy or reusable artifact-reader credential. A package target receives one
+  read-only bearer URL, including its temporary access-key identifier and session token, and can
+  replay it for that object until expiry. The run-scoped profile and bucket-policy guards keep the
+  instance identity itself SSM-only. See
   [docs/how-to/provide-aws-credentials-safely.md](docs/how-to/provide-aws-credentials-safely.md).
 
 ## Getting Started

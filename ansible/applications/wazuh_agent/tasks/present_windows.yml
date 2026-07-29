@@ -61,8 +61,12 @@
 
     #region ------ [ Main: S3 Staging ] ------------------------------------------------------ #
 
-    # Mint and sign after the role loader. Task-level no_log is load-bearing: win_get_url can
-    # embed its bearer URL in failure text and in the registered result.
+    # Mint and sign after the role loader. Task-level no_log is load-bearing for controller
+    # output: win_get_url can embed its bearer URL in failure text and in the registered result.
+    # It cannot govern the Windows host's own records. Required PowerShell script-block logging
+    # and transcription on the STIG target can retain the module argument, including the URL, in
+    # the target event log after expiry. Malware on that host can replay the URL during its
+    # lifetime, but only for the one read-only object the signature names.
     - name: 'S3 (win) | Fetch The SHA-256-Pinned Agent MSI Over HTTPS'
       no_log: true
       block:

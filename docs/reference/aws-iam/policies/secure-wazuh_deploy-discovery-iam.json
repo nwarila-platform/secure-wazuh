@@ -48,6 +48,12 @@
       "Resource": "arn:aws:iam::*:role/secure-wazuh-poc-role"
     },
     {
+      "Sid": "InspectArtifactBucketPolicy",
+      "Effect": "Allow",
+      "Action": "s3:GetBucketPolicy",
+      "Resource": "arn:aws:s3:::<account-id>-ansible"
+    },
+    {
       "Sid": "PassOnlyPocInstanceRoleToEc2",
       "Effect": "Allow",
       "Action": "iam:PassRole",

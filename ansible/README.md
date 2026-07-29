@@ -85,8 +85,11 @@ The EBS volume's `/dev/disk/by-id` name is runtime-derived from its `Function` t
 The ambient deploy credential and every scoped artifact-reader session remain on the controller.
 Each package fetch attempt gets a fresh session and signature before the target downloads over
 HTTPS; the dashboard listener pair gets a separate fresh session and is downloaded and pushed
-from the controller. Step 0 fails closed unless the live instance profile has the expected
-SSM-only role and no legacy artifact policy. See
+from the controller. The target receives a one-object bearer URL as a module argument, including
+the temporary access-key identifier and session token, but no reusable artifact-reader credential.
+Step 0 binds the inspected SSM-only profile to every instance in the exact run-scoped topology and
+rejects a bucket-policy grant to that role; the same guard runs again immediately before the first
+fetch. See
 [`../docs/how-to/provide-aws-credentials-safely.md`](../docs/how-to/provide-aws-credentials-safely.md).
 
 ## Target prerequisites
