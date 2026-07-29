@@ -188,7 +188,7 @@ source sizes and remaining headroom are:
 | `github_nwarila-platform_secure-wazuh.json` | 1,634 | 4,510 |
 | `secure-wazuh-artifact-read.json` | 800 | 5,344 |
 | `secure-wazuh-folder-admin.json` | 4,392 | 1,752 |
-| `secure-wazuh_deploy-ec2.json` | 5,621 | 523 |
+| `secure-wazuh_deploy-ec2.json` | 5,633 | 511 |
 | `secure-wazuh_deploy-discovery-iam.json` | 1,557 | 4,587 |
 | `secure-wazuh_deploy-sg-ssm-kms.json` | 3,678 | 2,466 |
 
@@ -201,8 +201,9 @@ The EC2 policy defines these cost and security controls:
   IOPS/throughput inputs;
 - create authorization uses the request identity tag and lifecycle authorization uses the
   resource identity tag `nwarila:management:repository-id = 1307854438`;
-- the image authorization leg accepts only AMIs with the `amazon` or `aws-marketplace`
-  `ec2:Owner` alias, and the key-pair leg is pinned to `secure-wazuh-poc-key`;
+- `RunInstancesImagesFromTrustedOwners` implements the publisher boundary in
+  [ADR-0005](../../decision-records/repo/0005-guard-placement-by-direction.md), and the key-pair leg
+  is pinned to `secure-wazuh-poc-key`;
 - ENI creation requires the repository identity tag on the new network-interface authorization
   leg. The `RunInstances` network-interface, subnet, and security-group legs and the
   `CreateNetworkInterface` subnet and security-group legs are restricted to the deploy VPC; both
@@ -233,7 +234,7 @@ roles:
 
 This read-only boundary inspection belongs with discovery and IAM reads, not in
 `github_nwarila-platform_secure-wazuh_deploy-ec2`. The latter is reserved for EC2 mutations and
-has only 523 compact characters of headroom.
+has only 511 compact characters of headroom.
 
 Every CI and local apply must export `TF_VAR_resource_metadata` before Terraform creates any
 resource. The pinned framework supplies the identity tags through provider `default_tags` and
@@ -269,11 +270,14 @@ The second deploy policy defines the remaining surfaces:
 
 ### Accepted deploy residual risk
 
+The image-publisher boundary, guard placement, and public-addressing residual are recorded once in
+[ADR-0005](../../decision-records/repo/0005-guard-placement-by-direction.md).
+
 The deploy role's required EC2 permissions leave two paths that IAM cannot constrain:
 
 - `RunInstances` accepts arbitrary user data on an otherwise permitted image. Amazon EC2 exposes no
   IAM condition key for user data, so compromised deploy credentials can use it to execute
-  attacker-controlled code on an `amazon` or `aws-marketplace` image.
+  attacker-controlled code on an image admitted by the trusted-owner boundary.
 - The role must manage its repository-tagged security groups, but Amazon EC2 exposes no IAM
   condition key for an ingress rule's CIDR. Compromised deploy credentials can therefore authorize
   `0.0.0.0/0` directly. The framework's world-open ingress validation is a Terraform-time guard; it

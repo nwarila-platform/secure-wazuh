@@ -73,7 +73,8 @@
         "StringEquals": {
           "ec2:Owner": [
             "amazon",
-            "aws-marketplace"
+            "679593333241",
+            "<account-id>"
           ]
         }
       }

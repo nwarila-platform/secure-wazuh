@@ -34,6 +34,7 @@ None mirrored yet. Inherited framework decisions land at `template/NNNN-...md` w
 | [0002](repo/0002-combined-terraform-ansible-delivery.md) | Combined Terraform-Provisions + Ansible-Configures Product Delivery | Accepted (AWS active; Proxmox parked) | 2026-07-21 | One repo provisions and configures the product; AWS runs deploy-prove-destroy while Proxmox is parked. |
 | [0003](repo/0003-deny-all-explicit-gitignore.md) | Deny-All Explicit `.gitignore` for secure-wazuh | Accepted | 2026-07-21 | `.gitignore` starts with `**`; every tracked path is re-included with an explicit `!/path`; enforced by `make allowlist-check`. |
 | [0004](repo/0004-runtime-derived-account-id-for-s3-bucket.md) | Runtime-Derived AWS Account ID for the S3 Artifact Bucket | Accepted (amended) | 2026-07-22 | Workflows export the derived artifact-bucket name; roles reject empty values and the committed tripwire. |
+| [0005](repo/0005-guard-placement-by-direction.md) | Guard Placement by Direction | Accepted | 2026-07-29 | Framework guards make hardened templates easy to select; IAM guards bound direct API use by trusted publisher. |
 
 ## Authoring rules
 
