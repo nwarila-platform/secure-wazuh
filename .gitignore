@@ -114,6 +114,12 @@
 !/tools/
 !/tools/check_docs_layout.py
 
+# IAM substitution gate and policy tests. The gate is the control that stops a partial clone from
+# silently granting this repository authority over a sibling's resources, so it is tracked.
+!/scripts/
+!/scripts/check-iam-literals.sh
+!/scripts/test-iam-policies.sh
+
 # --------------------------------------------------------------------------- #
 #  Ansible — product roles + playbooks + inventory (loader/shared roles composed in).
 #  linux_disk_manager and the base wazuh_agent role come from the pinned ansible-framework.

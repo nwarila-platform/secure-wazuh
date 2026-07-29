@@ -8,7 +8,7 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-1"
+          "aws:RequestedRegion": "<region>"
         }
       }
     },
@@ -16,10 +16,10 @@
       "Sid": "DescribeKmsKeysForTerraform",
       "Effect": "Allow",
       "Action": "kms:DescribeKey",
-      "Resource": "arn:aws:kms:us-east-1:<account-id>:key/381209c1-5530-4c19-8f9d-5d75e401790b",
+      "Resource": "arn:aws:kms:<region>:<account-id>:key/<ebs-kms-key-id>",
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-1"
+          "aws:RequestedRegion": "<region>"
         }
       }
     },
@@ -32,10 +32,10 @@
         "kms:ReEncrypt*",
         "kms:GenerateDataKey*"
       ],
-      "Resource": "arn:aws:kms:us-east-1:<account-id>:key/381209c1-5530-4c19-8f9d-5d75e401790b",
+      "Resource": "arn:aws:kms:<region>:<account-id>:key/<ebs-kms-key-id>",
       "Condition": {
         "StringEquals": {
-          "kms:ViaService": "ec2.us-east-1.amazonaws.com"
+          "kms:ViaService": "ec2.<region>.amazonaws.com"
         }
       }
     },
@@ -43,10 +43,10 @@
       "Sid": "KmsGrantForEbsOnly",
       "Effect": "Allow",
       "Action": "kms:CreateGrant",
-      "Resource": "arn:aws:kms:us-east-1:<account-id>:key/381209c1-5530-4c19-8f9d-5d75e401790b",
+      "Resource": "arn:aws:kms:<region>:<account-id>:key/<ebs-kms-key-id>",
       "Condition": {
         "StringEquals": {
-          "kms:ViaService": "ec2.us-east-1.amazonaws.com"
+          "kms:ViaService": "ec2.<region>.amazonaws.com"
         },
         "Bool": {
           "kms:GrantIsForAWSResource": "true"
@@ -60,7 +60,7 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-1"
+          "aws:RequestedRegion": "<region>"
         }
       }
     },
@@ -68,10 +68,10 @@
       "Sid": "SsmSessionOnlyToOurTaggedInstances",
       "Effect": "Allow",
       "Action": "ssm:StartSession",
-      "Resource": "arn:aws:ec2:us-east-1:*:instance/*",
+      "Resource": "arn:aws:ec2:<region>:*:instance/*",
       "Condition": {
         "StringEquals": {
-          "ssm:resourceTag/nwarila:management:repository-id": "1307854438"
+          "ssm:resourceTag/nwarila:management:repository-id": "<repository-id>"
         }
       }
     },
@@ -79,7 +79,7 @@
       "Sid": "SsmStartSshSessionDocument",
       "Effect": "Allow",
       "Action": "ssm:StartSession",
-      "Resource": "arn:aws:ssm:us-east-1::document/AWS-StartSSHSession"
+      "Resource": "arn:aws:ssm:<region>::document/AWS-StartSSHSession"
     },
     {
       "Sid": "SsmSessionTeardownInRegion",
@@ -88,17 +88,17 @@
         "ssm:TerminateSession",
         "ssm:ResumeSession"
       ],
-      "Resource": "arn:aws:ssm:us-east-1:*:session/*"
+      "Resource": "arn:aws:ssm:<region>:*:session/*"
     },
     {
       "Sid": "CreateTaggedPocSecurityGroups",
       "Effect": "Allow",
       "Action": "ec2:CreateSecurityGroup",
-      "Resource": "arn:aws:ec2:us-east-1:*:security-group/*",
+      "Resource": "arn:aws:ec2:<region>:*:security-group/*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-1",
-          "aws:RequestTag/nwarila:management:repository-id": "1307854438"
+          "aws:RequestedRegion": "<region>",
+          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
         }
       }
     },
@@ -106,10 +106,10 @@
       "Sid": "UseDeployVpcForPocSecurityGroupCreation",
       "Effect": "Allow",
       "Action": "ec2:CreateSecurityGroup",
-      "Resource": "arn:aws:ec2:us-east-1:*:vpc/vpc-03c38504869c1c9bb",
+      "Resource": "arn:aws:ec2:<region>:*:vpc/<vpc-id>",
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-1"
+          "aws:RequestedRegion": "<region>"
         }
       }
     },
@@ -118,8 +118,8 @@
       "Effect": "Allow",
       "Action": "ec2:CreateTags",
       "Resource": [
-        "arn:aws:ec2:us-east-1:*:security-group/*",
-        "arn:aws:ec2:us-east-1:*:security-group-rule/*"
+        "arn:aws:ec2:<region>:*:security-group/*",
+        "arn:aws:ec2:<region>:*:security-group-rule/*"
       ],
       "Condition": {
         "StringEquals": {
@@ -128,7 +128,7 @@
             "AuthorizeSecurityGroupIngress",
             "AuthorizeSecurityGroupEgress"
           ],
-          "aws:RequestTag/nwarila:management:repository-id": "1307854438"
+          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
         }
       }
     },
@@ -145,14 +145,14 @@
         "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
         "ec2:DeleteSecurityGroup"
       ],
-      "Resource": "arn:aws:ec2:us-east-1:*:security-group/*",
+      "Resource": "arn:aws:ec2:<region>:*:security-group/*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-1",
-          "ec2:ResourceTag/nwarila:management:repository-id": "1307854438"
+          "aws:RequestedRegion": "<region>",
+          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
         },
         "ArnLike": {
-          "ec2:Vpc": "arn:aws:ec2:us-east-1:*:vpc/vpc-03c38504869c1c9bb"
+          "ec2:Vpc": "arn:aws:ec2:<region>:*:vpc/<vpc-id>"
         }
       }
     },
@@ -168,10 +168,10 @@
         "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
         "ec2:UpdateSecurityGroupRuleDescriptionsEgress"
       ],
-      "Resource": "arn:aws:ec2:us-east-1:*:security-group-rule/*",
+      "Resource": "arn:aws:ec2:<region>:*:security-group-rule/*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-1"
+          "aws:RequestedRegion": "<region>"
         }
       }
     }
