@@ -297,7 +297,7 @@
           become: true
           register: '__fim_armed_check__'
           changed_when: false
-          retries: 30
+          retries: 60
           delay: 10
           until: __fim_armed_check__.stdout | trim == 'ARMED'
           args:
@@ -312,9 +312,30 @@
             fi
             proc_start_epoch="$(date -d "${proc_start_raw}" +%s)"
 
-            last_line="$(grep 'Real-time file integrity monitoring started' /var/ossec/logs/ossec.log 2>/dev/null | tail -n1 || true)"
+            last_line="$(
+              {
+                grep 'Real-time file integrity monitoring started' \
+                  /var/ossec/logs/ossec.log 2>/dev/null || true
+                while IFS= read -r -d '' log_path; do
+                  case "${log_path}" in
+                    *.gz)
+                      gzip -cd -- "${log_path}" 2>/dev/null |
+                        grep 'Real-time file integrity monitoring started' || true
+                      ;;
+                    *)
+                      grep 'Real-time file integrity monitoring started' \
+                        "${log_path}" 2>/dev/null || true
+                      ;;
+                  esac
+                done < <(
+                  find /var/ossec/logs -mindepth 3 -maxdepth 3 -type f \
+                    \( -name 'ossec-??.log' -o -name 'ossec-??.log.gz' \) \
+                    -print0 2>/dev/null
+                )
+              } | LC_ALL=C sort | tail -n1
+            )"
             if [ -z "${last_line}" ]; then
-              echo 'NOT_ARMED (no 6012 line in ossec.log yet)'
+              echo 'NOT_ARMED (no 6012 line in ossec.log or rotated archives yet)'
               exit 0
             fi
             log_ts_raw="$(echo "${last_line}" | awk '{print $1, $2}' | tr '/' '-')"
