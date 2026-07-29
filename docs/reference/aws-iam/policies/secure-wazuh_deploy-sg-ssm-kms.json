@@ -16,7 +16,7 @@
       "Sid": "DescribeKmsKeysForTerraform",
       "Effect": "Allow",
       "Action": "kms:DescribeKey",
-      "Resource": "arn:aws:kms:us-east-1:*:key/*",
+      "Resource": "arn:aws:kms:us-east-1:<account-id>:key/381209c1-5530-4c19-8f9d-5d75e401790b",
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "us-east-1"

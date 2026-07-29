@@ -41,8 +41,7 @@
         },
         "StringLike": {
           "s3:prefix": [
-            "nwarila-platform/secure-wazuh/*",
-            "env:/*"
+            "nwarila-platform/secure-wazuh/*"
           ]
         }
       }
@@ -54,12 +53,7 @@
         "s3:DeleteObject",
         "s3:DeleteObjectVersion"
       ],
-      "Resource": "arn:aws:s3:::<account-id>-terraform/nwarila-platform/secure-wazuh/*.tfstate",
-      "Condition": {
-        "StringEquals": {
-          "aws:ResourceAccount": "<account-id>"
-        }
-      }
+      "Resource": "arn:aws:s3:::<account-id>-terraform/nwarila-platform/secure-wazuh/*.tfstate"
     },
     {
       "Sid": "DenyUnencryptedPuts",
@@ -67,9 +61,6 @@
       "Action": "s3:PutObject",
       "Resource": "arn:aws:s3:::<account-id>-terraform/nwarila-platform/secure-wazuh/*",
       "Condition": {
-        "StringEquals": {
-          "aws:ResourceAccount": "<account-id>"
-        },
         "StringNotEquals": {
           "s3:x-amz-server-side-encryption": "AES256"
         }
@@ -81,9 +72,6 @@
       "Action": "s3:PutObject",
       "Resource": "arn:aws:s3:::<account-id>-terraform/nwarila-platform/secure-wazuh/*",
       "Condition": {
-        "StringEquals": {
-          "aws:ResourceAccount": "<account-id>"
-        },
         "Null": {
           "s3:x-amz-server-side-encryption": "true"
         }
