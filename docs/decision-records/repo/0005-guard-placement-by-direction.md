@@ -1,15 +1,46 @@
 # ADR-0005: Guard Placement by Direction
 
-| Field          | Value                           |
-| -------------- | ------------------------------- |
-| Status         | Accepted                        |
-| Date           | 2026-07-29                      |
-| Authors        | Smarter > Harder (@NWarila)     |
-| Decision-maker | Smarter > Harder (@NWarila)     |
-| Consulted      | None.                           |
-| Informed       | None.                           |
-| Reversibility  | Medium                          |
-| Review-by      | N/A (Accepted)                  |
+| Field          | Value                                                   |
+| -------------- | ------------------------------------------------------- |
+| Status         | Accepted (amended 2026-07-29)                           |
+| Date           | 2026-07-29                                              |
+| Authors        | Smarter > Harder (@NWarila)                             |
+| Decision-maker | Smarter > Harder (@NWarila)                             |
+| Consulted      | None.                                                   |
+| Informed       | None.                                                   |
+| Reversibility  | Medium                                                  |
+| Review-by      | N/A (Accepted)                                          |
+
+> **Status note.** Accepted 2026-07-29. The 2026-07-29 amendment below replaces the worked
+> image-owner outcome with the empirically enforceable boundary. The guard-placement principle is
+> unchanged. Where the historical body pins the CIS publisher account or excludes
+> `aws-marketplace`, this amendment governs.
+
+## Amendment — 2026-07-29: use the owner alias IAM evaluates
+
+The placement decision is unchanged: Terraform selects the exact tested AMI, while IAM constrains
+the image-authorization leg that remains reachable when Terraform is bypassed. Empirical
+authorization and copy tests established the boundary this account can enforce:
+
+- `ec2:Owner` evaluates an image's owner alias when the image has one. With a throwaway role whose
+  owner list pinned the CIS publisher account, a dry-run launch allowed the Windows image
+  (`amazon`) but refused the CIS RHEL image (`aws-marketplace`, backed by that publisher account).
+  Pinning the publisher account therefore denies the CIS image the example intends to admit.
+- The CIS image cannot instead be copied into this account. `CopyImage` failed because the caller
+  had no permission to access the marketplace image's backing storage. Its dry run reported
+  success because dry-run checks IAM authorization, not that storage restriction.
+
+The achievable IAM owner boundary is therefore:
+
+```json
+"ec2:Owner": ["amazon", "aws-marketplace", "<account-id>"]
+```
+
+`amazon` admits the Amazon-published Windows image, `aws-marketplace` admits the CIS RHEL image by
+the alias IAM actually evaluates, and `<account-id>` is forward-looking for images built in this
+account. The Marketplace alias is broader than a publisher-specific trust anchor. That is the
+accepted limitation of this worked example; it does not move exact image selection out of the
+framework or change the directional guard-placement decision.
 
 ## TL;DR
 

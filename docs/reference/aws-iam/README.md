@@ -24,6 +24,9 @@ with the materialized source before granting access to a deployment.
 | `secure-wazuh-artifact-reader` | `roles/secure-wazuh-artifact-reader.trust.json` | `secure-wazuh-artifact-read` | Deploy-time artifact reads through fresh 3,600-second sessions |
 | `secure-wazuh-poc-role` | `roles/secure-wazuh-poc-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) | EC2 instance profile for SSM only; no standing S3 access |
 
+Set `github_nwarila-platform_secure-wazuh`'s `MaxSessionDuration` role property to `3600`.
+Set `secure-wazuh-poc-role`'s `MaxSessionDuration` role property to `3600`.
+
 The three deploy policies on the `-admin` role support the local `deploy → test → destroy` path and
 should be detached when that path is retired. EC2 uses instance profile
 `secure-wazuh-poc-profile`, which contains `secure-wazuh-poc-role`; `iam:GetInstanceProfile` is
@@ -67,9 +70,11 @@ inactivity timeout, not a wall-clock transfer cap, so it does not create a finit
 or expiry margin. Each retry instead owns a newly minted session and signature. Expiry is checked
 when the HTTP request begins, so an active transfer can finish after that point.
 
-The dashboard files follow the package fetch under a separately re-minted server session. They
-total only about 1.7 KiB and are retrieved directly by the controller, so they do not need a
-bearer URL. `MaxSessionDuration` is a role property and is materialized alongside, not inside,
+The dashboard files follow the package fetch under a separately re-minted server session.
+`dashboard-key.pem` (1,704 bytes), `dashboard-key.pem.sha256` (65 bytes), `dashboard.pem`
+(1,281 bytes), and `dashboard.pem.sha256` (65 bytes) total 3,115 bytes (about 3.0 KiB). They are
+retrieved directly by the controller, so they do not need a bearer URL. `MaxSessionDuration` is a
+role property and is materialized alongside, not inside,
 `roles/secure-wazuh-artifact-reader.trust.json`.
 
 The `-admin` role is the human local-deploy and folder-administration path. Its trust allows
@@ -104,10 +109,18 @@ now SSM only because it carries `AmazonSSMManagedInstanceCore` and no other poli
 also carried artifact-read access.
 
 `secure-wazuh-folder-admin` grants artifact writes as well as reads. The admin role can therefore
-replace the offline bundle or agent packages in S3. The deploy verifies each artifact against a
-SHA-256 value committed in this repository, so changing an S3 object alone cannot substitute a
-different payload successfully. The S3 boundary by itself is not the safe residual; the committed
-digest check is the compensating integrity control.
+replace the offline bundle, agent packages, dashboard listener pair, or digest sidecars in S3.
+Verification divides into two custody classes. The offline bundle digest is committed in this
+repository, and the agent RPM and MSI digests are committed in the `ansible-framework` revision
+pinned by `.github/.framework-pin`; replacing any one of those three package objects alone fails
+SHA-256 verification.
+
+The dashboard listener pair is different. Its digests are `.sha256` sidecars in the same
+admin-writable prefix, so an admin-role compromise can replace both PEMs and both sidecars together
+and pass sidecar verification. The configured fingerprint or CA-chain check and login smoke test
+still validate listener behavior, but they do not turn the sidecars into an independent trust
+anchor. That shared custody is an accepted residual. The dashboard listener pair is the first
+external artifact that moves into Ansible Vault when Vault custody is introduced.
 
 Because `secure-wazuh-folder-admin` also grants artifact reads, a successful local deploy through
 the admin role cannot prove that the artifact-reader role supplied the read credential. CI proves
@@ -188,8 +201,8 @@ source sizes and remaining headroom are:
 | `github_nwarila-platform_secure-wazuh.json` | 1,634 | 4,510 |
 | `secure-wazuh-artifact-read.json` | 800 | 5,344 |
 | `secure-wazuh-folder-admin.json` | 4,392 | 1,752 |
-| `secure-wazuh_deploy-ec2.json` | 5,633 | 511 |
-| `secure-wazuh_deploy-discovery-iam.json` | 1,557 | 4,587 |
+| `secure-wazuh_deploy-ec2.json` | 5,636 | 508 |
+| `secure-wazuh_deploy-discovery-iam.json` | 1,625 | 4,519 |
 | `secure-wazuh_deploy-sg-ssm-kms.json` | 3,678 | 2,466 |
 
 The EC2 policy defines these cost and security controls:
@@ -201,9 +214,11 @@ The EC2 policy defines these cost and security controls:
   IOPS/throughput inputs;
 - create authorization uses the request identity tag and lifecycle authorization uses the
   resource identity tag `nwarila:management:repository-id = 1307854438`;
-- `RunInstancesImagesFromTrustedOwners` implements the publisher boundary in
-  [ADR-0005](../../decision-records/repo/0005-guard-placement-by-direction.md), and the key-pair leg
-  is pinned to `secure-wazuh-poc-key`;
+- `RunInstancesImagesFromTrustedOwners` implements the achievable owner boundary recorded in
+  [ADR-0005](../../decision-records/repo/0005-guard-placement-by-direction.md):
+  `{amazon, aws-marketplace, <account-id>}`. IAM evaluates the Marketplace image's owner alias, and
+  the account entry is forward-looking for images built here. The key-pair leg is pinned to
+  `secure-wazuh-poc-key`;
 - ENI creation requires the repository identity tag on the new network-interface authorization
   leg. The `RunInstances` network-interface, subnet, and security-group legs and the
   `CreateNetworkInterface` subnet and security-group legs are restricted to the deploy VPC; both
@@ -228,13 +243,18 @@ roles:
   "Sid": "InspectArtifactBucketPolicy",
   "Effect": "Allow",
   "Action": "s3:GetBucketPolicy",
-  "Resource": "arn:aws:s3:::<account-id>-ansible"
+  "Resource": "arn:aws:s3:::<account-id>-ansible",
+  "Condition": {
+    "StringEquals": {
+      "aws:ResourceAccount": "<account-id>"
+    }
+  }
 }
 ```
 
 This read-only boundary inspection belongs with discovery and IAM reads, not in
 `github_nwarila-platform_secure-wazuh_deploy-ec2`. The latter is reserved for EC2 mutations and
-has only 511 compact characters of headroom.
+has only 508 compact characters of headroom.
 
 Every CI and local apply must export `TF_VAR_resource_metadata` before Terraform creates any
 resource. The pinned framework supplies the identity tags through provider `default_tags` and

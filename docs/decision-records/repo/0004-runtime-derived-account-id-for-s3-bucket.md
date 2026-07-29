@@ -22,9 +22,11 @@ The security decision is unchanged: no real account id or account-shaped bucket 
 committed, and the tracked `<account-id>` value remains an invalid tripwire. The delivery
 mechanism is amended:
 
-- Both GitHub workflows already receive the org-global `AWS_ACCOUNT_ID` input and derive the
-  artifact bucket and artifact-reader role ARN alongside their other run targets. They export
-  those values as `ANSIBLE_S3_BUCKET` and `ARTIFACT_READER_ROLE_ARN`.
+- At the time of this amendment, both GitHub workflows received the org-global `AWS_ACCOUNT_ID`
+  input and derived the artifact bucket and artifact-reader role ARN alongside their other run
+  targets. They exported those values as `ANSIBLE_S3_BUCKET` and `ARTIFACT_READER_ROLE_ARN`.
+  [2026-07-29: after the AWS job was retired from `deploy.yml`, only `e2e-full.yml` receives and
+  exports these values.]
 - Local operators make equivalent non-secret exports naming the artifact bucket and reader role
   before running the unchanged zero-`--extra-vars` playbook command.
 - The `wazuh_server` and normal platform-specific `wazuh_agent` role override sites both read

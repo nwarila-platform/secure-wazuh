@@ -51,7 +51,12 @@
       "Sid": "InspectArtifactBucketPolicy",
       "Effect": "Allow",
       "Action": "s3:GetBucketPolicy",
-      "Resource": "arn:aws:s3:::<account-id>-ansible"
+      "Resource": "arn:aws:s3:::<account-id>-ansible",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      }
     },
     {
       "Sid": "PassOnlyPocInstanceRoleToEc2",

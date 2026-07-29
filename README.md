@@ -38,7 +38,7 @@ a single node — from the same source that retains the parked Proxmox target da
 | Target | Lifecycle | Current state |
 |---|---|---|
 | **Proxmox** | Intended permanent target | Parked; the workflow job is gated off and no playbook drives it |
-| **AWS** | Ephemeral PoC | Applicable pushes deploy → **prove** → **destroy** |
+| **AWS** | Ephemeral PoC | Eligible same-repository PR events or manual dispatch deploy → **prove** → OS swap → **prove** → **destroy** |
 
 The repo is deliberately thin: it owns the **product roles** and the **per-target data**,
 and composes the reusable logic in at run time. Resource logic lives in the pinned
@@ -109,7 +109,7 @@ secure-wazuh/
 │   └── aws.tfvars              # ephemeral PoC inputs      (aws-terraform-framework)
 ├── docs/                       # Diátaxis: tutorials / how-to / reference / explanation / ADRs
 ├── .github/
-│   ├── workflows/              # ci · release-please · security · deploy (the GitOps loop)
+│   ├── workflows/              # ci · release-please · security · parked deploy · e2e-full AWS proof
 │   └── .framework-pin          # exact ansible-framework commit CI composes against
 ├── .gitignore                  # deny-all EXPLICIT allowlist (only ** is a glob)
 ├── Makefile                    # install · lint · ci · allowlist-check · clean
@@ -122,23 +122,19 @@ secure-wazuh/
 > `allowlist-check` guards the footgun). See
 > [ADR&nbsp;0003](docs/decision-records/repo/0003-deny-all-explicit-gitignore.md).
 
-## Deployment — the GitOps loop
+## Deployment — the active AWS proof path
 
-An applicable push to `main`, or a manual dispatch, triggers
-[`deploy.yml`](.github/workflows/deploy.yml):
+[`deploy.yml`](.github/workflows/deploy.yml) now contains only the parked Proxmox job. Its
+`if: false` gate prevents a runner from being scheduled, and the workflow has no AWS job,
+credential, or current playbook path.
 
-1. **Proxmox job** — skipped by its `if: false` gate. The target data remains committed, but no
-   playbook currently drives it.
-2. **AWS job** — `terraform apply -var-file=aws.tfvars` against the pinned AWS framework,
-   composes and runs the stack, **tests** it (cluster-health gate + TLS-validated dashboard
-   response + a real FIM-event proof), then **`terraform destroy`** (`always()`) to tear the PoC
-   down.
+[`e2e-full.yml`](.github/workflows/e2e-full.yml) is the active AWS path. It runs by manual dispatch
+or for its eligible same-repository pull-request events and configured path filters; it does not
+run on pushes to `main`. The credentialed job authenticates with OIDC, applies the pinned AWS
+framework, composes and runs the stack, proves it, force-replaces the AIO OS volume, proves the
+cumulative result, and always destroys the ephemeral stack.
 
 Rationale and the full pattern: [ADR&nbsp;0002](docs/decision-records/repo/0002-combined-terraform-ansible-delivery.md).
-
-[`deploy.yml`](.github/workflows/deploy.yml) derives its AWS role and state-bucket names from
-organization-scoped configuration, authenticates with OIDC, composes the pinned AWS and Ansible frameworks,
-and destroys the ephemeral AWS stack after proof.
 
 ## Proof of Concept — live evidence
 
