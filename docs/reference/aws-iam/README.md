@@ -101,6 +101,14 @@ Assumption requires an SSO login with MFA. The trust policy also requires `aws:P
 match `AWSReservedSSO_github_nwarila-platform_*`; naming the account root as the principal does not
 make the role reachable by other account principals. `MaxSessionDuration` is 3,600 seconds.
 
+The `github_nwarila-platform` permission set behind that pattern is narrower than the trust alone
+implies, and it is assigned to exactly one user. It attaches no managed policy; its only grant is
+`sts:AssumeRole` to this admin role and the terraform-runner admin, so a compromised SSO session
+holds no direct AWS API surface — it can only assume one of those two roles, under this role's own
+boundary. Its session duration is one hour, matching the role's. These facts were read from the
+Identity Center configuration; the MFA requirement itself is an Identity Center authentication
+setting that has no API and is confirmed from the console, not from this repository's tooling.
+
 The accepted residual risk is material: `RunInstances` together with `iam:PassRole` on
 `secure-wazuh-poc-role` permits an operator to launch an instance with arbitrary user data and that
 instance profile. The launch boundary restricts the region, instance types, VPC, AMI owners, pinned
