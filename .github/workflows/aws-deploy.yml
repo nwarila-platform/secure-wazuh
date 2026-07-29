@@ -57,26 +57,29 @@ name: AWS Deploy
 on:
   workflow_dispatch:
   pull_request:
-    types: [opened, reopened, ready_for_review, labeled]
+    # `synchronize` is INCLUDED deliberately: without it only the first push to a PR fires, so
+    # editing a task file or variable in an already-open PR would silently skip the proof.
+    # `labeled` is deliberately ABSENT: manual re-runs go through workflow_dispatch, and the
+    # label path is reachable by a TRIAGE-permission user, who could otherwise spend real money
+    # without holding write access.
+    types: [opened, reopened, ready_for_review, synchronize]
     paths:
-      # ansible/** stays WHOLE, deliberately. The Compose step rsyncs this directory wholesale
-      # onto the pinned framework tree, where any file can shadow framework content — so the set
-      # of ansible/ files affecting this deploy is "all of them, including paths that do not
-      # exist yet". Enumerating subdirectories would bet on today's layout and silently stop
-      # triggering when a new top-level path appears. paths: has no negation, so the price of
-      # that safety is that a README edit still costs one run. That is the correct trade: too
-      # broad wastes a dollar and announces itself; too narrow skips the proof in silence.
+      # Role tasks, variables and defaults. Kept WHOLE, not enumerated: the Compose
+      # step rsyncs this directory onto the pinned framework tree where any file can
+      # shadow framework content, so the set that affects a deploy is all of them,
+      # including paths that do not exist yet.
       - ansible/**
-      # terraform/** was over-broad — it also matched terraform/proxmox.tfvars, so editing a
-      # Proxmox variable fired a real AWS deploy. Every terraform apply in this workflow passes
-      # exactly this one file.
+      # The IAM sources define the boundary this workflow authenticates
+      # against, so a change to them must re-prove it.
+      - docs/reference/aws-iam/**
+      - scripts/check-iam-literals.sh
+      - scripts/test-iam-policies.sh
       - terraform/aws.tfvars
       - .github/.framework-pin
       - .github/.aws-tf-framework-pin
-      # Must track this workflow's filename: a stale entry here means edits to the deploy
-      # workflow itself never trigger their own proof.
+      # Must track this workflow's own filename: a stale entry here means changes to the
+      # deploy workflow never trigger their own proof.
       - .github/workflows/aws-deploy.yml
-
 # Least privilege at the workflow level; the one job elevates only what it needs.
 permissions: {}
 
