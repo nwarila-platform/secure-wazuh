@@ -165,7 +165,10 @@ replacement so no ref-based or temporary feature-branch subjects remain.
 
 Branch selection stays in the workflows' trigger logic instead of the role trust. Their `paths:`
 filters cover `.github/.framework-pin`, `.github/.aws-tf-framework-pin`, `ansible/**`,
-`terraform/**`, and the workflow file itself. The Wazuh version is the `bundle_key` in
+`terraform/aws.tfvars`, and the workflow file itself. The Terraform filter names that one file
+deliberately: `terraform/**` also matched `terraform/proxmox.tfvars`, so editing a Proxmox variable
+fired a real AWS deploy. `ansible/**` stays whole because the Compose step rsyncs it wholesale onto
+the framework tree, so any file under it can shadow framework content. The Wazuh version is the `bundle_key` in
 `ansible/applications/wazuh_server/vars/redhat_dev.yml`, so version changes remain covered by the
 `ansible/**` filter. A `pull_request` run of `aws-deploy.yml` can therefore authenticate without a
 loose `pull_request` subject: the trust does not key authorization on the event.
