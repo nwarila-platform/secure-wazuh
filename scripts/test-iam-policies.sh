@@ -46,7 +46,7 @@ cp "${IAM_DIR}/policies/"*.json "${WORK}/policies/"
 cp "${IAM_DIR}/roles/"*.json    "${WORK}/roles/"
 sed -i "s|<account-id>|${ACCOUNT}|g; s|<repository-id>|${REPO_ID}|g; s|<region>|${REGION}|g;
         s|<vpc-id>|vpc-00000000000000000|g; s|<subnet-id>|subnet-00000000000000000|g;
-        s|<ebs-kms-key-id>|${KMS_KEY}|g; s|<key-pair-name>|${THIS_REPO}-poc-key|g" \
+        s|<ebs-kms-key-id>|${KMS_KEY}|g; s|<key-pair-name>|nwarila-ec2-key|g" \
     "${WORK}"/policies/*.json "${WORK}"/roles/*.json
 
 "${REPO_ROOT}/scripts/check-iam-literals.sh" --materialized "${WORK}" >/dev/null \
@@ -102,7 +102,7 @@ else
     bad "trust names a workflow that EXISTS" "missing: $(basename "${wf_path}")" "the file"
 fi
 ADMIN_TRUST="github_nwarila-platform_${THIS_REPO}-admin.trust.json"
-POC_TRUST="${THIS_REPO}-poc-role.trust.json"
+SHARED_TRUST="nwarila-ec2-role.trust.json"
 C='d["Statement"][0]["Condition"]'
 
 # Single-valued sub and job_workflow_ref: an array is what teaches a cloner to APPEND, and an
@@ -125,9 +125,9 @@ trust_assert "SSO trust carries no trailing wildcard" \
   "not ${C}['ArnLike']['aws:PrincipalArn'].endswith('*')" "True" "${ADMIN_TRUST}"
 # Confused-deputy guard on the instance-profile trust.
 trust_assert "instance trust pins SourceAccount" \
-  "${C}['StringEquals']['aws:SourceAccount']" "${ACCOUNT}" "${POC_TRUST}"
+  "${C}['StringEquals']['aws:SourceAccount']" "${ACCOUNT}" "${SHARED_TRUST}"
 trust_assert "instance trust principal is ec2" \
-  "d['Statement'][0]['Principal']['Service']" "ec2.amazonaws.com" "${POC_TRUST}"
+  "d['Statement'][0]['Principal']['Service']" "ec2.amazonaws.com" "${SHARED_TRUST}"
 
 # ---- 2. security properties ----------------------------------------------------------------
 simulate() { # action resource context...
@@ -162,7 +162,7 @@ STATE="arn:aws:s3:::${ACCOUNT}-terraform/${OWNER}/${THIS_REPO}"
 # The suite materializes DUMMY network ids, so network-leg assertions must use these.
 VPC_ID='vpc-00000000000000000'
 SUBNET_ID='subnet-00000000000000000'
-KEY_PAIR="${THIS_REPO}-poc-key"
+KEY_PAIR='nwarila-ec2-key'
 ENI="arn:aws:ec2:${REGION}:${ACCOUNT}:network-interface/eni-0test"
 SUBNET="arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/${SUBNET_ID}"
 SG="arn:aws:ec2:${REGION}:${ACCOUNT}:security-group/sg-0test"
@@ -247,11 +247,11 @@ assert "delete the identity tag"        explicitDeny ec2:DeleteTags "${INST}" "$
        "${TAG}=string=${REPO_ID}" "aws:TagKeys=string=nwarila:management:repository-id"
 
 echo "== PassRole =="
-assert "pass own instance role"         allowed      iam:PassRole "arn:aws:iam::${ACCOUNT}:role/${THIS_REPO}-poc-role" \
+assert "pass own instance role"         allowed      iam:PassRole "arn:aws:iam::${ACCOUNT}:role/nwarila-ec2-role" \
        "iam:PassedToService=string=ec2.amazonaws.com"
-assert "pass a sibling's instance role" implicitDeny iam:PassRole "arn:aws:iam::${ACCOUNT}:role/${SIBLINGS[1]}-poc-role" \
+assert "pass a non-instance role"       implicitDeny iam:PassRole "arn:aws:iam::${ACCOUNT}:role/github_nwarila-platform_${SIBLINGS[1]}-admin" \
        "iam:PassedToService=string=ec2.amazonaws.com"
-assert "pass own role to a non-EC2"     implicitDeny iam:PassRole "arn:aws:iam::${ACCOUNT}:role/${THIS_REPO}-poc-role" \
+assert "pass own role to a non-EC2"     implicitDeny iam:PassRole "arn:aws:iam::${ACCOUNT}:role/nwarila-ec2-role" \
        "iam:PassedToService=string=lambda.amazonaws.com"
 
 echo "== state protection =="

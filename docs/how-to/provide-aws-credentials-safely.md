@@ -35,8 +35,8 @@ target; the one-object bearer capability does.
 
 1. **Step 0 validates the role input and the run-scoped hosts but mints nothing.** The guard uses
    the same server-plus-agent groups whose exact shape Step 0 already asserted. It requires every
-   inventory instance ID to exist, carry one common `secure-wazuh-poc-profile`, and match the
-   profile object being inspected. That profile must contain exactly `secure-wazuh-poc-role`;
+   inventory instance ID to exist, carry one common `nwarila-ec2-profile`, and match the
+   profile object being inspected. That profile must contain exactly `nwarila-ec2-role`;
    the role must have only the AWS-managed `AmazonSSMManagedInstanceCore` attachment and no inline
    policy, including the legacy `secure-wazuh-artifact-read` name. The guard also reads the
    artifact bucket policy and rejects any resource-based Allow for the instance role. A missing

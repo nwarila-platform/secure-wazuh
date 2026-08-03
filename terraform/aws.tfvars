@@ -6,7 +6,7 @@ readiness_linux_script_dir = "/home/ec2-user"
 
 # 
 readiness_private_key_paths = {
-  "secure-wazuh-poc-key" = "/root/.ssh/secure-wazuh-poc-key.pem"
+  "nwarila-ec2-key" = "/root/.ssh/nwarila-ec2-key.pem"
 }
 
 all_systems = [
@@ -17,10 +17,10 @@ all_systems = [
     availability_zone    = "us-east-1a"
     aws_kms_alias        = "aws/ebs"
     hostname             = "secure-wazuh-poc"
-    iam_instance_profile = "secure-wazuh-poc-profile"
+    iam_instance_profile = "nwarila-ec2-profile"
     imds_hop_limit       = 1
     instance_type        = "m6i.xlarge"
-    key_name             = "secure-wazuh-poc-key"
+    key_name             = "nwarila-ec2-key"
     readiness_gate       = false
     readiness_user       = "ec2-user"
     refresh              = true
@@ -117,10 +117,10 @@ all_systems = [
     availability_zone    = "us-east-1a"
     aws_kms_alias        = "aws/ebs"
     hostname             = "secure-wazuh-poc-agent-linux"
-    iam_instance_profile = "secure-wazuh-poc-profile"
+    iam_instance_profile = "nwarila-ec2-profile"
     imds_hop_limit       = 1
     instance_type        = "t3.medium"
-    key_name             = "secure-wazuh-poc-key"
+    key_name             = "nwarila-ec2-key"
     readiness_gate       = false
     readiness_user       = "ec2-user"
     refresh              = false
@@ -182,10 +182,10 @@ all_systems = [
     availability_zone    = "us-east-1a"
     aws_kms_alias        = "aws/ebs"
     hostname             = "secure-wazuh-poc-agent-win"
-    iam_instance_profile = "secure-wazuh-poc-profile"
+    iam_instance_profile = "nwarila-ec2-profile"
     imds_hop_limit       = 1
     instance_type        = "t3.medium"
-    key_name             = "secure-wazuh-poc-key"
+    key_name             = "nwarila-ec2-key"
     readiness_gate       = false
     readiness_user       = "Administrator"
     refresh              = false

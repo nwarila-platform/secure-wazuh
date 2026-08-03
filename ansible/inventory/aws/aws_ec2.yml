@@ -163,11 +163,11 @@ compose:
   # too — they are Ansible-over-SSH, not WinRM/PSRP, which is the non-obvious part.
   ansible_connection: "'ssh'"
 
-  # Matches terraform/aws.tfvars all_systems[].key_name = "secure-wazuh-poc-key". The '~' is left
+  # Matches terraform/aws.tfvars all_systems[].key_name = "nwarila-ec2-key". The '~' is left
   # UNEXPANDED here and expanded by the ssh connection plugin itself at connect time, so it follows
   # the controller user's home — /root for the local root harness, /home/runner for the non-root
   # GitHub runner. ansible/inventory/proxmox.yml keeps its separate permanent-inventory path.
-  ansible_ssh_private_key_file: "'~/.ssh/secure-wazuh-poc-key.pem'"
+  ansible_ssh_private_key_file: "'~/.ssh/nwarila-ec2-key.pem'"
 
   # RHEL/Rocky 8 STIG images ship platform-python with the distribution-supported bindings used
   # by target modules. Set it unconditionally; it is inert on Windows endpoints, while every

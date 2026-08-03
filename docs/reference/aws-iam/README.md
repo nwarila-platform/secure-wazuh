@@ -22,10 +22,10 @@ with the materialized source before granting access to a deployment.
 | `github_nwarila-platform_secure-wazuh` | `roles/github_nwarila-platform_secure-wazuh.trust.json` | `github_nwarila-platform_secure-wazuh` · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | CI state, deploy, proof, destroy, and scoped artifact-reader assumption |
 | `github_nwarila-platform_secure-wazuh-admin` | `roles/github_nwarila-platform_secure-wazuh-admin.trust.json` | `secure-wazuh-folder-admin` (inline) · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | Operator folder and artifact administration, local deploy, and scoped artifact-reader assumption |
 | `secure-wazuh-artifact-reader` | `roles/secure-wazuh-artifact-reader.trust.json` | `secure-wazuh-artifact-read` | Deploy-time artifact reads through fresh 3,600-second sessions |
-| `secure-wazuh-poc-role` | `roles/secure-wazuh-poc-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) | EC2 instance profile for SSM only; no standing S3 access |
+| `nwarila-ec2-role` | `roles/nwarila-ec2-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) | EC2 instance profile for SSM only; no standing S3 access |
 
 Set `github_nwarila-platform_secure-wazuh`'s `MaxSessionDuration` role property to `3600`.
-Set `secure-wazuh-poc-role`'s `MaxSessionDuration` role property to `3600`.
+Set `nwarila-ec2-role`'s `MaxSessionDuration` role property to `3600`.
 
 ### The broker permission set — the half of this setup that is not in any repository
 
@@ -84,12 +84,12 @@ carry this instruction into every clone.
 
 The three deploy policies on the `-admin` role support the local `deploy → test → destroy` path and
 should be detached when that path is retired. EC2 uses instance profile
-`secure-wazuh-poc-profile`, which contains `secure-wazuh-poc-role`; `iam:GetInstanceProfile` is
+`nwarila-ec2-profile`, which contains `nwarila-ec2-role`; `iam:GetInstanceProfile` is
 pinned to the profile and `iam:PassRole` is pinned to the role. Role-name substrings are not an
 authorization boundary. The instance role carries only `AmazonSSMManagedInstanceCore`; it has no
 artifact policy. Step 0 takes the instance IDs from the exact run-scoped server-plus-agent
 topology, requires every instance to carry one common profile, and requires that profile object to
-be `secure-wazuh-poc-profile`. It then requires exactly `secure-wazuh-poc-role`, exactly one
+be `nwarila-ec2-profile`. It then requires exactly `nwarila-ec2-role`, exactly one
 attachment whose ARN is the AWS-managed `AmazonSSMManagedInstanceCore` policy, and no inline
 policies. It also reads the artifact bucket policy and rejects a resource-based Allow naming the
 instance role. Absence of a bucket policy is acceptable; an unreadable policy is not. A retained
@@ -144,7 +144,7 @@ identity, so GitHub OIDC claim conditions do not belong in its trust.
 | Status | Accepted |
 | Decision date | 2026-07-28 |
 | Owner | @NWarila |
-| Reconsider when | Local workstation deploys stop; `secure-wazuh-poc-role` gains any policy beyond `AmazonSSMManagedInstanceCore`; or the SSO permission set no longer requires MFA |
+| Reconsider when | Local workstation deploys stop; `nwarila-ec2-role` gains any policy beyond `AmazonSSMManagedInstanceCore`; or the SSO permission set no longer requires MFA |
 
 `github_nwarila-platform_secure-wazuh-admin` keeps the `deploy-ec2`,
 `deploy-sg-ssm-kms`, and `deploy-discovery-iam` compute-lifecycle policies that duplicate the CI
@@ -167,7 +167,7 @@ console setting is the sole source of truth for this predicate, and it should be
 whenever this acceptance is revisited.
 
 The accepted residual risk is material: `RunInstances` together with `iam:PassRole` on
-`secure-wazuh-poc-role` permits an operator to launch an instance with arbitrary user data and that
+`nwarila-ec2-role` permits an operator to launch an instance with arbitrary user data and that
 instance profile. The launch boundary restricts the region, instance types, VPC, AMI owners, pinned
 key pair, IMDSv2 setting, and repository-identity tag. The instance profile's privilege ceiling is
 now SSM only because it carries `AmazonSSMManagedInstanceCore` and no other policy; it previously
@@ -266,12 +266,12 @@ source sizes and remaining headroom are:
 
 | Policy source | Compact characters | Headroom |
 |---|---:|---:|
-| `github_nwarila-platform_secure-wazuh.json` | 1,634 | 4,510 |
+| `github_nwarila-platform_secure-wazuh.json` | 1,449 | 4,695 |
 | `secure-wazuh-artifact-read.json` | 800 | 5,344 |
 | `secure-wazuh-folder-admin.json` | 4,392 | 1,752 |
-| `secure-wazuh_deploy-ec2.json` | 5,636 | 508 |
-| `secure-wazuh_deploy-discovery-iam.json` | 1,625 | 4,519 |
-| `secure-wazuh_deploy-sg-ssm-kms.json` | 3,678 | 2,466 |
+| `secure-wazuh_deploy-ec2.json` | 5,631 | 513 |
+| `secure-wazuh_deploy-discovery-iam.json` | 1,651 | 4,493 |
+| `secure-wazuh_deploy-sg-ssm-kms.json` | 3,488 | 2,656 |
 
 The EC2 policy defines these cost and security controls:
 
@@ -286,7 +286,7 @@ The EC2 policy defines these cost and security controls:
   [ADR-0005](../../decision-records/repo/0005-guard-placement-by-direction.md):
   `{amazon, aws-marketplace, <account-id>}`. IAM evaluates the Marketplace image's owner alias, and
   the account entry is forward-looking for images built here. The key-pair leg is pinned to
-  `secure-wazuh-poc-key`;
+  `nwarila-ec2-key`;
 - ENI creation requires the repository identity tag on the new network-interface authorization
   leg. The `RunInstances` network-interface, subnet, and security-group legs and the
   `CreateNetworkInterface` subnet and security-group legs are restricted to the deploy VPC; both
@@ -296,8 +296,8 @@ The EC2 policy defines these cost and security controls:
 - console output is tag-scoped.
 
 The discovery and IAM policy keeps Terraform's EC2 read-only discovery action allowlist in
-`us-east-1`, limits instance-profile discovery to `secure-wazuh-poc-profile`, permits only the two
-role-policy list calls needed to reject the legacy policy on `secure-wazuh-poc-role`, permits the
+`us-east-1`, limits instance-profile discovery to `nwarila-ec2-profile`, permits only the two
+role-policy list calls needed to reject the legacy policy on `nwarila-ec2-role`, permits the
 artifact-bucket policy read needed to reject a resource-based role grant, permits passing only that
 role to EC2, and permits assuming only `secure-wazuh-artifact-reader`.
 
@@ -406,7 +406,7 @@ not represented as complete by an IAM-only edit.
 ## PoC networking
 
 The deployments use public subnet `subnet-0e1c8aae192deff26` in
-`vpc-03c38504869c1c9bb` and SSH key pair `secure-wazuh-poc-key`. Each
+`vpc-03c38504869c1c9bb` and SSH key pair `nwarila-ec2-key`. Each
 `network_interfaces` entry declares its own `ingress` and `egress`; the framework derives
 `<hostname>-eni-<index>-sg` and attaches that group only to the declaring interface.
 `security_groups` is reserved for pre-created group IDs, and all three interfaces currently set it

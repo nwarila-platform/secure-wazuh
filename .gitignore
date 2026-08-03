@@ -101,7 +101,7 @@
 !/docs/reference/aws-iam/roles/github_nwarila-platform_secure-wazuh-admin.trust.json
 !/docs/reference/aws-iam/roles/github_nwarila-platform_secure-wazuh.trust.json
 !/docs/reference/aws-iam/roles/secure-wazuh-artifact-reader.trust.json
-!/docs/reference/aws-iam/roles/secure-wazuh-poc-role.trust.json
+!/docs/reference/aws-iam/roles/nwarila-ec2-role.trust.json
 !/docs/reference/inventory-and-topology.md
 !/docs/reference/poc-evidence.md
 !/docs/reference/s3-artifacts.md

@@ -50,11 +50,11 @@ EXAMPLES = r"""
 - name: Reject the legacy artifact policy on the target profile
   delegate_to: localhost
   secure_wazuh_iam_profile_guard:
-    instance_profile_name: secure-wazuh-poc-profile
+    instance_profile_name: nwarila-ec2-profile
     run_instance_ids: "{{ run_scoped_instance_ids }}"
     region: us-east-1
     artifact_bucket: your-org-artifact-bucket
-    expected_role_name: secure-wazuh-poc-role
+    expected_role_name: nwarila-ec2-role
     expected_managed_policy_arn: arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
     forbidden_policy_name: secure-wazuh-artifact-read
 """

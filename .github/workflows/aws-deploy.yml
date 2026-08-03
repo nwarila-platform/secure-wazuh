@@ -258,9 +258,9 @@ jobs:
         run: |
           set -euo pipefail
           # The org-global AWS_EC2_SSH_PRIVATE_KEY secret is the private half of
-          # terraform/aws.tfvars' key_name = "secure-wazuh-poc-key".
+          # terraform/aws.tfvars' key_name = "nwarila-ec2-key".
           install -d -m 0700 "$HOME/.ssh"
-          install -m 0600 /dev/stdin "$HOME/.ssh/secure-wazuh-poc-key.pem" <<< "${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}"
+          install -m 0600 /dev/stdin "$HOME/.ssh/nwarila-ec2-key.pem" <<< "${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}"
 
       - name: Terraform apply (phase 1 — stand up AIO + both agents)
         working-directory: ${{ env.TF_DIR }}
