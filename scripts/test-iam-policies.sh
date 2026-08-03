@@ -34,6 +34,7 @@ bad()  { printf '  \033[31m✗\033[0m %-56s got=%s want=%s\n' "$1" "$2" "$3"; fa
 echo "== resolving live values =="
 ACCOUNT="$(aws sts get-caller-identity --profile "${PROFILE}" --query Account --output text)" || exit 1
 REPO_ID="$(gh api "repos/${OWNER}/${THIS_REPO}" --jq .id)" || exit 1
+OWNER_ID="$(gh api "orgs/${OWNER}" --jq .id)" || exit 1
 KMS_KEY="$(aws kms describe-key --key-id alias/aws/ebs --profile "${PROFILE}" --region "${REGION}" \
            --query 'KeyMetadata.KeyId' --output text 2>/dev/null || echo '00000000-0000-0000-0000-000000000000')"
 declare -A SIB_ID
@@ -46,7 +47,8 @@ cp "${IAM_DIR}/policies/"*.json "${WORK}/policies/"
 cp "${IAM_DIR}/roles/"*.json    "${WORK}/roles/"
 sed -i "s|<account-id>|${ACCOUNT}|g; s|<repository-id>|${REPO_ID}|g; s|<region>|${REGION}|g;
         s|<vpc-id>|vpc-00000000000000000|g; s|<subnet-id>|subnet-00000000000000000|g;
-        s|<ebs-kms-key-id>|${KMS_KEY}|g; s|<key-pair-name>|nwarila-ec2-key|g" \
+        s|<ebs-kms-key-id>|${KMS_KEY}|g; s|<key-pair-name>|nwarila-ec2-key|g;
+        s|<owner-id>|${OWNER_ID}|g" \
     "${WORK}"/policies/*.json "${WORK}"/roles/*.json
 
 "${REPO_ROOT}/scripts/check-iam-literals.sh" --materialized "${WORK}" >/dev/null \
@@ -105,18 +107,26 @@ ADMIN_TRUST="github_nwarila-platform_${THIS_REPO}-admin.trust.json"
 SHARED_TRUST="nwarila-ec2-role.trust.json"
 C='d["Statement"][0]["Condition"]'
 
-# Single-valued sub and job_workflow_ref: an array is what teaches a cloner to APPEND, and an
-# appended trust leaves the sibling repository trusted.
-trust_assert "OIDC sub is single-valued" \
-  "type(${C}['StringLike']['token.actions.githubusercontent.com:sub']).__name__" "str" "${CI_TRUST}"
+# `sub` is a TWO-element array, not a scalar. GitHub emits the owner-id-embedded spelling
+# (`repo:<owner>@<owner-id>/<repo>@<repository-id>:*`) as well as the plain one, and a trust that
+# accepts only the plain form leaves the deploy role unassumable by the workflow it exists for —
+# verified 2026-08-03, when live carried both and this repository's source carried one.
+#
+# The array therefore cannot be forbidden, so the anti-append protection that the single-valued
+# assertion used to provide is preserved by pinning CONTENT instead of arity: exactly two entries,
+# every one of them naming this repository. A cloner who appends a sibling's subject still fails
+# here, which is the property that actually mattered. `job_workflow_ref` stays single-valued.
+trust_assert "OIDC sub carries exactly the two known spellings" \
+  "len(${C}['StringLike']['token.actions.githubusercontent.com:sub'])" "2" "${CI_TRUST}"
 trust_assert "OIDC job_workflow_ref is single-valued" \
   "type(${C}['StringLike']['token.actions.githubusercontent.com:job_workflow_ref']).__name__" "str" "${CI_TRUST}"
 trust_assert "OIDC binds this repository id exactly" \
   "${C}['StringEquals']['token.actions.githubusercontent.com:repository_id']" "${REPO_ID}" "${CI_TRUST}"
 trust_assert "OIDC audience is exact" \
   "${C}['StringEquals']['token.actions.githubusercontent.com:aud']" "sts.amazonaws.com" "${CI_TRUST}"
-trust_assert "OIDC sub names this repository" \
-  "'${OWNER}/${THIS_REPO}' in ${C}['StringLike']['token.actions.githubusercontent.com:sub']" "True" "${CI_TRUST}"
+trust_assert "OIDC sub names only this repository" \
+  "all(s.startswith('repo:${OWNER}/${THIS_REPO}:') or (s.startswith('repo:${OWNER}@') and '/${THIS_REPO}@' in s) for s in ${C}['StringLike']['token.actions.githubusercontent.com:sub'])" \
+  "True" "${CI_TRUST}"
 # The SSO suffix must be hash-bounded, not a trailing wildcard that also matches a future
 # permission set named github_<owner>_<anything>.
 trust_assert "SSO trust is hash-bounded, not wildcard" \

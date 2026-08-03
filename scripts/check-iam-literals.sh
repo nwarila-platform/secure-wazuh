@@ -68,6 +68,7 @@ readonly -a REQUIRED_PLACEHOLDERS=(
     '<subnet-id>'
     '<ebs-kms-key-id>'
     '<key-pair-name>'
+    '<owner-id>'
 )
 
 fail() { printf 'check-iam-literals: FAIL — %s\n' "$1" >&2; exit 1; }
