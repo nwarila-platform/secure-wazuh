@@ -19,8 +19,8 @@ with the materialized source before granting access to a deployment.
 
 | Role | Trust source | Required policies | Purpose |
 |---|---|---|---|
-| `github_nwarila-platform_secure-wazuh` | `roles/github_nwarila-platform_secure-wazuh.trust.json` | `github_nwarila-platform_secure-wazuh` · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | CI state, deploy, proof, destroy, and scoped artifact-reader assumption |
-| `github_nwarila-platform_secure-wazuh-admin` | `roles/github_nwarila-platform_secure-wazuh-admin.trust.json` | `secure-wazuh-folder-admin` (inline) · `github_nwarila-platform_secure-wazuh_deploy-ec2` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | Operator folder and artifact administration, local deploy, and scoped artifact-reader assumption |
+| `github_nwarila-platform_secure-wazuh` | `roles/github_nwarila-platform_secure-wazuh.trust.json` | `github_nwarila-platform_secure-wazuh` · `github_nwarila-platform_secure-wazuh_deploy-ec2-launch` · `github_nwarila-platform_secure-wazuh_deploy-ec2-lifecycle` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | CI state, deploy, proof, destroy, and scoped artifact-reader assumption |
+| `github_nwarila-platform_secure-wazuh-admin` | `roles/github_nwarila-platform_secure-wazuh-admin.trust.json` | `secure-wazuh-folder-admin` (inline) · `github_nwarila-platform_secure-wazuh_deploy-ec2-launch` · `github_nwarila-platform_secure-wazuh_deploy-ec2-lifecycle` · `github_nwarila-platform_secure-wazuh_deploy-discovery-iam` · `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms` | Operator folder and artifact administration, local deploy, and scoped artifact-reader assumption |
 | `secure-wazuh-artifact-reader` | `roles/secure-wazuh-artifact-reader.trust.json` | `secure-wazuh-artifact-read` | Deploy-time artifact reads through fresh 3,600-second sessions |
 | `nwarila-ec2-role` | `roles/nwarila-ec2-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) | EC2 instance profile for SSM only; no standing S3 access |
 
@@ -82,7 +82,7 @@ Verified 2026-07-30: this step was missed for both `windows-wsus` and `pdq-deplo
 their `-admin` roles were created. **Adding the ARN is part of creating the role, not a follow-up** —
 carry this instruction into every clone.
 
-The three deploy policies on the `-admin` role support the local `deploy → test → destroy` path and
+The four deploy policies on the `-admin` role support the local `deploy → test → destroy` path and
 should be detached when that path is retired. EC2 uses instance profile
 `nwarila-ec2-profile`, which contains `nwarila-ec2-role`; `iam:GetInstanceProfile` is
 pinned to the profile and `iam:PassRole` is pinned to the role. Role-name substrings are not an
@@ -146,7 +146,7 @@ identity, so GitHub OIDC claim conditions do not belong in its trust.
 | Owner | @NWarila |
 | Reconsider when | Local workstation deploys stop; `nwarila-ec2-role` gains any policy beyond `AmazonSSMManagedInstanceCore`; or the SSO permission set no longer requires MFA |
 
-`github_nwarila-platform_secure-wazuh-admin` keeps the `deploy-ec2`,
+`github_nwarila-platform_secure-wazuh-admin` keeps the `deploy-ec2-launch`, `deploy-ec2-lifecycle`,
 `deploy-sg-ssm-kms`, and `deploy-discovery-iam` compute-lifecycle policies that duplicate the CI
 role's grants. The owner runs deploys from a workstation for development and testing as needed, so
 `RunInstances` is part of this role's ordinary job. Splitting compute access into another role would
@@ -247,19 +247,30 @@ does not replace that organization-level dependency.
 
 ## Deploy policy split and controls
 
-The deploy boundary uses three managed policies:
+The deploy boundary uses four managed policies:
 
-- `policies/secure-wazuh_deploy-ec2.json` →
-  `github_nwarila-platform_secure-wazuh_deploy-ec2`;
+- `policies/secure-wazuh_deploy-ec2-launch.json` →
+  `github_nwarila-platform_secure-wazuh_deploy-ec2-launch`;
+- `policies/secure-wazuh_deploy-ec2-lifecycle.json` →
+  `github_nwarila-platform_secure-wazuh_deploy-ec2-lifecycle`;
 - `policies/secure-wazuh_deploy-discovery-iam.json` →
   `github_nwarila-platform_secure-wazuh_deploy-discovery-iam`;
 - `policies/secure-wazuh_deploy-sg-ssm-kms.json` →
   `github_nwarila-platform_secure-wazuh_deploy-sg-ssm-kms`.
 
-The split is structural. Do not recreate one combined document. Attach all three policies to
+The split is structural. Do not recreate one combined document. Attach all four policies to
 **both** deploy-capable roles before detaching the old
 `github_nwarila-platform_secure-wazuh_deploy` policy. Detaching first creates a permissions outage;
 leaving the old policy attached temporarily preserves its old broad permissions.
+
+EC2 is two policies, not one, because a single document had 513 characters of headroom against the
+6,144 limit — too little to add a control without evicting another. `-launch` holds the
+`RunInstances` admission controls (what may be created); `-lifecycle` holds tagging and mutation of
+what already exists.
+
+The earlier combined `secure-wazuh_deploy-ec2.json` was retired on 2026-08-03. It had been detached
+from every role since the live split on 2026-07-29 while remaining a tracked source, so edits to it
+changed nothing — see `docs/decision-records/repo/0006-live-attachment-is-part-of-the-contract.md`.
 
 AWS ignores whitespace when enforcing the 6,144-character managed-policy limit. The compact
 source sizes and remaining headroom are:
@@ -269,7 +280,8 @@ source sizes and remaining headroom are:
 | `github_nwarila-platform_secure-wazuh.json` | 1,449 | 4,695 |
 | `secure-wazuh-artifact-read.json` | 800 | 5,344 |
 | `secure-wazuh-folder-admin.json` | 4,392 | 1,752 |
-| `secure-wazuh_deploy-ec2.json` | 5,631 | 513 |
+| `secure-wazuh_deploy-ec2-launch.json` | 3,040 | 3,104 |
+| `secure-wazuh_deploy-ec2-lifecycle.json` | 3,302 | 2,842 |
 | `secure-wazuh_deploy-discovery-iam.json` | 1,651 | 4,493 |
 | `secure-wazuh_deploy-sg-ssm-kms.json` | 3,488 | 2,656 |
 
@@ -320,9 +332,9 @@ roles:
 }
 ```
 
-This read-only boundary inspection belongs with discovery and IAM reads, not in
-`github_nwarila-platform_secure-wazuh_deploy-ec2`. The latter is reserved for EC2 mutations and
-has only 508 compact characters of headroom.
+This read-only boundary inspection belongs with discovery and IAM reads, not in the
+`github_nwarila-platform_secure-wazuh_deploy-ec2-launch` / `-lifecycle` pair. Those two are
+reserved for EC2 admission and mutation respectively.
 
 Every CI and local apply must export `TF_VAR_resource_metadata` before Terraform creates any
 resource. The pinned framework supplies the identity tags through provider `default_tags` and

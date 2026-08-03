@@ -74,6 +74,7 @@
 !/docs/decision-records/repo/0003-deny-all-explicit-gitignore.md
 !/docs/decision-records/repo/0004-runtime-derived-account-id-for-s3-bucket.md
 !/docs/decision-records/repo/0005-guard-placement-by-direction.md
+!/docs/decision-records/repo/0006-live-attachment-is-part-of-the-contract.md
 !/docs/decision-records/template/
 !/docs/decision-records/template/.gitkeep
 !/docs/explanation/
@@ -95,7 +96,8 @@
 !/docs/reference/aws-iam/policies/secure-wazuh-artifact-read.json
 !/docs/reference/aws-iam/policies/secure-wazuh-folder-admin.json
 !/docs/reference/aws-iam/policies/secure-wazuh_deploy-discovery-iam.json
-!/docs/reference/aws-iam/policies/secure-wazuh_deploy-ec2.json
+!/docs/reference/aws-iam/policies/secure-wazuh_deploy-ec2-launch.json
+!/docs/reference/aws-iam/policies/secure-wazuh_deploy-ec2-lifecycle.json
 !/docs/reference/aws-iam/policies/secure-wazuh_deploy-sg-ssm-kms.json
 !/docs/reference/aws-iam/roles/
 !/docs/reference/aws-iam/roles/github_nwarila-platform_secure-wazuh-admin.trust.json
@@ -117,6 +119,7 @@
 # IAM substitution gate and policy tests. The gate is the control that stops a partial clone from
 # silently granting this repository authority over a sibling's resources, so it is tracked.
 !/scripts/
+!/scripts/bootstrap-iam.sh
 !/scripts/check-iam-literals.sh
 !/scripts/test-iam-policies.sh
 
