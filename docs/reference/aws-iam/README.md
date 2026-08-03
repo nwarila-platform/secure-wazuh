@@ -162,7 +162,9 @@ implies, and it is assigned to exactly one user. It attaches no managed policy; 
 holds no direct AWS API surface — it can only assume one of those two roles, under this role's own
 boundary. Its session duration is one hour, matching the role's. These facts were read from the
 Identity Center configuration; the MFA requirement itself is an Identity Center authentication
-setting that has no API and is confirmed from the console, not from this repository's tooling.
+setting that has no API. The owner confirmed it enabled from the console on 2026-07-29 — that
+console setting is the sole source of truth for this predicate, and it should be re-checked there
+whenever this acceptance is revisited.
 
 The accepted residual risk is material: `RunInstances` together with `iam:PassRole` on
 `secure-wazuh-poc-role` permits an operator to launch an instance with arbitrary user data and that
