@@ -27,6 +27,61 @@ with the materialized source before granting access to a deployment.
 Set `github_nwarila-platform_secure-wazuh`'s `MaxSessionDuration` role property to `3600`.
 Set `secure-wazuh-poc-role`'s `MaxSessionDuration` role property to `3600`.
 
+### The broker permission set — the half of this setup that is not in any repository
+
+**Provisioning an `-admin` role does not make it assumable.** Its trust document names
+`"Principal": {"AWS": "arn:aws:iam::<account-id>:root"}`, which *delegates* the decision to IAM
+rather than granting it. The SSO identity must therefore **also** be allowed `sts:AssumeRole` by an
+identity policy — and that policy lives in Identity Center, outside every repository in this org.
+
+It is the inline policy of the **`github_nwarila-platform` permission set** (statement
+`AssumeThisOrgsRepoAdminRoles`), which **enumerates repo-admin role ARNs explicitly**. A role absent
+from that list is unassumable no matter how correct everything in this directory is.
+
+`github_nwarila-platform_secure-wazuh-admin` **is** on that list, which is why this repository has
+never hit the failure. **Repositories cloned from this pattern do not inherit it** — the list is
+account state, not a file — and the omission is invisible from the clone: every source here is
+correct, the gate passes, and `sts:AssumeRole` still returns
+
+```
+AccessDenied ... is not authorized to perform: sts:AssumeRole on resource:
+arn:aws:iam::<account-id>:role/github_nwarila-platform_<repo>-admin
+```
+
+with no trailing `because no identity-based policy allows ...` clause to say which half failed.
+
+**Diagnose in one command.** Assume this repo's `-admin` role from the same SSO session as the
+failing one. Every repo-admin trust in this account is byte-identical, so if this one works and the
+clone does not, the difference is the broker allowlist and nothing in the clone is wrong:
+
+```bash
+aws sts get-caller-identity --profile repoadmin-nwarila-platform-secure-wazuh   # known-good
+aws iam get-role-policy --profile admin --policy-name AwsSSOInlinePolicy \
+    --role-name "$(aws iam list-roles --profile admin --path-prefix /aws-reserved/sso.amazonaws.com/ \
+        --query "Roles[?starts_with(RoleName,'AWSReservedSSO_github_nwarila-platform_')].RoleName | [0]" \
+        --output text)"
+```
+
+**Fix** — privileged, needs the `AdministratorAccess` permission set. `put-inline-policy` **replaces
+the whole document**, so include the ARNs already present:
+
+```bash
+INST=$(aws sso-admin list-instances --profile admin --query 'Instances[0].InstanceArn' --output text)
+PS=...    # the permission set named github_nwarila-platform (sso-admin describe-permission-set)
+aws sso-admin put-inline-policy-to-permission-set --profile admin \
+    --instance-arn "$INST" --permission-set-arn "$PS" --inline-policy file://broker-inline.json
+aws sso-admin provision-permission-set --profile admin \
+    --instance-arn "$INST" --permission-set-arn "$PS" \
+    --target-id <account-id> --target-type AWS_ACCOUNT
+```
+
+**Never** write it with `aws iam put-role-policy` against the `AWSReservedSSO_*` role. That appears
+to work and is silently reverted the next time Identity Center provisions the permission set.
+
+Verified 2026-07-30: this step was missed for both `windows-wsus` and `pdq-deploy-inventory` when
+their `-admin` roles were created. **Adding the ARN is part of creating the role, not a follow-up** —
+carry this instruction into every clone.
+
 The three deploy policies on the `-admin` role support the local `deploy → test → destroy` path and
 should be detached when that path is retired. EC2 uses instance profile
 `secure-wazuh-poc-profile`, which contains `secure-wazuh-poc-role`; `iam:GetInstanceProfile` is
