@@ -5,17 +5,18 @@
 # Expensive, destructive-cycle proof of the AIO's OS-swap ("replace-OS-only") lever — fires once
 # per merge request that touches `ansible/**`, `terraform/**`, or a framework pin (plus the
 # `rerun-poc` label and `workflow_dispatch`; see the trigger block below). This is the only active
-# AWS workflow path; it is not a routine per-commit deploy. It stands up the full 3-system AWS PoC
-# (AIO + Linux agent + Windows agent), proves 2 fresh agent-sourced FIM events (phase 1),
+# AWS workflow path; it is not a routine per-commit deploy. It stands up the full 6-system AWS PoC
+# (AIO + a five-agent transport matrix: 2 SSH-over-SSM, 2 SSH-direct, 1 WinRM-direct), proves one
+# fresh agent-sourced FIM event per agent (phase 1),
 # force-replaces ONLY the AIO's OS via `terraform apply -var refresh_serial=1` (its data disk
-# survives, re-attached to the new instance), redeploys, then completes the cumulative 4/4 proof —
-# the 2 pre-swap survivors AND 2 new events, cumulative by construction (see deploy-aws-poc.yml's
+# survives, re-attached to the new instance), redeploys, then completes the cumulative proof —
+# the pre-swap survivors AND the new events, cumulative by construction (see deploy-aws-poc.yml's
 # "Cumulative FIM Proof" ledger section) — before ALWAYS tearing everything down.
 #
 # ONE Ansible command drives both phases identically (see playbooks/deploy-aws-poc.yml's own
 # header):
-#   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
-# ZERO -e: the whole AWS target is two files — that playbook plus inventory/aws/aws_ec2.yml — and
+#   ansible-playbook -i inventory/aws_ec2.yml playbooks/deploy-aws-poc.yml
+# ZERO -e: the whole AWS target is two files — that playbook plus inventory/aws_ec2.yml — and
 # product inputs come from those files plus the controller environment. This workflow leaves
 # WAZUH_ADMIN_PASSWORD unset, so each playbook invocation independently resolves its own
 # credential. Except for a negligible collision between random draws, phase 2 presents a value the
@@ -176,11 +177,17 @@ jobs:
             # Org state-key convention is <owner>/<repo>/<target>.tfstate — derived, so it always
             # matches the bucket layout (and the IAM policy scoped to that prefix) with no input.
             echo "TF_STATE_KEY_PREFIX=${owner}/${stack}"
-            printf 'TF_VAR_resource_metadata=%s\n' "$(jq -cn \
-              --arg repository "$GH_REPOSITORY" --arg repository_id "$GH_REPOSITORY_ID" \
-              --arg stack "$stack" --arg owner "$owner" \
-              --arg commit_sha "$commit_sha" --arg run_id "$GH_RUN_ID" \
-              '{repository:$repository,repository_id:$repository_id,stack:$stack,owner:$owner,commit_sha:$commit_sha,run_id:$run_id}')"
+            # Deployment identity, one scalar per variable. The framework retired the single
+            # resource_metadata object; passing the old TF_VAR_resource_metadata against the
+            # current pin would be SILENTLY IGNORED (Terraform only warns on an undeclared
+            # TF_VAR_*), leaving every identity variable null, every identity tag absent, and every
+            # create-time RequestTag condition in docs/reference/aws-iam/ denied. Note there is no
+            # stack or owner variable any more: both were dropped with the object, and no IAM
+            # condition in this repository referenced either.
+            echo "TF_IDENTITY_REPOSITORY=${GH_REPOSITORY}"
+            echo "TF_IDENTITY_REPOSITORY_ID=${GH_REPOSITORY_ID}"
+            echo "TF_IDENTITY_COMMIT_SHA=${commit_sha}"
+            echo "TF_IDENTITY_RUN_ID=${GH_RUN_ID}"
           } >> "$GITHUB_ENV"
 
       - name: Resolve ansible-framework pin
@@ -290,6 +297,10 @@ jobs:
         run: |
           terraform apply -auto-approve \
             -var-file="${{ github.workspace }}/terraform/aws.tfvars" \
+            -var "repository=${TF_IDENTITY_REPOSITORY:?}" \
+            -var "repository_id=${TF_IDENTITY_REPOSITORY_ID:?}" \
+            -var "commit_sha=${TF_IDENTITY_COMMIT_SHA:?}" \
+            -var "run_id=${TF_IDENTITY_RUN_ID:?}" \
             -var "runner_ip=${RUNNER_IP:?}"
 
       # Instance IDs are non-secret infrastructure identifiers. Capture Terraform's exact
@@ -359,7 +370,7 @@ jobs:
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
       # The AWS systems take NO inbound SSH (see docs/reference/aws-iam/README.md's PoC-networking
-      # note): inventory/aws/aws_ec2.yml's compose: block tunnels every connection through
+      # note): inventory/aws_ec2.yml's compose: block tunnels the ssm-ssh legs through
       # `aws ssm start-session --document-name AWS-StartSSHSession`, and that ProxyCommand shells
       # out to the Session Manager plugin — a separate binary the AWS CLI does NOT bundle and
       # ubuntu-latest does not ship. Without it every host is UNREACHABLE with the misleading
@@ -424,7 +435,7 @@ jobs:
           POC_EVIDENCE_JSON: ${{ github.workspace }}/poc-proof.json
         run: |
           set -euo pipefail
-          ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
+          ansible-playbook -i inventory/aws_ec2.yml playbooks/deploy-aws-poc.yml
           # Snapshot phase 1's proof (2 entries) before phase 2 overwrites the same path with the
           # cumulative (4-entry) state — "Render PoC evidence" needs BOTH the phase-1-only and
           # the final cumulative view, and the ledger itself doesn't record which phase produced
@@ -452,6 +463,10 @@ jobs:
         run: |
           terraform apply -auto-approve \
             -var-file="${{ github.workspace }}/terraform/aws.tfvars" \
+            -var "repository=${TF_IDENTITY_REPOSITORY:?}" \
+            -var "repository_id=${TF_IDENTITY_REPOSITORY_ID:?}" \
+            -var "commit_sha=${TF_IDENTITY_COMMIT_SHA:?}" \
+            -var "run_id=${TF_IDENTITY_RUN_ID:?}" \
             -var "runner_ip=${RUNNER_IP:?}" \
             -var refresh_serial=1
 
@@ -538,7 +553,7 @@ jobs:
           # mutation-safety guard skips reformatting; the wazuh_server role reinstalls the stack
           # fresh onto the new OS) and idempotent-reconnect both untouched agents; its FIM proof
           # section then proves all 4 cumulative ledger entries — see that playbook's own header.
-          ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
+          ansible-playbook -i inventory/aws_ec2.yml playbooks/deploy-aws-poc.yml
           if [[ ! -f "${recovery_proof}" ]] ||
             ! grep -Fqx 'manager-api-rbac-recovery' "${recovery_proof}"; then
             echo "Phase 2 did not produce the required password-recovery rung evidence" >&2
