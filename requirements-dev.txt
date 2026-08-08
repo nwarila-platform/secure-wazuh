@@ -28,3 +28,9 @@ pre-commit==4.0.1
 # need no AWS SDK.
 boto3
 botocore
+
+# pywinrm on the CONTROLLER: the winrm connection plugin imports it, so the WinRM leg of the
+# transport matrix (terraform/aws.tfvars, Connection = "winrm-direct") fails at connect without it
+# — "winrm or requests is not installed" — while every SSH leg is unaffected. ntlm transport pulls
+# requests-ntlm through this package's own extras. Targets need nothing; WS-Management is in-box.
+pywinrm>=0.4.3

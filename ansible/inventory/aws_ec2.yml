@@ -2,94 +2,43 @@
 # =========================================================================================== #
 # File: 'ansible/inventory/aws_ec2.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
-# DIRECT-NETWORK variant of ansible/inventory/aws/aws_ec2.yml. Same discovery contract (same
-# plugin, region templating, run-id provenance filter, hostnames, and Function-tag groups); the
-# ONLY differences are the connection layer and what has to be true of the network and of the
-# credentials before it works. Windows endpoints connect over WinRM/HTTPS and Linux endpoints over
-# plain SSH-to-an-IP. Nothing here shells out to `aws ssm start-session`.
+# THE AWS INVENTORY FOR THE TRANSPORT-MATRIX PoC. Both phases of .github/workflows/aws-deploy.yml
+# pass `-i inventory/aws_ec2.yml`, and so should a local operator run.
 #
-# THIS IS NOT THE DEFAULT INVENTORY. ansible/inventory/aws/aws_ec2.yml remains THE inventory for
-# both workflows and normal local operation; see its header. Reach for this file only when you
-# deliberately need a non-SSM path — an SSM agent that will not register, a Windows box being
-# driven by a module that needs a real WinRM session, or a lab where the SSM document grant is not
-# available. Prefer fixing SSM over standardising on this.
+# Its job is to make CONNECTION METHOD A PROPERTY OF THE DATA. Each system in terraform/aws.tfvars
+# declares a `Connection` tag, and every connection variable below is derived from that one value:
+# ansible_connection, ansible_port, ansible_host, windows_password_source, and whether the SSM
+# ProxyCommand is applied at all. Adding a sixth transport is a tfvars entry, not an edit here.
 #
-# ------------------------------------------------------------------------------------------- #
-# PRECONDITION 1 — THE SECURITY GROUPS DO NOT PERMIT THIS TODAY.
-# ------------------------------------------------------------------------------------------- #
-# The whole reason the default inventory tunnels is that none of the interface-owned security
-# groups permits inbound administrative traffic (docs/reference/aws-iam/README.md, "PoC
-# networking"). WinRM cannot borrow the SSM tunnel the way SSH does: `ProxyCommand` is an OpenSSH
-# CLIENT feature, and the winrm connection plugin opens an ordinary HTTP(S) socket with no
-# equivalent hook. So this inventory needs a real route to the instance:
+#   ssm-ssh      SSH tunnelled through `aws ssm start-session`; dials the INSTANCE-ID and needs no
+#                inbound rule. Both platforms.
+#   ssh-direct   SSH straight to the routable address on 22. Both platforms — Windows Server 2025
+#                ships OpenSSH, and that path was already proven through the tunnel.
+#   winrm-direct WinRM/HTTPS on 5986. Windows only. Needs pywinrm on the CONTROLLER
+#                (requirements-dev.txt) and a launch password (see PRECONDITION 2).
 #
-#   * inbound tcp/5986 (WinRM HTTPS) from the operator CIDR, for the Windows endpoint; and
-#   * inbound tcp/22 from the operator CIDR, for the Linux endpoints.
+# WHY THIS EXISTS ALONGSIDE ansible/inventory/aws/aws_ec2.yml. That file tunnels EVERY host through
+# SSM unconditionally. Running the matrix against it would collapse all five legs onto one
+# transport and quietly prove a single method five times while reporting green. It is kept as the
+# zero-inbound fallback for when the security groups are shut or an SSM-only posture is wanted.
 #
-# Since the security groups moved into Terraform, that is a tracked change to the SG definitions —
-# not an out-of-band console edit. Opening them widens the exposure this product's posture
-# deliberately closed, so scope the source to a single operator address and revert it after.
-#
-# The alternative that preserves the closed SGs is SSM PORT FORWARDING rather than SSH tunnelling:
-# run `aws ssm start-session --document-name AWS-StartPortForwardingSession --parameters
-# portNumber=5986,localPortNumber=<unique> --target <instance-id>` per host, out of band, then
-# point ansible_host at 127.0.0.1 and ansible_port at that per-host local port. That cannot be
-# expressed in compose: (each host needs a distinct, externally-allocated local port), which is
-# exactly why this file takes the direct-network route instead.
+# WHY THE DIRECT LEGS ARE NOT A COMPROMISE. The permanent Proxmox target does not permit SSM at
+# all, so a proof carried entirely over SSM demonstrates nothing transferable to it. ssh-direct and
+# winrm-direct are exactly what prod uses; ssm-ssh proves the zero-inbound posture beside them.
 #
 # ------------------------------------------------------------------------------------------- #
-# PRECONDITION 2 — THE WINRM PASSWORD CANNOT BE RESOLVED IN THIS FILE.
+# PRECONDITION 1 — INBOUND IS RUN-SCOPED AND TERRAFORM-OWNED.
 # ------------------------------------------------------------------------------------------- #
-# WinRM has no key-based authentication, so the Windows hosts need `ansible_password`. It is NOT
-# set below, and cannot be: Constructable._compose passes disable_lookups=True, so a
-# `lookup('ansible.builtin.env', ...)` in compose: RAISES, and under `strict: false` that error is
-# SWALLOWED — the variable is silently never set and the host simply fails to authenticate with no
-# explanation. (The default inventory's header documents this same trap at length.)
+# Every `ingress` in terraform/aws.tfvars is empty apart from the AIO's agent-facing 1514/1515 and
+# dashboard 443, both scoped to the deploy subnet. The direct legs are reachable only because the
+# workflow passes `-var "runner_ip=<addr>"`, and the framework then creates ONE security group
+# carrying tcp/22, tcp/5986 and ICMP from exactly `<runner_ip>/32` and attaches it to every
+# interface. That group is a Terraform resource, so teardown removes it — there is no revoke step
+# to strand and no orphaned rule for the reaper.
 #
-# Supply it from the play instead. `set_fact` writes a HOST var, not a play var, so it does not
-# reach delegate_to: localhost tasks and does not re-introduce the delegation hazard the default
-# inventory's "WHY CONNECTION IDENTITY LIVES HERE" note describes:
-#
-#   - name: 'BEGIN | Resolve Windows Administrator Password From The Launch Key'
-#     hosts: 'wazuh_agents_windows'
-#     gather_facts: false
-#     tasks:
-#       - name: 'BEGIN | Decrypt EC2 Administrator Password'
-#         no_log: true
-#         delegate_to: 'localhost'
-#         vars:
-#           ansible_connection: 'local'
-#           ansible_python_interpreter: "{{ ansible_playbook_python }}"
-#         register: '__win_admin_password__'
-#         amazon.aws.ec2_win_password:
-#           instance_id: "{{ instance_id }}"
-#           key_file: '~/.ssh/nwarila-ec2-key.pem'
-#           region: "{{ placement.region | default('us-east-1', true) }}"
-#           wait: true
-#
-#       - name: 'BEGIN | Bind The Decrypted Password To This Host Only'
-#         no_log: true
-#         ansible.builtin.set_fact:
-#           ansible_password: "{{ __win_admin_password__.win_password }}"
-#
-# The CLI equivalent, for a one-off check outside Ansible, is
-# `aws ec2 get-password-data --instance-id <id> --priv-launch-key ~/.ssh/nwarila-ec2-key.pem`;
-# --priv-launch-key is what makes the CLI decrypt locally instead of returning the ciphertext.
-#
-# Two properties of that data are worth knowing before depending on it. It is only available while
-# the instance's ORIGINAL launch key still matches (rotating the key pair does not re-encrypt it),
-# and it is only populated for roughly the first four days after launch — after that AWS may return
-# an empty blob, and `wait: true` will hang rather than fail usefully. It also reflects the
-# password as set AT LAUNCH: if the STIG hardening or a later policy rotates the local
-# Administrator password, this value goes stale and silently stops authenticating.
-#
-# ------------------------------------------------------------------------------------------- #
-# PRECONDITION 3 — CONTROLLER DEPENDENCY.
-# ------------------------------------------------------------------------------------------- #
-# The winrm connection plugin needs `pywinrm` on the CONTROLLER, and `ntlm` transport additionally
-# needs `pywinrm[credssp]`-adjacent crypto already pulled in by that package's requests-ntlm dep.
-# Neither is in requirements-dev.txt, because the default SSM/SSH path has never needed them. Add
-# `pywinrm>=0.4.3` there if this variant becomes more than an escape hatch.
+# The variable takes a BARE ADDRESS, never a CIDR, so a range is not merely rejected by validation
+# but unrepresentable in the input type. Omit it (local runs, prod) and no group exists at all.
+# ADR-0005 records this as the amended residual.
 #
 # ------------------------------------------------------------------------------------------- #
 # LOCATION — FLAT, ALONGSIDE proxmox.yml.

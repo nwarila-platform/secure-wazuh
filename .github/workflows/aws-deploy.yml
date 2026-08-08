@@ -367,6 +367,10 @@ jobs:
           # presigning/dashboard-pair retrieval, dynamic inventory, and linux_disk_manager's
           # delegated AWS Function-tag resolver.
           python -m pip install --no-cache-dir boto3 botocore
+          # The winrm connection plugin imports pywinrm; without it the winrm-direct
+          # leg fails at connect while every SSH leg still passes, so the matrix would
+          # report four of five transports proven and one unreachable.
+          python -m pip install --no-cache-dir "pywinrm>=0.4.3"
           ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
       # The AWS systems take NO inbound SSH (see docs/reference/aws-iam/README.md's PoC-networking
