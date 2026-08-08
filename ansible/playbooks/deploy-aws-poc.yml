@@ -52,18 +52,32 @@
             lookup('ansible.builtin.env', 'ANSIBLE_LOCAL_TEMP') | trim
             is match('^/.+')
           - "groups.get('wazuh_servers', []) | length == 1"
-          - "groups.get('wazuh_agents', []) | length == 2"
-          - "groups.get('wazuh_agents_linux', []) | length == 1"
-          - "groups.get('wazuh_agents_windows', []) | length == 1"
+          - "groups.get('wazuh_agents', []) | length == 5"
+          - "groups.get('wazuh_agents_linux', []) | length == 2"
+          - "groups.get('wazuh_agents_windows', []) | length == 3"
+          # THE MATRIX ITSELF. Counting agents alone is not enough: a mistagged system still
+          # satisfies 5/2/3 while collapsing two legs onto one transport, so the run would prove
+          # one method twice and another not at all — and report green. Intersecting each transport
+          # group with wazuh_agents pins the exact five-way split and excludes the AIO, which
+          # carries its own Connection tag and must not be counted as an agent leg.
+          - >-
+            groups.get('wazuh_agents', []) | intersect(groups.get('conn_ssm_ssh', [])) | length == 2
+          - >-
+            groups.get('wazuh_agents', []) | intersect(groups.get('conn_ssh_direct', [])) | length == 2
+          - >-
+            groups.get('wazuh_agents', []) | intersect(groups.get('conn_winrm_direct', [])) | length == 1
         quiet: true
         fail_msg: >-
           GITHUB_RUN_ID must be non-empty, ANSIBLE_LOCAL_TEMP must be an absolute controller temp
-          path, and the tagged deployment must resolve exactly one Wazuh server, two total agents,
-          one Linux agent, and one Windows agent; resolved
-          {{ groups.get('wazuh_servers', []) | length }}/
-          {{ groups.get('wazuh_agents', []) | length }}/
-          {{ groups.get('wazuh_agents_linux', []) | length }}/
-          {{ groups.get('wazuh_agents_windows', []) | length }}.
+          path, and the tagged deployment must resolve exactly one Wazuh server and the five-agent
+          transport matrix (2 Linux + 3 Windows; 2 ssm-ssh + 2 ssh-direct + 1 winrm-direct);
+          resolved servers={{ groups.get('wazuh_servers', []) | length }}
+          agents={{ groups.get('wazuh_agents', []) | length }}
+          (linux={{ groups.get('wazuh_agents_linux', []) | length }},
+          windows={{ groups.get('wazuh_agents_windows', []) | length }})
+          ssm-ssh={{ groups.get('wazuh_agents', []) | intersect(groups.get('conn_ssm_ssh', [])) | length }}
+          ssh-direct={{ groups.get('wazuh_agents', []) | intersect(groups.get('conn_ssh_direct', [])) | length }}
+          winrm-direct={{ groups.get('wazuh_agents', []) | intersect(groups.get('conn_winrm_direct', [])) | length }}.
   tasks:
     - name: 'INIT | Require The Scoped Artifact-Reader Role ARN'
       run_once: true
@@ -166,6 +180,113 @@
         serole: 'object_r'
         setype: 'usr_t'
         seuser: 'system_u'
+
+# WinRM has no key-based authentication, so a winrm-connected Windows endpoint needs
+# ansible_password before ANY task touches it — including fact gathering. This play therefore runs
+# first, gathers no facts, and performs every task on the CONTROLLER; no session to the Windows
+# host is opened until the credential exists.
+#
+# WHY THIS IS A PLAY AND NOT AN INVENTORY ENTRY. amazon.aws.aws_ec2's Constructable._compose passes
+# disable_lookups=True, so an env/pipe lookup in the inventory's compose: RAISES, and under that
+# file's deliberate `strict: false` the error is SWALLOWED — the variable is silently never set and
+# the host simply fails to authenticate with no diagnostic. `set_fact` writes a HOST var, which is
+# never copied into a delegated task's connection-variable stack, so it also avoids the play-var
+# delegation hazard documented in ansible/inventory/aws/aws_ec2.yml.
+#
+# WHY THE AWS CLI AND NOT A MODULE. `ec2_win_password` is NOT in amazon.aws — it lives in
+# community.aws, which this repo does not depend on and which would be a new collection pin to
+# audit against the hard ansible-core >=2.16,<2.17 ceiling. The `aws` CLI is already a required
+# controller tool (ansible/inventory/aws/aws_ec2.yml's SSM ProxyCommand shells out to it), so this
+# adds no dependency. `--priv-launch-key` makes the CLI decrypt locally; without it the API returns
+# only the RSA-encrypted blob.
+#
+# GATED ON CREDENTIAL SOURCE, NOT ON TRANSPORT. This is the seam that lets one code base serve
+# both the AWS proof and the permanent Proxmox target, so it is worth stating precisely.
+#
+# The obvious gate — `ansible_connection == 'winrm'` — is WRONG here, and silently so. The
+# PERMANENT Proxmox Windows endpoints are ALSO WinRM, so that predicate is true on prod, where this
+# play would then run `aws ec2 get-password-data` against a VM that has no EC2 identity at all
+# (`instance_id` is an aws_ec2 hostvar and is simply absent), failing on a host that was never
+# supposed to enter this play.
+#
+# What actually varies between the two targets is not the transport — both are WinRM to a routable
+# address on 5986, deliberately, because a proof over a transport prod cannot use proves nothing
+# transferable — it is WHERE THE PASSWORD COMES FROM. So the inventory declares that, and this play
+# reads it:
+#
+#   inventory/aws_ec2.yml   compose: windows_password_source: "'ec2'"   -> this play runs
+#   inventory/proxmox.yml   (declares nothing)                          -> this play skips
+#
+# A Proxmox host resolves its own credential by its own means, and gains one there without this
+# playbook changing shape. Everything downstream — os_bootstrap, the wazuh_agent role, the Stage 3b
+# FIM trigger — is already transport-agnostic (pure ansible.windows.win_* modules) and needs no
+# per-target branch.
+- name: 'Platform Preparation - Resolve The Windows WinRM Credential'
+  hosts: 'wazuh_agents_windows'
+  gather_facts: false
+  tasks:
+    # hostvars[inventory_hostname] rather than the bare names: inside a delegate_to task, bare
+    # connection variables can resolve against the DELEGATE (localhost) instead of the Windows
+    # host. Reading them off the original host explicitly removes that ambiguity.
+    - name: 'Platform | Decrypt The EC2 Administrator Password On The Controller'
+      when: >-
+        (hostvars[inventory_hostname].windows_password_source | default('')) == 'ec2'
+      run_once: false
+      no_log: true
+      check_mode: false
+      changed_when: false
+      delegate_to: 'localhost'
+      become: false
+      register: '__windows_password_data__'
+      # AWS populates the encrypted blob only once Windows has finished its first boot and
+      # EC2Launch has written it to the console; polling covers that window rather than racing it.
+      #
+      # The rc leg makes a genuine API error fail FAST. `until` retries a FAILED task just as it
+      # retries a false condition, so without it an authorization denial — the likely first failure
+      # here, since ec2:GetPasswordData is a distinct action from the Describe* set — would burn all
+      # 30 attempts (10 minutes) before surfacing. A non-zero rc satisfies `until` immediately,
+      # which stops the retry loop and lets the task report the AWS error on the first attempt.
+      #
+      # `default('{}', true)` (note the second argument) rather than a bare default: a failed CLI
+      # call leaves stdout as an EMPTY STRING, not undefined, and '' | from_json RAISES. Only the
+      # truthy form substitutes for empty.
+      until: >-
+        (__windows_password_data__.rc | default(1)) != 0
+        or ((__windows_password_data__.stdout | default('{}', true) | from_json).PasswordData
+            | default('') | trim | length > 0)
+      retries: 30
+      delay: 20
+      vars:
+        ansible_connection: 'local'
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      ansible.builtin.command:
+        argv:
+          - 'aws'
+          - 'ec2'
+          - 'get-password-data'
+          - '--instance-id'
+          - "{{ hostvars[inventory_hostname].instance_id }}"
+          # Expanded on the CONTROLLER, which is where this delegated task runs — the '~' the
+          # inventory leaves unexpanded for the ssh plugin is meaningless to argv.
+          - '--priv-launch-key'
+          - "{{ hostvars[inventory_hostname].ansible_ssh_private_key_file | expanduser }}"
+          - '--region'
+          - "{{ hostvars[inventory_hostname].placement.region | default('us-east-1', true) }}"
+          - '--output'
+          - 'json'
+
+    # Binding it here, rather than in the task above, keeps the credential a per-host fact that
+    # every later play inherits (Stage 2's wazuh_agents play and Stage 3b's FIM trigger both need
+    # it) without it ever becoming a play var.
+    - name: 'Platform | Bind The Decrypted Password To This Host Only'
+      when: >-
+        (hostvars[inventory_hostname].windows_password_source | default('')) == 'ec2'
+      no_log: true
+      ansible.builtin.set_fact:
+        ansible_password: >-
+          {{ (__windows_password_data__.stdout | default('{}', true) | from_json).PasswordData
+             | default('') | trim }}
+        cacheable: false
 
 - name: 'Platform Preparation - Validate The Native Windows Session'
   hosts: 'wazuh_agents_windows'

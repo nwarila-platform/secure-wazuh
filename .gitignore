@@ -177,6 +177,7 @@
 !/ansible/inventory/
 !/ansible/inventory/aws/
 !/ansible/inventory/aws/aws_ec2.yml
+!/ansible/inventory/aws_ec2.yml
 !/ansible/inventory/proxmox.yml
 !/ansible/playbooks/
 !/ansible/playbooks/library/

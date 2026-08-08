@@ -262,14 +262,38 @@ jobs:
           install -d -m 0700 "$HOME/.ssh"
           install -m 0600 /dev/stdin "$HOME/.ssh/nwarila-ec2-key.pem" <<< "${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}"
 
-      - name: Terraform apply (phase 1 — stand up AIO + both agents)
+      # Three of the five agent legs are reached WITHOUT SSM — two over SSH direct to 22, one over
+      # WinRM direct to 5986 — so this runner's own address must be permitted inbound for the life
+      # of the run. checkip.amazonaws.com is AWS's own endpoint: no third-party action (which would
+      # also fail scripts/check-action-pins.py, since that gate requires a 40-hex SHA and the
+      # published dynamic-whitelist actions are tag-only) and no third-party dependency.
+      #
+      # GitHub does publish its runner ranges at api.github.com/meta, but `actions` currently holds
+      # 5,658 IPv4 CIDRs against a hard ceiling of 1,000 rules per security group — allowlisting the
+      # published set is not merely impractical, it does not fit. A single /32 is also a far tighter
+      # grant: the published ranges are Azure, shared with arbitrary tenants.
+      - name: Resolve this runner's public address
+        run: |
+          set -euo pipefail
+          ip="$(curl -fsS --retry 3 --max-time 15 https://checkip.amazonaws.com | tr -d '[:space:]')"
+          [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "::error::checkip returned a non-IPv4 value"; exit 1; }
+          echo "RUNNER_IP=${ip}" >> "${GITHUB_ENV}"
+
+      # runner_ip is passed with -var, NOT through the tfvars: -var is the highest-precedence
+      # source, so a value file can never override who this run says it is. The framework owns the
+      # protocols (tcp/22, tcp/5986, ICMP) as literals and takes a BARE ADDRESS, never a CIDR —
+      # which makes a range structurally unrepresentable rather than merely validated against. The
+      # group it creates is destroyed with the stack, so there is no revoke step to strand and no
+      # orphaned rule for the reaper to sweep after a cancelled job.
+      - name: Terraform apply (phase 1 — stand up the AIO + the five-transport agent matrix)
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform apply -auto-approve \
-            -var-file="${{ github.workspace }}/terraform/aws.tfvars"
+            -var-file="${{ github.workspace }}/terraform/aws.tfvars" \
+            -var "runner_ip=${RUNNER_IP:?}"
 
       # Instance IDs are non-secret infrastructure identifiers. Capture Terraform's exact
-      # three-host set once so readiness checks cannot be satisfied by another SSM record.
+      # six-host set once so readiness checks cannot be satisfied by another SSM record.
       # The AIO ID also supplies the before/after evidence for the OS swap.
       - name: Capture phase-1 instance IDs
         working-directory: ${{ env.TF_DIR }}
@@ -280,18 +304,24 @@ jobs:
             (type == "object") and
             (keys == [
               "secure-wazuh-poc",
-              "secure-wazuh-poc-agent-linux",
-              "secure-wazuh-poc-agent-win"
+              "sw-lin-ssh",
+              "sw-lin-ssm",
+              "sw-win-ssh",
+              "sw-win-ssm",
+              "sw-win-winrm"
             ]) and
             ([.[].instance_id] |
-              (length == 3) and
-              (unique | length == 3) and
+              (length == 6) and
+              (unique | length == 6) and
               all(.[]; test("^i-[0-9a-f]+$")))
           ' <<< "$instances" >/dev/null
           {
             echo "PRE_SWAP_INSTANCE_ID=$(jq -r '."secure-wazuh-poc".instance_id' <<< "$instances")"
-            echo "LINUX_AGENT_INSTANCE_ID=$(jq -r '."secure-wazuh-poc-agent-linux".instance_id' <<< "$instances")"
-            echo "WINDOWS_AGENT_INSTANCE_ID=$(jq -r '."secure-wazuh-poc-agent-win".instance_id' <<< "$instances")"
+            echo "LINUX_SSM_AGENT_INSTANCE_ID=$(jq -r '."sw-lin-ssm".instance_id' <<< "$instances")"
+            echo "LINUX_SSH_AGENT_INSTANCE_ID=$(jq -r '."sw-lin-ssh".instance_id' <<< "$instances")"
+            echo "WINDOWS_SSM_AGENT_INSTANCE_ID=$(jq -r '."sw-win-ssm".instance_id' <<< "$instances")"
+            echo "WINDOWS_SSH_AGENT_INSTANCE_ID=$(jq -r '."sw-win-ssh".instance_id' <<< "$instances")"
+            echo "WINDOWS_WINRM_AGENT_INSTANCE_ID=$(jq -r '."sw-win-winrm".instance_id' <<< "$instances")"
           } >> "$GITHUB_ENV"
 
       # -----------------------------------------------------------------------
@@ -422,6 +452,7 @@ jobs:
         run: |
           terraform apply -auto-approve \
             -var-file="${{ github.workspace }}/terraform/aws.tfvars" \
+            -var "runner_ip=${RUNNER_IP:?}" \
             -var refresh_serial=1
 
       # Same rationale as the pre-swap capture above — not secret, needed for the evidence doc.
