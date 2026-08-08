@@ -121,7 +121,7 @@ jobs:
     # Bounded headroom for two deployments, Windows arming, cumulative proof, and three
     # infrastructure mutations. A job-level timeout is NOT a teardown guarantee: the durable
     # backstop must be an out-of-job, account-side reaper keyed by
-    # nwarila:management:repository-id / stack deployment tags (tracked hardening item).
+    # RepositoryId / stack deployment tags (tracked hardening item).
     timeout-minutes: 180
 
     permissions:

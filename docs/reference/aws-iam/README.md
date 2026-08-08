@@ -293,7 +293,7 @@ The EC2 policy defines these cost and security controls:
   `ModifyVolume`; `NumericLessThanEqualsIfExists` remains intentional for optional gp3
   IOPS/throughput inputs;
 - create authorization uses the request identity tag and lifecycle authorization uses the
-  resource identity tag `nwarila:management:repository-id = 1307854438`;
+  resource identity tag `RepositoryId = 1307854438`;
 - `RunInstancesImagesFromTrustedOwners` implements the achievable owner boundary recorded in
   [ADR-0005](../../decision-records/repo/0005-guard-placement-by-direction.md):
   `{amazon, aws-marketplace, <account-id>}`. IAM evaluates the Marketplace image's owner alias, and

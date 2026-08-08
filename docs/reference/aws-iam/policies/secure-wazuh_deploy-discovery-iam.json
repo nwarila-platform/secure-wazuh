@@ -42,7 +42,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         }
       }
     },

@@ -309,7 +309,7 @@ echo "== verify against the LIVE principal =="
 sp() { aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::${ACCOUNT}:role/${CI_ROLE}" \
        --action-names "$1" --resource-arns "$2" --context-entries "${@:3}" --profile "${PROFILE}" --region "${REGION}" \
        --query 'EvaluationResults[0].EvalDecision' --output text 2>&1 | tail -1; }
-TAGK='ContextKeyName=ec2:ResourceTag/nwarila:management:repository-id,ContextKeyType=string,ContextKeyValues'
+TAGK='ContextKeyName=ec2:ResourceTag/RepositoryId,ContextKeyType=string,ContextKeyValues'
 REGK="ContextKeyName=aws:RequestedRegion,ContextKeyType=string,ContextKeyValues=${REGION}"
 say 'DescribeImages in region (the 2026-08-03 regression)' "$(sp ec2:DescribeImages '*' "${REGK}")"
 say 'terminate own tagged instance' "$(sp ec2:TerminateInstances "arn:aws:ec2:${REGION}:${ACCOUNT}:instance/i-0a" "${REGK}" "${TAGK}=${REPO_ID}")"

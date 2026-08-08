@@ -104,8 +104,9 @@ regions:
 strict: false
 
 filters:
-  # Quoted because the tag key contains colons. Templated — see "RUN ID" above.
-  "tag:nwarila:provenance:run-id": "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}"
+  # Templated — see "RUN ID" above. The framework stamps identity tags in PascalCase
+  # (RunId, RepositoryId, CommitSha, Repository); the former nwarila:-namespaced keys are gone.
+  "tag:RunId": "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}"
   instance-state-name:
     - running
 

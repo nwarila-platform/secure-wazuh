@@ -91,7 +91,7 @@ environment, so there is nothing to parameterize.
 ### Run-scoped inventory
 
 In GitHub Actions, `GITHUB_RUN_ID` is a default environment variable available to every step. The
-Terraform framework stamps it as `nwarila:provenance:run-id`, and the inventory requires that
+Terraform framework stamps it as `RunId`, and the inventory requires that
 exact tag value. Step 0 fails before target work unless the selector is non-empty and resolves the
 complete three-system topology.
 
@@ -102,10 +102,10 @@ commit_sha="$(git rev-parse HEAD)"
 mapfile -t matching_run_ids < <(
   aws ec2 describe-instances \
     --filters \
-      "Name=tag:nwarila:management:repository,Values=nwarila-platform/secure-wazuh" \
-      "Name=tag:nwarila:provenance:commit-sha,Values=${commit_sha}" \
+      "Name=tag:Repository,Values=nwarila-platform/secure-wazuh" \
+      "Name=tag:CommitSha,Values=${commit_sha}" \
       "Name=instance-state-name,Values=running" \
-    --query "Reservations[].Instances[].Tags[?Key=='nwarila:provenance:run-id'].Value[]" \
+    --query "Reservations[].Instances[].Tags[?Key=='RunId'].Value[]" \
     --output text |
     tr '\t' '\n' |
     sed '/^$/d' |

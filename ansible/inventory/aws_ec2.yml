@@ -128,9 +128,10 @@ regions:
 strict: false
 
 filters:
-  # Quoted because the tag key contains colons. Same run-scoped provenance contract as the default
-  # inventory: only this workflow run's instances, never a stale or concurrent deployment.
-  "tag:nwarila:provenance:run-id": "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}"
+  # Same run-scoped provenance contract as the default inventory: only this workflow run's
+  # instances, never a stale or concurrent deployment. The framework stamps identity tags in
+  # PascalCase (RunId, RepositoryId, CommitSha, Repository); the nwarila:-namespaced keys are gone.
+  "tag:RunId": "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}"
   instance-state-name:
     - running
 

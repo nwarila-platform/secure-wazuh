@@ -163,8 +163,8 @@ assert() { # name expected action resource context...
     [ "${got}" = "${want}" ] && ok "${name}" "${got}" || bad "${name}" "${got}" "${want}"
 }
 
-TAG='ec2:ResourceTag/nwarila:management:repository-id'
-RTAG='aws:RequestTag/nwarila:management:repository-id'
+TAG='ec2:ResourceTag/RepositoryId'
+RTAG='aws:RequestTag/RepositoryId'
 REG="aws:RequestedRegion=string=${REGION}"
 INST="arn:aws:ec2:${REGION}:${ACCOUNT}:instance/i-0test"
 VOL="arn:aws:ec2:${REGION}:${ACCOUNT}:volume/vol-0test"
@@ -183,7 +183,7 @@ echo "== cross-repository isolation (the identity tag is the only separator) =="
 assert "terminate own instance"        allowed      ec2:TerminateInstances "${INST}" "${REG}" "${TAG}=string=${REPO_ID}"
 for s in "${SIBLINGS[@]}"; do
   assert "terminate ${s} instance"     implicitDeny ec2:TerminateInstances "${INST}" "${REG}" "${TAG}=string=${SIB_ID[$s]}"
-  assert "SSM shell into ${s}"         implicitDeny ssm:StartSession       "${INST}" "ssm:resourceTag/nwarila:management:repository-id=string=${SIB_ID[$s]}"
+  assert "SSM shell into ${s}"         implicitDeny ssm:StartSession       "${INST}" "ssm:resourceTag/RepositoryId=string=${SIB_ID[$s]}"
   # explicitDeny, not implicitDeny: this repository's folder-admin policy carries
   # ConfineToOwnFolderAndWazuhArtifacts, a Deny whose NotResource lists only its own paths — so a
   # sibling's state is actively denied rather than merely unmatched. That confinement boundary is
@@ -254,7 +254,7 @@ assert "retag a foreign-owned resource" explicitDeny ec2:CreateTags "${VOL}" "${
 assert "stamp a foreign identity"       explicitDeny ec2:CreateTags "${INST}" "${REG}" \
        "ec2:CreateAction=string=RunInstances" "${RTAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
 assert "delete the identity tag"        explicitDeny ec2:DeleteTags "${INST}" "${REG}" \
-       "${TAG}=string=${REPO_ID}" "aws:TagKeys=string=nwarila:management:repository-id"
+       "${TAG}=string=${REPO_ID}" "aws:TagKeys=string=RepositoryId"
 
 echo "== PassRole =="
 assert "pass own instance role"         allowed      iam:PassRole "arn:aws:iam::${ACCOUNT}:role/nwarila-ec2-role" \
