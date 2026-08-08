@@ -194,6 +194,35 @@ done
 assert "delete own volume"             allowed      ec2:DeleteVolume "${VOL}" "${REG}" "${TAG}=string=${REPO_ID}"
 assert "detach a sibling's volume"     implicitDeny ec2:DetachVolume "${VOL}" "${REG}" "${TAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
 
+echo "== transport matrix: Elastic IP lifecycle =="
+# Every system in the matrix holds an EIP, so allocation is on the critical path of the very first
+# apply. Both directions are asserted: the grant works, AND the identity tag actually separates it
+# from a sibling's addresses.
+EIP="arn:aws:ec2:${REGION}:${ACCOUNT}:elastic-ip/eipalloc-0test"
+assert "allocate EIP, tagged"          allowed      ec2:AllocateAddress "arn:aws:ec2:${REGION}:${ACCOUNT}:elastic-ip/*" \
+                                                    "${REG}" "${RTAG}=string=${REPO_ID}"
+assert "allocate EIP, UNTAGGED"        implicitDeny ec2:AllocateAddress "arn:aws:ec2:${REGION}:${ACCOUNT}:elastic-ip/*" "${REG}"
+assert "associate own EIP"             allowed      ec2:AssociateAddress "${EIP}" "${REG}" "${TAG}=string=${REPO_ID}"
+assert "release own EIP"               allowed      ec2:ReleaseAddress   "${EIP}" "${REG}" "${TAG}=string=${REPO_ID}"
+assert "disassociate in region"        allowed      ec2:DisassociateAddress "*" "${REG}"
+assert "describe addresses"            allowed      ec2:DescribeAddresses   "*" "${REG}"
+for s in "${SIBLINGS[@]}"; do
+  assert "allocate EIP as ${s}"        implicitDeny ec2:AllocateAddress "arn:aws:ec2:${REGION}:${ACCOUNT}:elastic-ip/*" \
+                                                    "${REG}" "${RTAG}=string=${SIB_ID[$s]}"
+  assert "associate ${s} EIP"          implicitDeny ec2:AssociateAddress "${EIP}" "${REG}" "${TAG}=string=${SIB_ID[$s]}"
+  assert "release ${s} EIP"            implicitDeny ec2:ReleaseAddress   "${EIP}" "${REG}" "${TAG}=string=${SIB_ID[$s]}"
+done
+
+echo "== transport matrix: Windows launch password =="
+# GetPasswordData reads a CREDENTIAL, so the sibling case matters more here than for most actions:
+# an over-broad grant would hand this repository the Administrator password of another repo's
+# Windows hosts. Only the winrm-direct leg needs it; the SSH legs authenticate with the key pair.
+assert "password data, own instance"   allowed      ec2:GetPasswordData "${INST}" "${REG}" "${TAG}=string=${REPO_ID}"
+assert "password data, UNTAGGED"       implicitDeny ec2:GetPasswordData "${INST}" "${REG}"
+for s in "${SIBLINGS[@]}"; do
+  assert "password data, ${s} instance" implicitDeny ec2:GetPasswordData "${INST}" "${REG}" "${TAG}=string=${SIB_ID[$s]}"
+done
+
 echo "== launch controls =="
 assert "m6i.xlarge, IMDSv2, hop 1, tagged" allowed   ec2:RunInstances "${INST}" "ec2:InstanceType=string=m6i.xlarge" \
        "ec2:Tenancy=string=default" "ec2:MetadataHttpTokens=string=required" \
