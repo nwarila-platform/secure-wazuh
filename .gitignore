@@ -180,8 +180,6 @@
 !/ansible/inventory/aws_ec2.yml
 !/ansible/inventory/proxmox.yml
 !/ansible/playbooks/
-!/ansible/playbooks/library/
-!/ansible/playbooks/library/secure_wazuh_iam_profile_guard.py
 !/ansible/playbooks/deploy-aws-poc.yml
 !/ansible/requirements.yml
 

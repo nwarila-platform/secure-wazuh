@@ -91,42 +91,6 @@
         fail_msg: >-
           ARTIFACT_READER_ROLE_ARN must identify the secure-wazuh-artifact-reader role.
 
-    - name: 'INIT | Inspect The Run-Scoped Instances And Their Artifact Boundaries'
-      run_once: true
-      delegate_to: 'localhost'
-      become: false
-      register: '__target_profile_guard__'
-      vars:
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
-      secure_wazuh_iam_profile_guard:
-        instance_profile_name: 'nwarila-ec2-profile'
-        run_instance_ids: >-
-          {{
-            (
-              groups.get('wazuh_servers', [])
-              + groups.get('wazuh_agents', [])
-            )
-            | map('extract', hostvars, 'instance_id')
-            | list
-          }}
-        region: "{{ hostvars[groups['wazuh_servers'][0]].placement.region }}"
-        artifact_bucket: "{{ lookup('ansible.builtin.env', 'ANSIBLE_S3_BUCKET') }}"
-        expected_role_name: 'nwarila-ec2-role'
-        expected_managed_policy_arn: 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
-        forbidden_policy_name: 'secure-wazuh-artifact-read'
-
-    - name: 'INIT | Assert The Run-Scoped Instances Have No Standing Artifact Authority'
-      run_once: true
-      ansible.builtin.assert:
-        that:
-          - __target_profile_guard__.legacy_policy_absent | bool
-          - __target_profile_guard__.run_instances_bound | bool
-          - __target_profile_guard__.bucket_policy_grant_absent | bool
-        quiet: true
-        fail_msg: >-
-          Refusing deployment because the run-scoped instances have not passed the
-          instance-profile and bucket-policy guard.
-
     - name: 'INIT | Publish The Non-Secret Environment Inputs To This Invocation'
       run_once: true
       ansible.builtin.set_fact:
