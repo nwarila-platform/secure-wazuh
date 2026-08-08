@@ -115,10 +115,33 @@ retains images built by this account without committing its real ID; the standar
 step replaces the placeholder before application. The broad `aws-marketplace` namespace is not a
 trust anchor and is excluded.
 
-The policy does not require `ec2:AssociatePublicIpAddress = false`. This deployment reaches SSM
-through an internet gateway from a public subnet, so such a condition would stop every run. Public
-addressing is an accepted residual, compensated by administrative access through SSM rather than
-inbound SSH, per-ENI security groups, and IMDSv2 required at launch.
+The policy does not require `ec2:AssociatePublicIpAddress = false`. This deployment reaches the
+internet through a gateway from a public subnet, so such a condition would stop every run.
+
+**Amended 2026-08-07.** This paragraph previously read that public addressing was "compensated by
+administrative access through SSM rather than inbound SSH". That is no longer true and should not
+be relied on. The PoC now proves five connection transports against one topology, and three of the
+five agent legs are reached WITHOUT SSM — two over SSH direct to tcp/22 and one over WinRM/HTTPS on
+tcp/5986. Inbound administrative access is deliberate and load-bearing, not an oversight: the
+permanent target does not permit SSM at all, so a proof carried entirely over SSM would demonstrate
+nothing transferable to it.
+
+What actually bounds the exposure now:
+
+- **One address, for one run.** Inbound comes from a single security group the framework creates
+  only when `runner_ip` is passed at apply, carrying tcp/22, tcp/5986 and ICMP from exactly
+  `<runner_ip>/32`. The variable takes a bare IPv4 address and never a CIDR, so a range is not
+  merely rejected by validation — it is unrepresentable in the input type.
+- **Destroyed with the stack.** The group is a Terraform resource, so teardown removes it. There is
+  no revoke step that can be skipped by a cancelled job and no stale rule for a reaper to find.
+- **Nothing standing.** Every declared `ingress` in `terraform/aws.tfvars` is empty apart from the
+  AIO's agent-facing 1514/1515 and dashboard 443, both scoped to the deploy subnet CIDR. Absent
+  `runner_ip`, the topology has no inbound administrative path at all.
+- **Unchanged from before.** Per-ENI security groups and IMDSv2 required at launch still apply.
+
+The residual is therefore narrower than the original wording implied in one respect — a single /32
+for the life of one run, rather than an open administrative surface — and wider in another: it is
+real inbound access, where the ADR previously claimed there was none.
 
 ## Consequences
 
@@ -132,9 +155,11 @@ deploy account. A compromised session can choose such an image directly. That is
 blast radius: exact selection belongs to the framework path, while IAM excludes the higher-risk
 untrusted-publisher set.
 
-**Accepted residual.** Instances may need public addresses to reach SSM on the current public-subnet
-topology. SSM-only administration, interface-specific security groups, and required IMDSv2 reduce
-the exposure but do not remove public addressing.
+**Accepted residual.** Instances hold public addresses on the current public-subnet topology, and
+three of the five agent legs accept inbound administrative connections from the runner's `/32` for
+the life of a run. Run-scoped ingress, per-ENI security groups, and required IMDSv2 bound the
+exposure; they do not remove it. The SSM-only claim that previously stood here was retired on
+2026-08-07 — see the amendment above.
 
 **Implied follow-on.** `terraform/aws.tfvars` still carries a bare `ami = "ami-..."` per system, so
 the consumer hand-picks an image ID and the framework offers no baseline to select from. Under this
