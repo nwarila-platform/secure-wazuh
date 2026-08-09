@@ -6,8 +6,21 @@ environment = "dev"
 all_systems = [
   {
 
-    ami                 = "ami-0ca8a2e788e4c5869"
-    associate_public_ip = true
+    ami = "ami-0ca8a2e788e4c5869"
+    # No Elastic IP: this is an ssm-ssh leg, so nothing dials it inbound and it needs egress only.
+    # PROVEN 2026-08-09 on run 31319282728 — sw-lin-ssm launched with associate_public_ip = false,
+    # received auto-assigned 32.199.247.229 from the subnet (MapPublicIpOnLaunch = true) and
+    # reached Online in SSM. That settles the contradiction between framework commit e40a792,
+    # which measured that a pre-created ENI at device index 0 still gets an auto-assigned address,
+    # and windows-wsus's tfvars header, which claims it does not. e40a792 is right.
+    #
+    # Cost is unchanged - public IPv4 is $0.005/h whether Elastic or auto-assigned. What this buys
+    # is QUOTA: the applied EC2-VPC Elastic IP limit is 5 (L-0263D0A3) and is shared across every
+    # PoC in this account, so holding 6 made this repository unable to run beside a sibling.
+    #
+    # The three direct legs keep their Elastic IPs: the runner-ingress group is built from an
+    # address that must not change between apply and connect.
+    associate_public_ip = false
     availability_zone   = "us-east-1a"
     aws_kms_alias       = "aws/ebs"
     # Linux AIO; SSH over an SSM session.
@@ -153,15 +166,19 @@ all_systems = [
     # Elastic IP on every system: a DETERMINISTIC routable address. The alternative — relying on the
     # subnet's MapPublicIpOnLaunch auto-assign — is contested between the framework's measured note
     # (e40a792) and windows-wsus's tfvars header, and a proof must not rest on a disputed behaviour.
-    # DELIBERATE ONE-LEG EXPERIMENT (2026-08-09). Framework e40a792 measured that a pre-created
-    # ENI at device index 0 in a MapPublicIpOnLaunch subnet still receives an auto-assigned public
-    # IPv4; windows-wsus's tfvars header states the opposite. The account has no NAT and no VPC
-    # endpoint, so an ssm-ssh leg with no public address has no egress at all and its SSM agent
-    # can never register - which the deploy's SSM gate reports quickly and unambiguously.
+    # No Elastic IP: this is an ssm-ssh leg, so nothing dials it inbound and it needs egress only.
+    # PROVEN 2026-08-09 on run 31319282728 — sw-lin-ssm launched with associate_public_ip = false,
+    # received auto-assigned 32.199.247.229 from the subnet (MapPublicIpOnLaunch = true) and
+    # reached Online in SSM. That settles the contradiction between framework commit e40a792,
+    # which measured that a pre-created ENI at device index 0 still gets an auto-assigned address,
+    # and windows-wsus's tfvars header, which claims it does not. e40a792 is right.
     #
-    # If this host registers, the measurement holds and the other two ssm-ssh legs can follow,
-    # taking this repository from 6 Elastic IPs to 3 against a nominal account quota of 5.
-    # If it does not, revert this one line.
+    # Cost is unchanged - public IPv4 is $0.005/h whether Elastic or auto-assigned. What this buys
+    # is QUOTA: the applied EC2-VPC Elastic IP limit is 5 (L-0263D0A3) and is shared across every
+    # PoC in this account, so holding 6 made this repository unable to run beside a sibling.
+    #
+    # The three direct legs keep their Elastic IPs: the runner-ingress group is built from an
+    # address that must not change between apply and connect.
     associate_public_ip = false
     availability_zone   = "us-east-1a"
     aws_kms_alias       = "aws/ebs"
@@ -418,7 +435,20 @@ all_systems = [
     # Elastic IP on every system: a DETERMINISTIC routable address. The alternative — relying on the
     # subnet's MapPublicIpOnLaunch auto-assign — is contested between the framework's measured note
     # (e40a792) and windows-wsus's tfvars header, and a proof must not rest on a disputed behaviour.
-    associate_public_ip = true
+    # No Elastic IP: this is an ssm-ssh leg, so nothing dials it inbound and it needs egress only.
+    # PROVEN 2026-08-09 on run 31319282728 — sw-lin-ssm launched with associate_public_ip = false,
+    # received auto-assigned 32.199.247.229 from the subnet (MapPublicIpOnLaunch = true) and
+    # reached Online in SSM. That settles the contradiction between framework commit e40a792,
+    # which measured that a pre-created ENI at device index 0 still gets an auto-assigned address,
+    # and windows-wsus's tfvars header, which claims it does not. e40a792 is right.
+    #
+    # Cost is unchanged - public IPv4 is $0.005/h whether Elastic or auto-assigned. What this buys
+    # is QUOTA: the applied EC2-VPC Elastic IP limit is 5 (L-0263D0A3) and is shared across every
+    # PoC in this account, so holding 6 made this repository unable to run beside a sibling.
+    #
+    # The three direct legs keep their Elastic IPs: the runner-ingress group is built from an
+    # address that must not change between apply and connect.
+    associate_public_ip = false
     availability_zone   = "us-east-1a"
     aws_kms_alias       = "aws/ebs"
     # Windows OpenSSH, reached through an SSM session.
