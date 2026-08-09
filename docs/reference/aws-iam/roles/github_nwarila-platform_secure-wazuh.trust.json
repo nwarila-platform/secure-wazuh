@@ -18,7 +18,10 @@
             "repo:nwarila-platform@<owner-id>/secure-wazuh@<repository-id>:*",
             "repo:nwarila-platform/secure-wazuh:*"
           ],
-          "token.actions.githubusercontent.com:job_workflow_ref": "nwarila-platform/secure-wazuh/.github/workflows/aws-deploy.yml@*"
+          "token.actions.githubusercontent.com:job_workflow_ref": [
+            "nwarila-platform/secure-wazuh/.github/workflows/aws-deploy.yml@*",
+            "nwarila-platform/secure-wazuh/.github/workflows/aws-reaper.yml@*"
+          ]
         }
       }
     }
