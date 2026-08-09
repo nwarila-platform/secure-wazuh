@@ -627,22 +627,22 @@ jobs:
 
           jq -e '
             (.entries | type == "array") and
-            (.entries | length == 2) and
-            ([.entries[] | select(.proven == true)] | length == 2) and
-            ([.entries[] | select(.platform == "linux")] | length == 1) and
-            ([.entries[] | select(.platform == "windows")] | length == 1)
+            (.entries | length == 5) and
+            ([.entries[] | select(.proven == true)] | length == 5) and
+            ([.entries[] | select(.platform == "linux")] | length == 2) and
+            ([.entries[] | select(.platform == "windows")] | length == 3)
           ' "$phase1" >/dev/null || {
-            echo "Phase 1 proof must contain exactly 2 proven entries: 1 linux + 1 windows" >&2
+            echo "Phase 1 proof must contain exactly 5 proven entries: 2 linux + 3 windows" >&2
             exit 1
           }
           jq -e '
             (.entries | type == "array") and
-            (.entries | length == 4) and
-            ([.entries[] | select(.proven == true)] | length == 4) and
-            ([.entries[] | select(.platform == "linux")] | length == 2) and
-            ([.entries[] | select(.platform == "windows")] | length == 2)
+            (.entries | length == 10) and
+            ([.entries[] | select(.proven == true)] | length == 10) and
+            ([.entries[] | select(.platform == "linux")] | length == 4) and
+            ([.entries[] | select(.platform == "windows")] | length == 6)
           ' "$phase2" >/dev/null || {
-            echo "Phase 2 proof must contain exactly 4 proven entries: 2 linux + 2 windows" >&2
+            echo "Phase 2 proof must contain exactly 10 proven entries: 4 linux + 6 windows" >&2
             exit 1
           }
 
