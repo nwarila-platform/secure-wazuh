@@ -12,8 +12,11 @@
 name: AWS Reaper
 
 'on':
+  # Every 15 minutes, offset off the quarter-hours to avoid the scheduling stampede GitHub sees
+  # at :00/:15/:30/:45. An idle sweep is a handful of describe calls and exits in seconds, so the
+  # cost of checking often is nil against the cost of six instances running unnoticed.
   schedule:
-    - cron: '23 * * * *'
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
   # Fire immediately after a deploy finishes, in ANY conclusion. This is the reliable half of
   # teardown: the lifecycle's own `terraform destroy` runs under always(), which cannot rescue a
