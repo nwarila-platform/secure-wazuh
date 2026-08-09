@@ -11,7 +11,7 @@ all_systems = [
     availability_zone   = "us-east-1a"
     aws_kms_alias       = "aws/ebs"
     # Linux AIO; SSH over an SSM session.
-    connection_type      = "ssh"
+    connection_type      = "ssh-ssm"
     hostname             = "secure-wazuh-poc"
     iam_instance_profile = "nwarila-ec2-profile"
     imds_hop_limit       = 1
@@ -32,7 +32,10 @@ all_systems = [
 
     tags = {
       Function = "wazuh-aio"
-      # The AIO is administered over the tunnel; the inventory defaults untagged hosts to ssm-ssh.
+      # The AIO is administered over the tunnel. Stated explicitly rather than relying on the
+      # inventory's untagged default, so this and connection_type = "ssh-ssm" above are visibly
+      # the same decision. MUST AGREE WITH IT — see any agent block below for why disagreement
+      # fails as a timeout rather than an error.
       Connection = "ssm-ssh"
       Backup     = false #
     }
@@ -154,7 +157,7 @@ all_systems = [
     availability_zone   = "us-east-1a"
     aws_kms_alias       = "aws/ebs"
     # Linux; SSH over an SSM session.
-    connection_type      = "ssh"
+    connection_type      = "ssh-ssm"
     hostname             = "sw-lin-ssm"
     iam_instance_profile = "nwarila-ec2-profile"
     imds_hop_limit       = 1
@@ -175,9 +178,23 @@ all_systems = [
 
     tags = {
       Function = "wazuh-agent"
-      # THE TRANSPORT DECLARATION. ansible/inventory/aws_ec2.yml derives ansible_connection,
-      # ansible_port, ansible_host, windows_password_source and whether the SSM ProxyCommand
-      # applies, entirely from this one tag. Step 0 asserts the five-way split resolved.
+      # THE ANSIBLE-SIDE TRANSPORT DECLARATION. ansible/inventory/aws_ec2.yml derives
+      # ansible_connection, ansible_port, ansible_host, windows_password_source and whether the
+      # SSM ProxyCommand applies, entirely from this one tag. Step 0 asserts the five-way split.
+      #
+      # MUST AGREE WITH connection_type ABOVE — nothing enforces it. They state the same fact for
+      # two different consumers: connection_type drives Terraform (which user_data is rendered,
+      # whether get_password_data is set, and whether the runner-ingress group is attached at all),
+      # while this tag drives Ansible, which cannot see a Terraform variable. Disagreement fails
+      # in the worst way available: set connection_type to an -ssm value and this tag to a direct
+      # one, and Terraform opens no inbound path while Ansible dials the address anyway — a
+      # connection timeout, not an error that names the cause.
+      #
+      # Accepted rather than fixed: the duplication exists only because this one topology
+      # deliberately spans five transports to prove them. A real deployment picks a transport and
+      # never restates it. The durable fix, if the matrix outlives the PoC, is for the framework to
+      # emit the channel as an identity tag so the inventory reads connection_type directly and
+      # this tag disappears.
       Connection = "ssm-ssh"
       Backup     = false
     }
@@ -289,9 +306,23 @@ all_systems = [
 
     tags = {
       Function = "wazuh-agent"
-      # THE TRANSPORT DECLARATION. ansible/inventory/aws_ec2.yml derives ansible_connection,
-      # ansible_port, ansible_host, windows_password_source and whether the SSM ProxyCommand
-      # applies, entirely from this one tag. Step 0 asserts the five-way split resolved.
+      # THE ANSIBLE-SIDE TRANSPORT DECLARATION. ansible/inventory/aws_ec2.yml derives
+      # ansible_connection, ansible_port, ansible_host, windows_password_source and whether the
+      # SSM ProxyCommand applies, entirely from this one tag. Step 0 asserts the five-way split.
+      #
+      # MUST AGREE WITH connection_type ABOVE — nothing enforces it. They state the same fact for
+      # two different consumers: connection_type drives Terraform (which user_data is rendered,
+      # whether get_password_data is set, and whether the runner-ingress group is attached at all),
+      # while this tag drives Ansible, which cannot see a Terraform variable. Disagreement fails
+      # in the worst way available: set connection_type to an -ssm value and this tag to a direct
+      # one, and Terraform opens no inbound path while Ansible dials the address anyway — a
+      # connection timeout, not an error that names the cause.
+      #
+      # Accepted rather than fixed: the duplication exists only because this one topology
+      # deliberately spans five transports to prove them. A real deployment picks a transport and
+      # never restates it. The durable fix, if the matrix outlives the PoC, is for the framework to
+      # emit the channel as an identity tag so the inventory reads connection_type directly and
+      # this tag disappears.
       Connection = "ssh-direct"
       Backup     = false
     }
@@ -382,7 +413,7 @@ all_systems = [
     availability_zone   = "us-east-1a"
     aws_kms_alias       = "aws/ebs"
     # Windows OpenSSH, reached through an SSM session.
-    connection_type      = "ssh"
+    connection_type      = "ssh-ssm"
     hostname             = "sw-win-ssm"
     iam_instance_profile = "nwarila-ec2-profile"
     imds_hop_limit       = 1
@@ -403,9 +434,23 @@ all_systems = [
 
     tags = {
       Function = "wazuh-agent"
-      # THE TRANSPORT DECLARATION. ansible/inventory/aws_ec2.yml derives ansible_connection,
-      # ansible_port, ansible_host, windows_password_source and whether the SSM ProxyCommand
-      # applies, entirely from this one tag. Step 0 asserts the five-way split resolved.
+      # THE ANSIBLE-SIDE TRANSPORT DECLARATION. ansible/inventory/aws_ec2.yml derives
+      # ansible_connection, ansible_port, ansible_host, windows_password_source and whether the
+      # SSM ProxyCommand applies, entirely from this one tag. Step 0 asserts the five-way split.
+      #
+      # MUST AGREE WITH connection_type ABOVE — nothing enforces it. They state the same fact for
+      # two different consumers: connection_type drives Terraform (which user_data is rendered,
+      # whether get_password_data is set, and whether the runner-ingress group is attached at all),
+      # while this tag drives Ansible, which cannot see a Terraform variable. Disagreement fails
+      # in the worst way available: set connection_type to an -ssm value and this tag to a direct
+      # one, and Terraform opens no inbound path while Ansible dials the address anyway — a
+      # connection timeout, not an error that names the cause.
+      #
+      # Accepted rather than fixed: the duplication exists only because this one topology
+      # deliberately spans five transports to prove them. A real deployment picks a transport and
+      # never restates it. The durable fix, if the matrix outlives the PoC, is for the framework to
+      # emit the channel as an identity tag so the inventory reads connection_type directly and
+      # this tag disappears.
       Connection = "ssm-ssh"
       Backup     = false
     }
@@ -500,9 +545,23 @@ all_systems = [
 
     tags = {
       Function = "wazuh-agent"
-      # THE TRANSPORT DECLARATION. ansible/inventory/aws_ec2.yml derives ansible_connection,
-      # ansible_port, ansible_host, windows_password_source and whether the SSM ProxyCommand
-      # applies, entirely from this one tag. Step 0 asserts the five-way split resolved.
+      # THE ANSIBLE-SIDE TRANSPORT DECLARATION. ansible/inventory/aws_ec2.yml derives
+      # ansible_connection, ansible_port, ansible_host, windows_password_source and whether the
+      # SSM ProxyCommand applies, entirely from this one tag. Step 0 asserts the five-way split.
+      #
+      # MUST AGREE WITH connection_type ABOVE — nothing enforces it. They state the same fact for
+      # two different consumers: connection_type drives Terraform (which user_data is rendered,
+      # whether get_password_data is set, and whether the runner-ingress group is attached at all),
+      # while this tag drives Ansible, which cannot see a Terraform variable. Disagreement fails
+      # in the worst way available: set connection_type to an -ssm value and this tag to a direct
+      # one, and Terraform opens no inbound path while Ansible dials the address anyway — a
+      # connection timeout, not an error that names the cause.
+      #
+      # Accepted rather than fixed: the duplication exists only because this one topology
+      # deliberately spans five transports to prove them. A real deployment picks a transport and
+      # never restates it. The durable fix, if the matrix outlives the PoC, is for the framework to
+      # emit the channel as an identity tag so the inventory reads connection_type directly and
+      # this tag disappears.
       Connection = "ssh-direct"
       Backup     = false
     }
@@ -599,9 +658,23 @@ all_systems = [
 
     tags = {
       Function = "wazuh-agent"
-      # THE TRANSPORT DECLARATION. ansible/inventory/aws_ec2.yml derives ansible_connection,
-      # ansible_port, ansible_host, windows_password_source and whether the SSM ProxyCommand
-      # applies, entirely from this one tag. Step 0 asserts the five-way split resolved.
+      # THE ANSIBLE-SIDE TRANSPORT DECLARATION. ansible/inventory/aws_ec2.yml derives
+      # ansible_connection, ansible_port, ansible_host, windows_password_source and whether the
+      # SSM ProxyCommand applies, entirely from this one tag. Step 0 asserts the five-way split.
+      #
+      # MUST AGREE WITH connection_type ABOVE — nothing enforces it. They state the same fact for
+      # two different consumers: connection_type drives Terraform (which user_data is rendered,
+      # whether get_password_data is set, and whether the runner-ingress group is attached at all),
+      # while this tag drives Ansible, which cannot see a Terraform variable. Disagreement fails
+      # in the worst way available: set connection_type to an -ssm value and this tag to a direct
+      # one, and Terraform opens no inbound path while Ansible dials the address anyway — a
+      # connection timeout, not an error that names the cause.
+      #
+      # Accepted rather than fixed: the duplication exists only because this one topology
+      # deliberately spans five transports to prove them. A real deployment picks a transport and
+      # never restates it. The durable fix, if the matrix outlives the PoC, is for the framework to
+      # emit the channel as an identity tag so the inventory reads connection_type directly and
+      # this tag disappears.
       Connection = "winrm-direct"
       Backup     = false
     }
