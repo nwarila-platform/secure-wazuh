@@ -15,6 +15,17 @@ name: AWS Reaper
   schedule:
     - cron: '23 * * * *'
   workflow_dispatch:
+  # Fire immediately after a deploy finishes, in ANY conclusion. This is the reliable half of
+  # teardown: the lifecycle's own `terraform destroy` runs under always(), which cannot rescue a
+  # step that fails on its own arguments — exactly how six instances survived every run in the
+  # 2026-08-09 series. workflow_run is out-of-process, so a broken destroy step cannot suppress it.
+  #
+  # It fires for a deploy on ANY branch, but the reaper itself always executes from the default
+  # branch, so the main-only guard below still holds. That also means this trigger does nothing
+  # until this file is merged to main.
+  workflow_run:
+    workflows: ['AWS Deploy']
+    types: [completed]
 
 permissions: {}
 
@@ -54,7 +65,16 @@ jobs:
     env:
       AWS_REGION: us-east-1
       DEPLOY_ROLE: github_nwarila-platform_secure-wazuh
-      MINIMUM_AGE_SECONDS: '14400'
+      # Four hours on the scheduled sweep: it enumerates every terminal run, so a generous window
+      # keeps it clear of anything a human might still be inspecting.
+      #
+      # ZERO when a deploy has just completed. The age gate exists to prove a run is really over,
+      # and on this path GitHub has told us so directly — the workflow_run event only fires on
+      # completion. Waiting four hours to act on that would leave the stack running for the exact
+      # window this trigger exists to close. Every other guard is unchanged: no nonterminal deploy
+      # run, no Terraform state lock, complete provenance, and the per-run dependency-graph
+      # assertion still gate the mutation.
+      MINIMUM_AGE_SECONDS: ${{ github.event_name == 'workflow_run' && '0' || '14400' }}
       STATE_KEY: nwarila-platform/secure-wazuh/aws.tfstate
 
     steps:
