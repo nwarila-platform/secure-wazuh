@@ -424,7 +424,7 @@ jobs:
           echo "::error::The exact phase-1 Terraform instance set was not Online in SSM within 15 minutes" >&2
           exit 1
 
-      - name: "PHASE 1: deploy-aws-poc.yml, then trigger/prove 2 fresh FIM events"
+      - name: "PHASE 1: deploy-aws-poc.yml, then trigger/prove 5 fresh FIM events"
         working-directory: _dev-build
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg

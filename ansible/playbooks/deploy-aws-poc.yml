@@ -3,10 +3,10 @@
 # File: 'ansible/playbooks/deploy-aws-poc.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 # THE ONLY PLAYBOOK FOR THE AWS POC TARGET. One command configures a freshly applied PoC end to
-# end — data disk, the all-in-one stack, both agent platforms, then a real FIM event proved on
-# each:
+# end — data disk, the all-in-one stack, all five agent transports, then a real FIM event proved
+# on each:
 #
-#   ansible-playbook -i inventory/aws/aws_ec2.yml playbooks/deploy-aws-poc.yml
+#   ansible-playbook -i inventory/aws_ec2.yml playbooks/deploy-aws-poc.yml
 #
 # SELF-CONTAINED: it takes no --extra-vars and requires no operator-provided Wazuh secret. AWS
 # identity, the artifact-reader role ARN, and the required ANSIBLE_S3_BUCKET come from the
@@ -14,18 +14,23 @@
 # one short-lived URL immediately before the target HTTPS fetch. The stack also mints the
 # credential it needs when WAZUH_ADMIN_PASSWORD is absent or empty; an explicitly supplied
 # non-empty password remains supported as an override.
-# Step 0 fails closed unless the run-scoped inventory resolves the exact three-system topology.
+# Step 0 fails closed unless the run-scoped inventory resolves the exact six-system topology AND
+# the full five-way transport split. Counting agents alone is not enough: a mistagged system still
+# satisfies 5/2/3 while collapsing two legs onto one transport, which would prove one method twice
+# and another not at all, and report green.
 #
-# TWO-PHASE USAGE (the cumulative 4/4 proof):
-#   Phase 1 — run once after `terraform apply` stands the 3-system environment up (AIO + Linux
-#     agent + Windows agent). Deploys everything, then fires and proves 2 fresh FIM events, one
-#     per agent platform.
+# TWO-PHASE USAGE (the cumulative 10/10 proof):
+#   Phase 1 — run once after `terraform apply` stands the 6-system environment up: the AIO plus a
+#     five-agent transport matrix (2 SSH-over-SSM, 2 SSH-direct, 1 WinRM-direct). Deploys
+#     everything, then fires and proves 5 fresh FIM events, one per agent — so each event is also
+#     evidence that its own transport carried a real configuration run end to end.
 #   Phase 2 — run again, unchanged, after `terraform apply -var refresh_serial=1` replaces the
 #     AIO's OS disk. Stage 1 reinstalls the swapped AIO onto its re-attached data disk; the agents
 #     are untouched by the swap (refresh = false) and reconnect on their own. The FIM proof
-#     section then fires 2 MORE events and proves ALL FOUR cumulative ledger entries — the 2
-#     pre-swap survivors and the 2 new ones — because the ledger lives on the data disk the swap
-#     never touches.
+#     section then fires 5 MORE events and proves ALL TEN cumulative ledger entries — the 5
+#     pre-swap survivors and the 5 new ones — because the ledger lives on the data disk the swap
+#     never touches. The counts are not hardcoded anywhere: Stage 5 asserts over
+#     `__ledger_entries__ | length`, so the proof scales with whatever the tfvars stands up.
 # =========================================================================================== #
 
 #region ------ [ Step 0: Resolve Run Inputs ] ----------------------------------------------- #
