@@ -153,7 +153,16 @@ all_systems = [
     # Elastic IP on every system: a DETERMINISTIC routable address. The alternative — relying on the
     # subnet's MapPublicIpOnLaunch auto-assign — is contested between the framework's measured note
     # (e40a792) and windows-wsus's tfvars header, and a proof must not rest on a disputed behaviour.
-    associate_public_ip = true
+    # DELIBERATE ONE-LEG EXPERIMENT (2026-08-09). Framework e40a792 measured that a pre-created
+    # ENI at device index 0 in a MapPublicIpOnLaunch subnet still receives an auto-assigned public
+    # IPv4; windows-wsus's tfvars header states the opposite. The account has no NAT and no VPC
+    # endpoint, so an ssm-ssh leg with no public address has no egress at all and its SSM agent
+    # can never register - which the deploy's SSM gate reports quickly and unambiguously.
+    #
+    # If this host registers, the measurement holds and the other two ssm-ssh legs can follow,
+    # taking this repository from 6 Elastic IPs to 3 against a nominal account quota of 5.
+    # If it does not, revert this one line.
+    associate_public_ip = false
     availability_zone   = "us-east-1a"
     aws_kms_alias       = "aws/ebs"
     # Linux; SSH over an SSM session.
