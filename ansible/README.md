@@ -22,8 +22,6 @@ ansible/
 │   │                                  Deliberately NO sibling group_vars/ — see its header.
 │   └── proxmox.yml                    permanent all-in-one inventory (target currently parked)
 ├── playbooks/
-│   ├── library/
-│   │   └── secure_wazuh_iam_profile_guard.py
 │   │                                  controller-side live-profile fail-closed guard
 │   └── deploy-aws-poc.yml             THE only playbook. Resolve run inputs → platform prep →
 │                                      data disk + AIO → Linux + Windows agents with adjacent

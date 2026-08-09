@@ -589,8 +589,23 @@ jobs:
         if: ${{ always() }}
         working-directory: ${{ env.TF_DIR }}
         run: |
+          # Identity is REQUIRED by the framework (no defaults on repository, repository_id,
+          # commit_sha or run_id), so destroy needs it as much as apply — without it teardown fails
+          # with "No value for required variable" and leaves the whole stack running.
+          #
+          # :? is safe here despite always(): these are set by "Derive deployment identity" near the
+          # top of the job. If THAT step failed, no terraform ran and there is nothing to destroy,
+          # so aborting is correct rather than dangerous.
+          #
+          # runner_ip is deliberately NOT passed. It is nullable, and destroy removes the group from
+          # state regardless — whereas ${RUNNER_IP:?} would abort teardown whenever the IP-resolution
+          # step was the thing that failed.
           terraform destroy -auto-approve \
-            -var-file="${{ github.workspace }}/terraform/aws.tfvars"
+            -var-file="${{ github.workspace }}/terraform/aws.tfvars" \
+            -var "repository=${TF_IDENTITY_REPOSITORY:?}" \
+            -var "repository_id=${TF_IDENTITY_REPOSITORY_ID:?}" \
+            -var "commit_sha=${TF_IDENTITY_COMMIT_SHA:?}" \
+            -var "run_id=${TF_IDENTITY_RUN_ID:?}"
 
       # -----------------------------------------------------------------------
       # PoC EVIDENCE — self-proving MRs. The instance-ids captured in GITHUB_ENV and the
