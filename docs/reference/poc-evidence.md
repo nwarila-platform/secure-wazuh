@@ -2,7 +2,7 @@
 
 > Regenerated automatically by the AWS Deploy workflow on each proven MR.
 
-**Provenance:** [workflow run](https://github.com/nwarila-platform/secure-wazuh/actions/runs/31317419285) · run `31317419285` · event `pull_request` · commit `cd60ec2`
+**Provenance:** [workflow run](https://github.com/nwarila-platform/secure-wazuh/actions/runs/31319282728) · run `31319282728` · event `pull_request` · commit `24a55f7`
 **Date:** 2026-08-09
 
 ## Phase 1 — initial deploy, fresh FIM proof
@@ -11,16 +11,16 @@
 
 | Agent | Platform | Rule | Marker |
 |---|---|---|---|
-| sw-win-winrm | windows | 554 | fim-proof-sw-win-winrm-109492272932860864122991164777133385507 |
-| sw-lin-ssm | linux | 550 | fim-proof-sw-lin-ssm-324781415632920639172316669162050167758 |
-| sw-lin-ssh | linux | 550 | fim-proof-sw-lin-ssh-229793522663010395109264391039794816240 |
-| sw-win-ssm | windows | 554 | fim-proof-sw-win-ssm-167540268925347104334003707661583996571 |
-| sw-win-ssh | windows | 554 | fim-proof-sw-win-ssh-119028123413447794862721067245493902069 |
+| sw-win-ssm | windows | 554 | fim-proof-sw-win-ssm-144407484966123969592296150559469579660 |
+| sw-lin-ssh | linux | 550 | fim-proof-sw-lin-ssh-218162435332240226770511970793062923296 |
+| sw-lin-ssm | linux | 550 | fim-proof-sw-lin-ssm-217241780369347012693912827567013836482 |
+| sw-win-winrm | windows | 554 | fim-proof-sw-win-winrm-211785347771304508382805705217520202598 |
+| sw-win-ssh | windows | 554 | fim-proof-sw-win-ssh-23087813454079166455344075273958634458 |
 
 ## OS-swap — AIO OS-drive replacement
 
-- Pre-swap AIO instance: `i-07175bc230dfab123`
-- Post-swap AIO instance: `i-0a0202c3f4323af33`
+- Pre-swap AIO instance: `i-0f81ed35f172480a5`
+- Post-swap AIO instance: `i-00d481e670cf77c3d`
 - Data volume: preserved and re-attached (not replaced)
 
 ## Phase 2 — cumulative validation after the swap
@@ -29,16 +29,16 @@
 
 | Agent | Platform | Rule | Marker |
 |---|---|---|---|
-| sw-win-winrm | windows | 554 | fim-proof-sw-win-winrm-109492272932860864122991164777133385507 |
-| sw-lin-ssm | linux | 550 | fim-proof-sw-lin-ssm-324781415632920639172316669162050167758 |
-| sw-lin-ssh | linux | 550 | fim-proof-sw-lin-ssh-229793522663010395109264391039794816240 |
-| sw-win-ssm | windows | 554 | fim-proof-sw-win-ssm-167540268925347104334003707661583996571 |
-| sw-win-ssh | windows | 554 | fim-proof-sw-win-ssh-119028123413447794862721067245493902069 |
-| sw-win-winrm | windows | 554 | fim-proof-sw-win-winrm-129467504795821854814030810994038268240 |
-| sw-lin-ssm | linux | 550 | fim-proof-sw-lin-ssm-233456300635156089226512581353255654448 |
-| sw-lin-ssh | linux | 550 | fim-proof-sw-lin-ssh-251521544372543220603050415382346960191 |
-| sw-win-ssm | windows | 554 | fim-proof-sw-win-ssm-118942296434342040629534410238217905751 |
-| sw-win-ssh | windows | 554 | fim-proof-sw-win-ssh-257639862385931510325869950958461454905 |
+| sw-win-ssm | windows | 554 | fim-proof-sw-win-ssm-144407484966123969592296150559469579660 |
+| sw-lin-ssh | linux | 550 | fim-proof-sw-lin-ssh-218162435332240226770511970793062923296 |
+| sw-lin-ssm | linux | 550 | fim-proof-sw-lin-ssm-217241780369347012693912827567013836482 |
+| sw-win-winrm | windows | 554 | fim-proof-sw-win-winrm-211785347771304508382805705217520202598 |
+| sw-win-ssh | windows | 554 | fim-proof-sw-win-ssh-23087813454079166455344075273958634458 |
+| sw-win-ssm | windows | 554 | fim-proof-sw-win-ssm-123334848349819859354159368556276179001 |
+| sw-lin-ssh | linux | 550 | fim-proof-sw-lin-ssh-140491370763147931435295600569217541394 |
+| sw-lin-ssm | linux | 550 | fim-proof-sw-lin-ssm-266030154184968455537617439289594571376 |
+| sw-win-winrm | windows | 554 | fim-proof-sw-win-winrm-202011833229386478686950208288146185723 |
+| sw-win-ssh | windows | 554 | fim-proof-sw-win-ssh-334056299821115401537547335874736197289 |
 
 ## Teardown
 
