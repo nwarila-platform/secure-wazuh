@@ -390,18 +390,22 @@ jobs:
       # `terraform apply` returns when the API says the instances exist, not when their SSM agents
       # have registered. The exact Terraform-emitted set proves that each intended host is Online;
       # no unrelated or expired managed-instance record can substitute for one.
-      - name: Wait for the three Terraform instances to register with SSM
+      # Only the ssm-ssh legs are gated here. The three direct-transport hosts (sw-lin-ssh,
+      # sw-win-ssh, sw-win-winrm) are reached over the runner's /32 and never open an SSM session,
+      # so waiting on their agents would block the run on a capability the matrix does not use for
+      # them — and would fail outright on an image whose SSM agent never registers.
+      - name: Wait for the SSM-transport instances to register with SSM
         run: |
           set -euo pipefail
           mapfile -t expected_set < <(
             printf '%s\n' \
               "$PRE_SWAP_INSTANCE_ID" \
-              "$LINUX_AGENT_INSTANCE_ID" \
-              "$WINDOWS_AGENT_INSTANCE_ID" |
+              "$LINUX_SSM_AGENT_INSTANCE_ID" \
+              "$WINDOWS_SSM_AGENT_INSTANCE_ID" |
               sort -u
           )
           if [[ "${#expected_set[@]}" -ne 3 ]]; then
-            echo "::error::Terraform did not emit three distinct phase-1 instance IDs" >&2
+            echo "::error::Terraform did not emit three distinct ssm-ssh instance IDs" >&2
             exit 1
           fi
           instance_filter="${expected_set[0]},${expected_set[1]},${expected_set[2]}"
@@ -507,8 +511,8 @@ jobs:
           mapfile -t expected_set < <(
             printf '%s\n' \
               "$POST_SWAP_INSTANCE_ID" \
-              "$LINUX_AGENT_INSTANCE_ID" \
-              "$WINDOWS_AGENT_INSTANCE_ID" |
+              "$LINUX_SSM_AGENT_INSTANCE_ID" \
+              "$WINDOWS_SSM_AGENT_INSTANCE_ID" |
               sort -u
           )
           if [[ "${#expected_set[@]}" -ne 3 ]]; then
