@@ -2,7 +2,7 @@
 
 | Field          | Value                                       |
 | -------------- | ------------------------------------------- |
-| Status         | Accepted (partially implemented — see banner) |
+| Status         | Accepted (runtime model implemented; listener issuance is external) |
 | Date           | 2026-07-21                                  |
 | Authors        | Smarter > Harder (@NWarila)                 |
 | Decision-maker | Smarter > Harder (sole portfolio maintainer) |
@@ -11,15 +11,16 @@
 | Reversibility  | Medium                                      |
 | Review-by      | N/A (Accepted)                              |
 
-> **⚠️ Implementation status.** The **secrets model** (decisions 2 & 3 below — one operator
-> password, rotate-every-run internal service users as bcrypt-only, manager-API users derived
-> from the admin password, plaintext-off-disk mitigations) **is implemented** in the
-> `wazuh_server` role today. The **two-tier PKI** (decision 1 — internal CA/node/admin certs
-> minted *on the target*, client certs dropped, only a distinct dashboard cert from S3) is the
-> **target design and is NOT yet implemented**: the role currently downloads `root-ca.pem` /
-> `admin.pem` / node PEMs from S3 and reuses the node cert for the indexer, Filebeat, and
-> dashboard (the pre-decision flow documented in [`reference/s3-artifacts.md`](../../reference/s3-artifacts.md)).
-> The PKI rework is tracked, not shipped — read decision 1 below as the intended end state.
+> **Implementation status.** [Run 30316886760](https://github.com/nwarila-platform/secure-wazuh/actions/runs/30316886760)
+> proved the two-tier runtime: every invocation mints a fresh internal CA plus separate
+> indexer-node, securityadmin, and manager-API identities on the target, then destroys the CA key
+> after issuance. Internal PKI never transits S3. The certificate prefix contains only
+> `dashboard.pem`, `dashboard-key.pem`, and their `.sha256` sidecars, so the dashboard listener key
+> is the single private key in external custody. The same run proved that the dashboard serves that
+> certificate on 443, the guarded `rbac.db` recovery rung executes and emits its required marker,
+> and file-integrity monitoring reaches realtime in both phases. The run proves certificate
+> service, not production trust; the dev configuration still permits only the exact
+> fingerprint-pinned self-signed placeholder as an exception to normal CA trust.
 
 ## TL;DR
 
@@ -28,9 +29,10 @@
 ADR records three linked decisions about how that stack gets its TLS material and
 its secrets:
 
-1. **Two-tier certificates.** A self-signed **internal PKI** (CA + node + admin
-   certificate) is minted **on the target at deploy time** and used only for the
-   OpenSearch transport, HTTP/REST, and `securityadmin` layers. Those layers are
+1. **Two-tier certificates.** A self-signed **internal PKI** (CA + indexer node +
+   securityadmin + manager-API certificates) is minted **on the target at deploy time**.
+   The first two leaves serve the OpenSearch transport, HTTP/REST, and `securityadmin` layers.
+   Those layers are
    loopback / backend-only on an all-in-one and are never browser-facing. A single
    **dashboard public certificate/key** is **pulled from S3** so that browser
    consumers of the dashboard reach a service whose certificate chains to a CA they
@@ -42,13 +44,13 @@ its secrets:
    overwhelming majority of secrets. The one irreducible plaintext credential is the
    dashboard-to-manager API password in the Wazuh app's `wazuh.yml`. Documented
    mitigations apply.
-3. **Rotate-every-run, nothing-persisted.** Because delivery is a commit-to-main
+3. **Rotate-every-run, no controller persistence.** Because delivery is a commit-to-main
    GitOps loop (see [ADR-0002](0002-combined-terraform-ansible-delivery.md)),
    internal PKI and indexer internal-user passwords are minted fresh on every run and
-   nothing is persisted between runs. The sole exception is the two **manager-API
-   users** (`wazuh`, `wazuh-wui`): they are derived **deterministically** from
-   `admin_password` so they remain stable across reruns and can still authenticate
-   against a persisted RBAC database.
+   nothing is persisted between runs on the controller. The two **manager-API users**
+   (`wazuh`, `wazuh-wui`) live in persistent `rbac.db`; each invocation derives their
+   desired passwords from its resolved `admin_password` and converges prior state through
+   a guarded current-password, factory-password, then `rbac.db`-only recovery ladder.
 
 ## Context and Problem Statement
 
@@ -56,11 +58,13 @@ Wazuh's all-in-one topology co-locates four TLS-bearing surfaces on one host:
 
 - The **OpenSearch transport** layer (node-to-node, tcp/9300).
 - The **OpenSearch HTTP/REST** layer (tcp/9200), which on an all-in-one is reached
-  only over the loopback interface by two local clients: Filebeat and the dashboard
-  backend.
+  only over the loopback interface by three local clients: Filebeat, the manager's
+  indexer connector, and the dashboard backend.
 - **`securityadmin`**, the tool that initializes the OpenSearch security index from
   `internal_users.yml`, `roles.yml`, and `roles_mapping.yml`. It authenticates with
   an admin certificate against the PKI.
+- The **manager API** (tcp/55000), whose dedicated server certificate is consumed by
+  local dashboard and deployment clients over loopback.
 - The **dashboard's browser listener** (tcp/443), the only surface a human ever
   points a web browser at.
 
@@ -86,12 +90,12 @@ therefore need a recoverable secret at runtime. The question is not "can we elim
 all plaintext" (we cannot) but "how small can we make the irreducible plaintext, and
 how well can we contain what remains."
 
-Finally, the delivery model (ADR-0002) redeploys the stack on **every commit to main**
-— in place on the permanent Proxmox instance and from zero on the ephemeral AWS
-proof-of-concept. That makes "rotate on every run" cheap and desirable, but it collides
+Finally, the active AWS delivery path (ADR-0002) redeploys the stack from zero on each
+applicable commit to `main`; the intended permanent Proxmox path is currently parked.
+That makes "rotate on every run" cheap and desirable, but it collides
 with one piece of durable state: the Wazuh **manager RBAC database** on the persistent
-data volume, which is not wiped between runs. Any credential the manager persists must
-survive a rerun.
+data volume, which is not wiped between runs. The role must therefore converge that
+credential state safely when a new invocation resolves a different desired password.
 
 ## Decision Drivers
 
@@ -106,8 +110,8 @@ survive a rerun.
 4. **FIPS-approved cryptography.** On-target minting must use FIPS-validated
    primitives (approved key types and SHA-2 digests) so the self-signed PKI is
    admissible under the hardened baseline.
-5. **Idempotent redeploys.** The rotate-every-run loop must not require a manual
-   credential-reset dance against durable manager state on each commit.
+5. **Convergent redeploys.** The rotate-every-run loop must recover durable manager
+   credential state automatically, without a manual reset on each commit.
 6. **Least privilege between co-located components.** Dropping client certs must not
    weaken authentication; password + CA-verify must be a real authentication, not an
    anonymous bind.
@@ -133,19 +137,21 @@ a rotate-every-run model with two deterministic exceptions.**
 ### Part A — Two-tier certificates
 
 **Internal PKI (self-signed, minted on the target at deploy time).** The deploy mints,
-on the host, a self-signed root CA and, from it, a node certificate and an admin
-certificate, using FIPS-approved key types and SHA-2 digests. The node certificate's
-SANs cover `localhost`, `127.0.0.1`, and the node's own name. These certificates serve:
+on the host, a self-signed root CA and, from it, an indexer-node certificate, an admin
+certificate, and a manager-API server certificate, using FIPS-approved key types and SHA-2
+digests. The node certificate's SANs cover `localhost`, `127.0.0.1`, and the node's own name.
+The manager-API certificate has only the server EKU and loopback SANs. These certificates serve:
 
 - OpenSearch **transport** (tcp/9300) node identity and node-to-node mutual TLS;
 - OpenSearch **HTTP/REST** (tcp/9200) server identity, reached only over loopback by
   co-located clients;
 - **`securityadmin`**, which uses the admin certificate to initialize and re-apply the
   security index.
+- The manager's local HTTPS API, using its own server identity rather than a copy of the
+  OpenSearch node identity.
 
-Private keys never leave the host. The CA key is either discarded after the node and
-admin certificates are issued or retained `0600` root-owned solely to re-mint on the
-next run; because the model rotates every run (Part C), retention is optional.
+Newly minted private keys never leave the host. The CA key is shredded after all three
+leaf certificates are issued; a future invocation creates an unrelated CA.
 
 **Dashboard public certificate/key (pulled from S3).** The dashboard's 443 listener
 (`opensearch_dashboards.yml` `server.ssl.certificate` / `server.ssl.key`) uses a
@@ -155,23 +161,27 @@ internal issuing CA or a public CA. It is pulled from S3 at deploy time. This is
 trusted chain. It is also the **only** private key any external system (S3 + IAM) needs
 to custody.
 
-**Drop per-component client certs → password + CA-verify.** The two remaining internal
+**Drop per-component client certs → password + CA-verify.** The remaining internal
 hops stop presenting client certificates:
 
 - **Filebeat → indexer.** Filebeat authenticates as the internal writer user
   (bcrypt-hashed in `internal_users.yml` on the indexer; the plaintext lives only in
   the Filebeat keystore) and sets `output.elasticsearch.ssl.certificate_authorities` to
   the internal CA to verify the server. No client certificate.
+- **Manager indexer connector → indexer.** The connector authenticates with its
+  manager-keystore username/password and its owned `<indexer><ssl>` block names only the
+  internal CA. No client certificate.
 - **Dashboard backend → indexer.** The dashboard authenticates as the `kibanaserver`
   internal user, with the password held in the dashboard keystore (not plaintext YAML)
   and `opensearch.ssl.certificateAuthorities` set to the internal CA. No client
   certificate.
 
-Net effect: `admin-key.pem`, the node key, and the former `filebeat-key.pem` and
-dashboard client key are all either minted-and-kept-on-target or eliminated. The
-per-object IAM gymnastics the prior model needed (deny the dashboard host read on
-`admin-key.pem`, etc.) disappear, because the only object under IAM scope is the
-dashboard public key.
+Net effect: internal PKI never transits S3. The legacy internal keys and certificates have been
+deleted, and the certificate prefix contains only the dashboard listener pair and its digest
+sidecars. The tracked read policy still grants `functions/wazuh/*` and
+`applications/wazuh-agent/*`; those prefixes contain only the offline bundle, the four dashboard
+pair/sidecar objects, and the two agent packages, so the deployed grant is already minimal in
+practice and is not being narrowed.
 
 ### Part B — Plaintext off disk, best-effort
 
@@ -209,29 +219,26 @@ dashboard public key.
    - the rotate-every-run model (Part C), which bounds the lifetime of any captured
      value to a single deploy cycle.
 
-### Part C — Rotate-every-run, nothing-persisted
+### Part C — Rotate-every-run, no controller persistence
 
-The pipeline receives one stable root secret, `admin_password`, from its secret store;
-it is never committed to the repository (see
-[ADR-0003](0003-deny-all-explicit-gitignore.md)). From it, **every run** mints fresh
-internal-PKI key material and fresh indexer internal-user passwords. `securityadmin`
-re-initializes the OpenSearch security index wholesale on each run, and the matching
-keystore values (dashboard `kibanaserver`, Filebeat writer) are rewritten in the same
-run, so rotating those is free and self-consistent. Nothing is persisted between runs on
-the controller or CI runner.
+Each playbook invocation resolves one `admin_password`. When no non-empty environment
+override is supplied, the playbook mints a fresh strong value; it is never committed to
+the repository (see [ADR-0003](0003-deny-all-explicit-gitignore.md)). Independently, the run
+mints fresh internal-PKI key material and fresh indexer internal-user passwords.
+`securityadmin` re-initializes the OpenSearch security index wholesale on each run, and
+the matching keystore values (dashboard `kibanaserver`, Filebeat writer) are rewritten
+in the same run, so rotating those is free and self-consistent. Nothing is persisted
+between runs on the controller or CI runner.
 
-The deliberate exception is the two **manager-API users**, `wazuh` and `wazuh-wui`. The
-Wazuh manager persists API users in its **RBAC database** (`rbac.db`) on the persistent
-data volume of the permanent Proxmox instance. That database is treated as durable state
-and is **not** wiped between runs. If the two API passwords were random per run, a rerun
-against the persisted `rbac.db` would either fail to authenticate — the dashboard's
-`wazuh.yml` would hold a value the manager no longer knows — or force a reset every
-commit. Instead, the two passwords are **derived deterministically** from
-`admin_password` (a keyed derivation with a distinct per-user label, e.g.
-`HMAC-SHA256(admin_password, "wazuh-api:wazuh")` and `…:"wazuh-wui"`). Given a stable
-`admin_password`, the derivation reproduces the same two passwords on every run, so a
-rerun writes them idempotently to both `rbac.db` and the dashboard `wazuh.yml`, and
-authentication holds with no reset step.
+The two **manager-API users**, `wazuh` and `wazuh-wui`, live in the manager's persistent
+**RBAC database** (`rbac.db`). Their desired passwords are derived deterministically
+from this invocation's `admin_password`, with a distinct per-user label, and may differ
+from the values left by the previous invocation. The role first tries the new desired
+`wazuh` password, then the vendor factory password. Only explicit 401 responses from
+both attempts permit recovery: stop the manager, remove only `rbac.db`, restart it,
+authenticate against the rebuilt factory state, and immediately rotate the complete
+role-owned API-user set. Transport, TLS, timeout, 5xx, rate-limit, and other unexpected
+failures cannot enter recovery.
 
 ## Pros and Cons of the Options
 
@@ -293,11 +300,13 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
    key from object storage.
 2. **Single external key.** The dashboard 443 certificate/key MUST be the only PKI
    object pulled from S3, and the S3/IAM policy SHOULD grant read on no other private
-   key.
-3. **No client certs on internal hops.** Filebeat's indexer output and the dashboard's
-   `opensearch.*` backend config MUST authenticate with a keystore-held password and MUST
-   set `ssl.certificate_authorities` / `ssl.certificateAuthorities` to the internal CA.
-   Neither MAY present a client certificate.
+   key. The legacy internal-PKI objects are deleted. The certificate prefix holds only the
+   dashboard listener pair and sidecars, and the artifact-read policy's two granted prefixes hold
+   only the seven objects consumed by the roles.
+3. **No client certs on internal hops.** Filebeat's indexer output, the manager indexer
+   connector, and the dashboard's `opensearch.*` backend config MUST authenticate with a
+   keystore-held password and MUST set their CA-verification setting to the internal CA.
+   None MAY present a client certificate.
 4. **FIPS primitives.** On-target minting MUST use FIPS-approved key types and SHA-2
    digests. A reviewer SHOULD reject MD5/SHA-1 or non-approved key parameters.
 5. **Hashes and keystores.** Indexer internal-user passwords MUST be bcrypt-hashed in
@@ -308,26 +317,27 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
    path, `wazuh.yml` MUST be `0600`, owned by the service account (or relocated into the
    service account HOME per the documented technique), SELinux-confined, fapolicyd-covered,
    and every task touching it MUST set `no_log: true`.
-7. **Deterministic API users.** The `wazuh` and `wazuh-wui` passwords MUST be derived
-   deterministically from `admin_password` and MUST reproduce identically across reruns;
-   a rerun against a persisted `rbac.db` MUST authenticate without a reset step.
+7. **Convergent API users.** The `wazuh` and `wazuh-wui` passwords MUST be derived
+   deterministically from the invocation's `admin_password`. The desired-password attempt,
+   then the factory-password attempt, MUST each return an explicit 401 before recovery may
+   remove only `rbac.db`; the rebuilt users MUST then be rotated immediately.
 8. **Nothing persisted.** No generated secret MUST be written into the repository or
-   left on the CI runner between runs; `admin_password` MUST arrive from the secret store,
-   not from tracked files.
+   left on the CI runner between runs; `admin_password` MUST be minted for the invocation
+   or supplied through the environment, never through tracked files.
 
 ## Consequences
 
 ### Positive
 
-- The externally-custodied key surface shrinks to exactly one object: the dashboard
-  public key. Per-object IAM scoping for internal keys is eliminated.
-- Browser consumers reach a trusted dashboard; operators are never trained to accept
-  certificate warnings.
+- Internal PKI never transits S3; the dashboard listener key is the single externally-custodied
+  private key.
+- The listener has a distinct certificate path suitable for an issued browser-trusted chain. The
+  dev exception, when used, is limited to one explicitly pinned self-signed placeholder.
 - More secrets sit at rest as bcrypt hashes or in keystores; the irreducible plaintext
   is reduced to a single, contained file.
-- Internal PKI rotates for free on every commit-to-main deploy, bounding the lifetime of
+- Internal PKI rotates for free on every active AWS deploy, bounding the lifetime of
   any compromised internal key to one cycle.
-- Idempotent redeploys hold against durable manager RBAC state without a reset dance.
+- Convergent redeploys handle durable manager RBAC state without a manual reset.
 
 ### Negative
 
@@ -339,15 +349,17 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
 - One irreducible plaintext credential remains until (and unless) a 4.14.5 keystore path
   is confirmed; its containment depends on correct ownership, mode, SELinux, fapolicyd,
   and `no_log` all being right.
-- Deterministic derivation of the two API users means a compromise of `admin_password`
-  compromises those two users deterministically; the root secret must be guarded
-  accordingly.
+- Deterministic derivation of the two API users means a compromise of an invocation's
+  `admin_password` compromises those users for that invocation; the root secret must be
+  guarded accordingly.
+- Recovery rebuilds the complete API-user database. The declared `manager.api_users` set
+  is therefore an ownership boundary: unmanaged API users would be removed and are not
+  compatible with this convergence model.
 
 ### Neutral
 
-- The internal CA key may be discarded or retained `0600` root-owned depending on
-  whether the operator wants local re-mint versus strict minimization; both are
-  compatible with the model.
+- The internal CA key exists only in root-only tmpfs staging while leaves are issued and
+  is then shredded.
 - Endpoint agents are outside this ADR's TLS scope; they enroll via `client.keys`
   (optionally gated by an enrollment password) rather than through the indexer PKI.
 
@@ -361,10 +373,10 @@ be revisited:
    topology that exposes 9200 to remote clients would change the trust analysis.
 2. The FIPS-validated crypto module on the target provides the approved primitives the
    on-target mint requires.
-3. `admin_password` is delivered as a stable secret from the pipeline's secret store and
-   is guarded as the root of the two derived API credentials.
-4. The manager RBAC database on the persistent volume is the only durable credential
-   store that a rerun must not disturb; the indexer security index is safe to
+3. Each invocation can resolve a strong `admin_password`, and every task that reads or
+   renders it is protected by `no_log`.
+4. The role owns the complete manager API-user set and may rebuild only `rbac.db` after
+   the two explicit unauthorized responses; the indexer security index is safe to
    re-initialize wholesale each run.
 
 ## Supersedes
@@ -379,14 +391,13 @@ None (current).
 
 ## Implementing PRs
 
-**Landed**: the secrets/rotation model (decisions 2 & 3 — bcrypt/keystore-first plaintext
-containment and the rotate-every-run model, including the deterministic manager-API user
-derivation), implemented in the `wazuh_server` role.
-
-**Pending**: the two-tier on-target PKI (decision 1) — the on-target internal-PKI mint, the
-removal of the Filebeat and dashboard client-cert paths in favor of keystore password +
-CA-verify, the dashboard public-cert S3 pull, and the 4.14.5 dashboard-keystore verification
-for the API password.
+**Landed and runtime-proven**: the two-tier on-target PKI, dashboard-only external certificate
+custody, password + CA-verify internal clients, bcrypt/keystore-first plaintext containment, and
+the rotate-every-run model with deterministic manager-API users. Run 30316886760 proved fresh
+on-target issuance and CA-key destruction, dashboard certificate service on 443, marked
+`rbac.db` recovery, and realtime FIM in both phases. Legacy internal-PKI objects are deleted from
+S3. The unchanged artifact-read policy grants the two populated Wazuh prefixes, which contain only
+the seven role-consumed objects.
 
 ## Related ADRs
 

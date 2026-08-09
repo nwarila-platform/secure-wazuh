@@ -3,12 +3,21 @@
 # File: '{{ role_path }}/vars/redhat_test.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 # Per-env overlay loaded by the generic role loader when os_family=redhat AND ENV=test.
-# Replace every CHANGE_ME placeholder with the real test-env value before running
-# `-e env=test`.
+# Replace every remaining CHANGE_ME placeholder with the real test-env value before anything
+# selects this overlay. Nothing does today: the repo's only playbook
+# (playbooks/deploy-aws-poc.yml) propagates `ENV: 'dev'` to every host and takes no
+# --extra-vars, so `redhat_dev.yml` is the only overlay currently reachable.
+#
+# s3.bucket is the EXCEPTION: the role override reads the controller's required
+# ANSIBLE_S3_BUCKET export (ADR-0004), so this literal is never actually used. Do NOT replace it
+# with CHANGE_ME-style text or a real bucket name: it is a deliberate fail-fast TRIPWIRE that
+# role validation rejects before any download. (Previously this and prod carried an env-suffixed
+# `CHANGE_ME-ansible-test`/`-prod` shape that contradicted dev's non-suffixed
+# `<account-id>-ansible` and the IAM `*-ansible` wildcard; normalized to the one convention.)
 # =========================================================================================== #
 
 s3:
-  bucket:        'CHANGE_ME-ansible-test'
-  bundle_key:    'CHANGE_ME/wazuh-offline.tar.gz'
+  bucket: '<account-id>-ansible'
+  bundle_key: 'CHANGE_ME/wazuh-offline.tar.gz'
   bundle_sha256: 'CHANGE_ME-64-character-sha256-of-the-test-bundle'
-  certs_prefix:  'CHANGE_ME/certs'
+  certs_prefix: 'CHANGE_ME/certs'

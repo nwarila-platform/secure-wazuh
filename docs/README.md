@@ -2,14 +2,14 @@
 
 This directory follows the [Diátaxis](https://diataxis.fr) framework, adopted org-wide by [ADR-0002](https://github.com/nwarila-platform/.github/blob/main/docs/decision-records/0002-adopt-diataxis-documentation-framework.md). Each document lives in exactly one quadrant.
 
-`secure-wazuh` delivers a STIG- and FIPS-hardened Wazuh 4.14.5 all-in-one SIEM (indexer/OpenSearch + manager + Filebeat + dashboard, plus endpoint agents) onto RHEL/Rocky 8 from a single commit-to-`main` GitOps repo: Terraform provisions the VMs (Proxmox is the permanent live instance, AWS is an ephemeral proof-of-concept) and Ansible configures the stack. Documentation for both halves lives here.
+`secure-wazuh` delivers a STIG- and FIPS-hardened Wazuh 4.14.5 all-in-one SIEM (indexer/OpenSearch + manager + Filebeat + dashboard, plus endpoint agents) onto RHEL/Rocky 8 from a single commit-to-`main` GitOps repo. The ephemeral AWS deploy-prove-destroy path is active; the intended permanent Proxmox target is parked and has no active playbook. Documentation for the Terraform and Ansible halves lives here.
 
 | Quadrant | Purpose | When to read |
 |---|---|---|
 | [Tutorials](tutorials/) | Learn by doing | "Walk me through a first deploy end to end." |
-| [How-to](how-to/) | Solve a specific problem | "How do I rotate the indexer cert PEMs?" |
+| [How-to](how-to/) | Solve a specific problem | "How do I deploy the stack?" |
 | [Reference](reference/) | Look up facts | "Which S3 keys does the agent role read?" |
-| [Explanation](explanation/) | Understand the rationale | "Why is the bootstrap venv not the default interpreter?" |
+| [Explanation](explanation/) | Understand the rationale | "Why is the RHEL 8 Ansible line pinned?" |
 | [Decision records](decision-records/) | See what was decided and why | "Why the deny-all `.gitignore` strategy?" |
 
 ## Tutorials
@@ -18,19 +18,23 @@ _None yet — the end-to-end first deploy currently lives in [How-to → Deploy 
 
 ## How to
 
-- [Deploy the stack](how-to/deploy-the-stack.md) — provision the disk, bootstrap the venv, and run the all-in-one deploy end to end.
-- [Provide AWS credentials safely](how-to/provide-aws-credentials-safely.md) — get short-lived S3 creds into the runner env without leaking them.
+- [Deploy the stack](how-to/deploy-the-stack.md) — provision the disk and run the all-in-one deploy end to end.
+- [Provide AWS credentials safely](how-to/provide-aws-credentials-safely.md) — keep the scoped reader session on the controller while targets fetch over HTTPS.
 
 ## Reference
 
 - [Inventory and topology](reference/inventory-and-topology.md) — the inventory groups, the collapsed all-in-one, and the endpoint agent groups.
-- [S3 artifacts](reference/s3-artifacts.md) — the bundle, agent RPM/MSI, and cert objects each role reads, and their SHA-256 pins.
+- [PoC evidence](reference/poc-evidence.md) — live e2e proof (deploy, FIM both platforms, AIO
+  OS-swap, cumulative validation, destroy), with run provenance recorded in the page.
+- [S3 artifacts](reference/s3-artifacts.md) — the bundle, agent packages, and S3's only certificate
+  material: the dashboard listener pair and sidecars.
 
 ## Explanation
 
+- [Agent reconnect](explanation/agent-reconnect.md) — how agents survive a manager OS replacement unattended, and why the force-replacement shortcut was rejected.
 - [Architecture](explanation/architecture.md) — what the stack deploys and why the central roles collapsed into one all-in-one role.
 - [Composition model](explanation/composition-model.md) — how the framework loader and shared roles are composed in at run time from the pinned `ansible-framework`.
-- [RHEL 8 toolchain](explanation/toolchain-rhel8.md) — why ansible-core is pinned to 2.16 and the bootstrap venv is not the default interpreter.
+- [RHEL 8 toolchain](explanation/toolchain-rhel8.md) — why ansible-core is pinned to 2.16 and AWS SDK work stays controller-side.
 
 ## Architecture decisions
 
@@ -42,6 +46,7 @@ ADRs governing this repository live in this `docs/` tree at [`decision-records/`
   - [0001 — Secrets and TLS](decision-records/repo/0001-secrets-and-tls.md)
   - [0002 — Combined Terraform + Ansible delivery](decision-records/repo/0002-combined-terraform-ansible-delivery.md)
   - [0003 — Deny-all explicit `.gitignore`](decision-records/repo/0003-deny-all-explicit-gitignore.md)
+  - [0004 — Runtime-derived AWS account ID](decision-records/repo/0004-runtime-derived-account-id-for-s3-bucket.md)
 
 ADRs sit at `decision-records/` rather than under one of the four Diátaxis quadrants because they're a separately-governed artifact type (per ADR-0001), not Reference / How-to / Explanation prose.
 

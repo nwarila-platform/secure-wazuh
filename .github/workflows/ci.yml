@@ -19,8 +19,9 @@
 #   (composed tree)` job below builds that tree itself (copy ansible-framework@pin,
 #   overlay this repo's ansible/applications/*, exactly as deploy.yml's compose
 #   step does) and lints there — this is the authoritative lint of the product
-#   roles. `make ansible-lint` (run locally, or by the `pre-commit` job below)
-#   only lints what resolves standalone — see docs/explanation/composition-model.md.
+#   roles. `make ansible-lint` consumes that composed tree and passes every
+#   Git-cached or otherwise visible product Ansible YAML path explicitly; CI
+#   invokes that same target so discovery cannot diverge.
 #
 # Required status checks (configure in branch protection — names MUST match each
 # job's `name:` field below, not its YAML key):
@@ -79,11 +80,10 @@ jobs:
   # ---------------------------------------------------------------------------
   # Ansible Lint  (authoritative: lints the COMPOSED tree)
   # ---------------------------------------------------------------------------
-  # linux_disk_manager and wazuh_agent are composed in from the pinned
-  # ansible-framework (.github/.framework-pin), not vendored — so playbooks that
-  # reference them do not resolve on a bare clone. This job composes the tree the
-  # same way deploy.yml does (framework base + this repo's ansible/ overlay) and
-  # lints there, exactly as the dev-only compose script does locally.
+  # linux_disk_manager and the base wazuh_agent role are composed from the pinned
+  # ansible-framework (.github/.framework-pin); the product overlays two wazuh_agent task files.
+  # This job composes the tree the same way deploy.yml does (framework base + this repo's
+  # ansible/ overlay) and invokes the same explicit-file Make target used locally.
   # ---------------------------------------------------------------------------
   ansible-lint:
     name: Ansible Lint (composed tree)
@@ -124,7 +124,8 @@ jobs:
           set -euo pipefail
           DEV_BUILD="${GITHUB_WORKSPACE}/_dev-build"
           rm -rf "${DEV_BUILD}"; mkdir -p "${DEV_BUILD}"
-          rsync -a "${GITHUB_WORKSPACE}/.frameworks/ansible-framework/" "${DEV_BUILD}/"
+          rsync -a --exclude=.git \
+            "${GITHUB_WORKSPACE}/.frameworks/ansible-framework/" "${DEV_BUILD}/"
           rsync -a "${GITHUB_WORKSPACE}/ansible/" "${DEV_BUILD}/"
 
       - name: Install runtime collections
@@ -134,10 +135,7 @@ jobs:
         run: ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
 
       - name: Run ansible-lint (composed tree)
-        working-directory: _dev-build
-        env:
-          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
-        run: ansible-lint
+        run: make ansible-lint
 
   # ---------------------------------------------------------------------------
   # Terraform Format  (make tf-fmt)
@@ -160,7 +158,9 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
         with:
-          terraform_version: "1.15.3"
+          # All workflows use the exact version required by the pinned
+          # aws-terraform-framework, avoiding format drift between gates and deploys.
+          terraform_version: "1.15.1"
           terraform_wrapper: false
 
       - name: Run terraform fmt check

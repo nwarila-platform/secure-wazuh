@@ -10,8 +10,6 @@ output.elasticsearch:
   password: "${WAZUH_INDEXER_PASSWORD}"
   ssl.certificate_authorities:
     - {{ config.filebeat.certs_dir }}/root-ca.pem
-  ssl.certificate: "{{ config.filebeat.certs_dir }}/filebeat.pem"
-  ssl.key: "{{ config.filebeat.certs_dir }}/filebeat-key.pem"
 {# The wazuh index template is pre-loaded by the wazuh_server role using the admin
    cert. This lets us drop `indices:admin/template/put` from the filebeat writer RBAC
    role — Filebeat's bearer credential only needs data-write perms. #}

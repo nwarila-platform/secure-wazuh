@@ -16,29 +16,24 @@
 # sequence because wazuh-apid can leave 55000 bound after systemd reports stopped.
 - name: 'Wazuh manager config changed | stop'
   listen: 'wazuh-manager-config-changed'
+  become: true
+  when: __wazuh_manager_fully_converged__ | default(false) | bool
   ansible.builtin.systemd:
-    name:  'wazuh-manager'
+    name: 'wazuh-manager'
     state: 'stopped'
 
 - name: 'Wazuh manager config changed | terminate stale API child'
   listen: 'wazuh-manager-config-changed'
-  register: '__wazuh_apid_pkill__'
-  changed_when: __wazuh_apid_pkill__.rc == 0
-  failed_when: __wazuh_apid_pkill__.rc not in [0, 1]
-  ansible.builtin.command:
-    argv:
-      - 'pkill'
-      - '-u'
-      - 'wazuh'
-      - '-f'
-      - '/var/ossec/api/scripts/wazuh_apid.py'
+  when: __wazuh_manager_fully_converged__ | default(false) | bool
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/terminate_stale_wazuh_apid.yml"
 
-# Handlers cannot see task-level vars, so the endpoint override is read from the v3.1.0
+# Handlers cannot see task-level vars, so the endpoint override is read from the v3.2.0
 # loader's `<role>_running` merged-config fact (persists for the play, so it is still set
 # when handlers flush mid-play) with the same ansible_host → inventory_hostname fallback
 # chain the role tasks use.
 - name: 'Wazuh manager config changed | wait for API port to drain'
   listen: 'wazuh-manager-config-changed'
+  when: __wazuh_manager_fully_converged__ | default(false) | bool
   ansible.builtin.wait_for:
     host: "{{ wazuh_server_running.endpoint_host | default(ansible_host | default(inventory_hostname), true) }}"
     port: 55000
@@ -47,8 +42,10 @@
 
 - name: 'Wazuh manager config changed | start'
   listen: 'wazuh-manager-config-changed'
+  become: true
+  when: __wazuh_manager_fully_converged__ | default(false) | bool
   ansible.builtin.systemd:
-    name:  'wazuh-manager'
+    name: 'wazuh-manager'
     state: 'started'
 
 # Notified when filebeat.yml is rendered/changed. Filebeat reloads cleanly via a
@@ -56,18 +53,23 @@
 # `filebeat test output` smoke check runs against the new config.
 - name: 'Filebeat config changed'
   listen: 'filebeat-config-changed'
+  become: true
+  when: __wazuh_filebeat_fully_converged__ | default(false) | bool
   ansible.builtin.systemd:
-    name:  'filebeat'
+    name: 'filebeat'
     state: 'restarted'
 
 # Notified when the dashboard's TLS material, opensearch_dashboards.yml, keystore password, or
-# wazuh.yml changes. Gated on __wazuh_dashboard_start__ (set in present_redhat.yml BEGIN from
-# config.dashboard.service_state) — that dedicated fact is used instead of the loader's merged
-# config because the loader's always-block wipes it before a play-end flush (finding F58).
+# wazuh.yml changes. The intended-state and fully-converged facts are reset at role entry, then
+# the latter is enabled only after the listener pair, trust, keystore, configuration, and runtime
+# prerequisites are complete.
 - name: 'Restart wazuh-dashboard'
   listen: 'wazuh-dashboard-config-changed'
-  when: __wazuh_dashboard_start__ | default(true)
+  become: true
+  when:
+    - __wazuh_dashboard_start__ | default(false) | bool
+    - __wazuh_dashboard_fully_converged__ | default(false) | bool
   ansible.builtin.systemd:
-    name:          'wazuh-dashboard'
-    state:         'restarted'
+    name: 'wazuh-dashboard'
+    state: 'restarted'
     daemon_reload: true

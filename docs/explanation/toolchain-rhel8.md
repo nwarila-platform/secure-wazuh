@@ -2,7 +2,7 @@
 
 **Type**: Explanation (Diátaxis). For the deploy that runs on this toolchain, see [`how-to/deploy-the-stack.md`](../how-to/deploy-the-stack.md).
 
-secure-wazuh pins a deliberately old Ansible toolchain: `ansible-core >=2.16,<2.17`, `community.general <8`, `ansible.posix <2`, and `ansible-lint 24.x`. These ceilings are not neglect. They are the last releases that can still manage a RHEL/Rocky 8 target. This document explains the constraint and how the bootstrap venv works around the one place it would otherwise bite.
+secure-wazuh pins a deliberately old Ansible toolchain: `ansible-core >=2.16,<2.17`, `community.general <8`, `ansible.posix <2`, and `ansible-lint 24.x`. These ceilings are not neglect. They are the last releases that can still manage a RHEL/Rocky 8 target. Controller-only AWS operations use the controller's modern Python without changing that target interpreter.
 
 ## The root cause: platform-python 3.6.8
 
@@ -24,26 +24,32 @@ Any collection or ansible-core release that ships those future-annotations impor
 
 `ansible-lint` is held at 24.x to match: 24.x supports ansible-core 2.16, 25.x needs 2.17+.
 
-## The exception: boto3 for S3 needs a newer Python
+## The controller boundary for boto3
 
-There is one thing the RHEL 8 platform-python cannot do: run the boto3/botocore floor that the current `amazon.aws` collection requires. That floor is above what platform-python 3.6 can install. But the S3 downloads run **on the target**, so the target needs a modern boto3 somewhere.
+RHEL 8 platform-python cannot run the boto3/botocore floor required by the pinned `amazon.aws`
+collection. The deploy therefore runs every AWS SDK operation on the controller:
 
-The resolution is a dedicated interpreter used **only** for the S3 tasks:
+- dynamic EC2 inventory;
+- artifact-reader role assumption;
+- local SigV4 presigning and dashboard-listener retrieval; and
+- the controller-delegated EBS Function-tag resolver.
 
-1. `bootstrap.yml` installs `python3.12` (available in AppStream) and builds `/opt/ansible/venv` with `--system-site-packages`, then pip-installs a fresh boto3/botocore into it. On STIG hosts it also adds the venv tree to fapolicyd trust.
-2. The venv is **not** the default interpreter. `ansible.cfg` leaves `interpreter_python` on auto-discovery so ordinary modules keep landing on platform-python and its C bindings.
-3. Only the `amazon.aws.s3_object` tasks override `ansible_python_interpreter` to the venv, at block level. That is the sole place the modern Python is used.
-
-This gives module dispatch a modern boto3 for the two things that need it — the bundle/cert download in the server role and the RPM download in the agent role — without breaking `dnf`, SELinux, or `firewalld`, which stay on platform-python. Each role's install path asserts the venv exists (`BEGIN | Assert Bootstrap Venv Is Present`) so a host that skipped bootstrap fails loudly rather than mysteriously.
+Linux package artifacts arrive through `ansible.builtin.get_url`; Windows uses
+`ansible.windows.win_get_url`. Both perform ordinary HTTPS GETs against a short-lived URL, with
+the trusted SHA-256 supplied to the download module. The dashboard listener pair is too sensitive
+for a bearer URL, so the controller retrieves and pushes those small files. No target installs
+boto3, botocore, `amazon.aws`, Python 3.12, or `/opt/ansible/venv`.
 
 ## Consequences
 
 - **Do not bump these pins to "current".** An upgrade to ansible-core 2.17+, `community.general` 8+, or `ansible.posix` 2+ will pass on a modern controller and then `SyntaxError` against the RHEL 8 fleet. The pins move only when the target OS floor moves off RHEL 8.
 - **The controller version matters, not just the collections.** `ansible-core` is a controller install, so it is pinned in `requirements-dev.txt`, while the runtime collections are pinned in `ansible/requirements.yml`.
-- **The venv is scoped, not global.** Making it the default interpreter was tried and failed exactly because of the missing 3.12 C bindings; keep it confined to the S3 tasks.
+- **The target interpreter stays distribution-owned.** Making a modern interpreter the default
+  would still break the C-binding modules; keeping AWS work controller-side removes the need for
+  an alternate target interpreter entirely.
 
 ## Related
 
-- [`how-to/deploy-the-stack.md`](../how-to/deploy-the-stack.md) — installing the controller toolchain and running the bootstrap.
-- [`how-to/provide-aws-credentials-safely.md`](../how-to/provide-aws-credentials-safely.md) — the S3 tasks that use the venv's boto3.
+- [`how-to/deploy-the-stack.md`](../how-to/deploy-the-stack.md) — installing the controller toolchain and running the deploy.
+- [`how-to/provide-aws-credentials-safely.md`](../how-to/provide-aws-credentials-safely.md) — the controller-only artifact-reader and signing flow.
 - [`explanation/architecture.md`](architecture.md) — where S3 downloads sit in the install flow.

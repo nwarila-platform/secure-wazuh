@@ -1,0 +1,184 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/tasks/validate.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Config-contract validation and pre-staging safety, auto-discovered and run ONCE by the v3.2.0
+# loader's
+# 'INIT | Validating Merged Configuration' hook -- immediately after defaults -> overlays ->
+# overrides are merged, and BEFORE any OS-specific task file runs. present_redhat.yml has not
+# started at this point: __temp_dir__, __wazuh_pw__, and every other block/task-scoped var it
+# derives are NOT yet in scope here -- only 'config' and the always-available inventory magic
+# vars (ansible_host, inventory_hostname) are. Receives the fully merged config as 'config'
+# (see tasks/main.yml INIT stage). The mounted-data-disk gate and staging-root creation live here
+# because they must complete before the loader creates its TMPDIR-backed role temp directory.
+#
+# STATE SCOPE: the loader runs this file for EVERY state (present/absent/clean), but every
+# check below guards inputs consumed exclusively by present_redhat.yml's BEGIN/SECRETS/END
+# stages -- clean_redhat.yml is a declared no-op and there is no absent_redhat.yml -- so the
+# whole block is scoped to state=present and is a deliberate no-op otherwise (a bare
+# `-e state=clean` run must not be blocked on inputs it never reads).
+#
+# WHY THIS EXISTS: present_redhat.yml carried ONE of these checks (admin_password
+# non-empty) as an inline BEGIN guard; the other three were not validated ANYWHERE -- each
+# fails only deep into the run (a bare Jinja/Ansible Undefined error mid-END-stage, or a
+# completely SILENT empty keystore password) after the indexer has already been configured,
+# started, and gated green, and secrets have already rotated. Consolidating the contract here
+# means malformed inputs fail at loader INIT, before the stack install mutates the host. The only
+# mutation in this file creates the verified data-disk staging root required by the loader.
+# =========================================================================================== #
+
+- name: 'BEGIN | Validate Merged wazuh_server Config Contract'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  block:
+
+    - name: 'BEGIN | Assert S3 Artifact Bucket Override Is Present And Not The Tripwire'
+      vars:
+        __s3_bucket__: "{{ (config.s3 | default({})).bucket | default('') | string | trim }}"
+      ansible.builtin.assert:
+        that:
+          - (__s3_bucket__ | length) > 0
+          - "'<account-id>' not in __s3_bucket__"
+        fail_msg: >-
+          wazuh_server.s3.bucket is missing, empty, or still contains the committed
+          <account-id> tripwire. Export ANSIBLE_S3_BUCKET in the controller environment and pass
+          it through the wazuh_server override before deploying.
+        quiet: true
+
+    # BEGIN guard: the staging-root task below is this role's first mutation. It receives the
+    # 1.66 GB offline bundle, but without a real /mnt/data mount both that bundle and the
+    # indexer/manager/SIEM data would silently land on the small STIG root partition.
+    - name: 'BEGIN | Probe Whether /mnt/data Is A Mounted Filesystem'
+      ansible.builtin.command: 'mountpoint -q /mnt/data'
+      register: __mnt_data_probe__
+      changed_when: false
+      failed_when: false
+
+    - name: 'BEGIN | Assert /mnt/data Is A Mounted Data Disk'
+      ansible.builtin.assert:
+        that:
+          - "__mnt_data_probe__.rc == 0"
+        quiet: true
+        fail_msg: >-
+          /mnt/data is not a mounted filesystem (mountpoint -q rc={{ __mnt_data_probe__.rc }}).
+          Stage 1 is about to stage the 1.66 GB offline bundle under /mnt/data/.ansible/tmp —
+          without the dedicated data disk mounted here, the bundle and all indexer/manager/SIEM
+          data would silently land on the small STIG-sized root partition instead. The data-disk
+          play earlier in this playbook provisions and mounts it, so reaching here unmounted means
+          that play was skipped or its volume never attached.
+
+    - name: 'PREP | Ensure Loader Staging Root Exists On The Data Disk'
+      become: true
+      ansible.builtin.file:
+        path: '/mnt/data/.ansible/tmp'
+        state: 'directory'
+        owner: 'root'
+        group: 'root'
+        mode: '0700'
+        selevel: 's0'
+        serole: 'object_r'
+        setype: 'tmp_t'
+        seuser: 'system_u'
+
+    # admin_password is the ONE resolved secret input (defaults/main.yml: ''). It is used
+    # verbatim as the indexer/dashboard 'admin' login AND as the keyed-derivation root for the
+    # wazuh/wazuh-wui manager-API passwords (present_redhat.yml #region 01) -- the single
+    # highest-value credential in the stack. That derivation prepends a fixed 'Wz9.' prefix to
+    # GUARANTEE the derived passwords' character-class complexity regardless of admin_password's
+    # own content, so nothing downstream mechanically enforces complexity on admin_password
+    # itself. This is a defense-in-depth floor on that one human-facing master credential (this
+    # product's STIG-grade posture), not a dependency of the derivation.
+    - name: 'BEGIN | Assert admin_password Meets Length And Complexity Requirements'
+      no_log: true
+      vars:
+        __admin_pw__: "{{ config.secrets.admin_password | default('') | string }}"
+      ansible.builtin.assert:
+        that:
+          - (__admin_pw__ | length) >= 15
+          - __admin_pw__ is search('[A-Z]')
+          - __admin_pw__ is search('[a-z]')
+          - __admin_pw__ is search('[0-9]')
+          - __admin_pw__ is search('[^A-Za-z0-9]')
+        fail_msg: >-
+          wazuh_server.secrets.admin_password is
+          {{ 'missing or empty' if (__admin_pw__ | length) == 0
+             else 'only ' ~ (__admin_pw__ | length) ~ ' characters (need >= 15)' if (__admin_pw__ | length) < 15
+             else 'missing a required character class (need upper, lower, digit, and a symbol)' }}.
+          This resolved secret becomes the indexer/dashboard 'admin' login AND the derivation root
+          for the manager API passwords. Set a >=15-character value with upper/lower/digit/symbol
+          in the wazuh_server.secrets.admin_password override.
+        quiet: true
+
+    # present_redhat.yml's token-acquisition step (#region 07) selects api_users by
+    # username=='wazuh' then '| first' -- an empty selectattr result resolves to Undefined, and
+    # the first place that Undefined is dereferenced (.default_password, two tasks later) is
+    # deep into the END stage, after the indexer is already configured/started/green. Catch the
+    # missing entry here instead, before any mutation.
+    - name: 'BEGIN | Assert Manager api_users Includes The Required "wazuh" Entry'
+      vars:
+        __api_usernames__: "{{ (config.manager.api_users | default([])) | map(attribute='username') | list }}"
+      ansible.builtin.assert:
+        that:
+          - "'wazuh' in __api_usernames__"
+        fail_msg: >-
+          wazuh_server.manager.api_users {{ __api_usernames__ }} has no 'wazuh' entry. The
+          manager-API token-acquisition step (present_redhat.yml #region 07) authenticates as
+          'wazuh' unconditionally -- add a { id, username: 'wazuh', default_password } entry.
+        quiet: true
+
+    # Every write of __wazuh_pw__[<username>] (manager + filebeat keystores, dashboard keystore,
+    # wazuh.yml) assumes <username> is a key __wazuh_pw__ will actually contain once
+    # present_redhat.yml's SECRETS region builds it -- i.e. one of: 'admin', a
+    # secrets.generated_users entry, or a manager.api_users username. One of those four lookups
+    # (keystore_indexer_user) used to carry a `| default('')` in present_redhat.yml, so an
+    # unresolvable value did not even fail loudly -- it silently wrote an EMPTY password into the
+    # manager keystore. That default('') has been removed now that this assert guarantees
+    # resolvability before present_redhat.yml ever runs — an unresolvable value fails HERE,
+    # loudly, instead of writing empty credentials on the target.
+    - name: 'BEGIN | Assert Keystore/Filebeat/Dashboard Usernames Resolve To A Generated Credential'
+      vars:
+        __known_users__: >-
+          {{ ['admin']
+             + (config.secrets.generated_users | default([]))
+             + ((config.manager.api_users | default([])) | map(attribute='username') | list) }}
+        __keystore_user__: "{{ config.manager.keystore_indexer_user | default('') }}"
+        __filebeat_user__: "{{ config.filebeat.indexer_username | default('') }}"
+        __dash_indexer_user__: "{{ config.dashboard.indexer_username | default('') }}"
+        __dash_manager_user__: "{{ config.dashboard.manager_username | default('') }}"
+      ansible.builtin.assert:
+        that:
+          - __keystore_user__ in __known_users__
+          - __filebeat_user__ in __known_users__
+          - __dash_indexer_user__ in __known_users__
+          - __dash_manager_user__ in __known_users__
+        fail_msg: >-
+          One or more configured usernames do not resolve against the credential map
+          present_redhat.yml builds ({{ __known_users__ }} -- 'admin' plus
+          secrets.generated_users plus manager.api_users usernames):
+          manager.keystore_indexer_user='{{ __keystore_user__ }}',
+          filebeat.indexer_username='{{ __filebeat_user__ }}',
+          dashboard.indexer_username='{{ __dash_indexer_user__ }}',
+          dashboard.manager_username='{{ __dash_manager_user__ }}'. An unresolvable value is
+          silently written as an EMPTY credential (manager keystore) or fails with a bare
+          Undefined error deep in the run (filebeat/dashboard). Each must name an entry in
+          secrets.generated_users or manager.api_users, or be 'admin'.
+        quiet: true
+
+    # aws_ec2 inventory sets ansible_host to the EC2 instance-id (deliberate, for SSM) with no
+    # routable-address guarantee. present_redhat.yml's __endpoint_host__ falls back to it
+    # unguarded (config.endpoint_host default '' -> ansible_host -> inventory_hostname) and
+    # feeds the result straight into `wait_for host: ... port: 55000 timeout: 120` -- an
+    # instance-id is not a resolvable hostname, so that wait_for hangs for the full 120s before
+    # failing. Replicating the exact fallback chain here catches it at loader INIT instead.
+    - name: 'BEGIN | Assert endpoint_host Does Not Resolve To An AWS Instance ID'
+      vars:
+        __endpoint_host__: "{{ config.endpoint_host | default(ansible_host | default(inventory_hostname), true) }}"
+      ansible.builtin.assert:
+        that:
+          - not ((__endpoint_host__ | string) is match('^i-[0-9a-fA-F]{8}([0-9a-fA-F]{9})?$'))
+        fail_msg: >-
+          endpoint_host resolved to '{{ __endpoint_host__ }}', which looks like an AWS EC2
+          instance-id, not a routable address. wazuh_server.endpoint_host is unset and
+          ansible_host has fallen through to the aws_ec2 inventory plugin's instance-id (kept
+          there deliberately for SSM) -- END | Wait For Manager API On 55000 will hang for its
+          full 120s timeout trying to resolve it as a hostname. Set wazuh_server.endpoint_host
+          (or this host's ansible_host) to a routable IP/FQDN.
+        quiet: true

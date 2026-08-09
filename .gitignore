@@ -42,6 +42,8 @@
 # --------------------------------------------------------------------------- #
 !/.github/
 !/.github/.framework-pin
+!/.github/.aws-tf-framework-pin
+!/.github/actionlint.yaml
 !/.github/CODEOWNERS
 !/.github/ISSUE_TEMPLATE/
 !/.github/ISSUE_TEMPLATE/bug_report.yml
@@ -52,6 +54,8 @@
 !/.github/workflows/
 !/.github/workflows/ci.yml
 !/.github/workflows/deploy.yml
+!/.github/workflows/aws-deploy.yml
+!/.github/workflows/aws-reaper.yml
 !/.github/workflows/release-please.yml
 !/.github/workflows/security.yaml
 
@@ -69,10 +73,14 @@
 !/docs/decision-records/repo/0001-secrets-and-tls.md
 !/docs/decision-records/repo/0002-combined-terraform-ansible-delivery.md
 !/docs/decision-records/repo/0003-deny-all-explicit-gitignore.md
+!/docs/decision-records/repo/0004-runtime-derived-account-id-for-s3-bucket.md
+!/docs/decision-records/repo/0005-guard-placement-by-direction.md
+!/docs/decision-records/repo/0006-live-attachment-is-part-of-the-contract.md
 !/docs/decision-records/template/
 !/docs/decision-records/template/.gitkeep
 !/docs/explanation/
 !/docs/explanation/.gitkeep
+!/docs/explanation/agent-reconnect.md
 !/docs/explanation/architecture.md
 !/docs/explanation/composition-model.md
 !/docs/explanation/toolchain-rhel8.md
@@ -82,7 +90,23 @@
 !/docs/how-to/provide-aws-credentials-safely.md
 !/docs/reference/
 !/docs/reference/.gitkeep
+!/docs/reference/aws-iam/
+!/docs/reference/aws-iam/README.md
+!/docs/reference/aws-iam/policies/
+!/docs/reference/aws-iam/policies/github_nwarila-platform_secure-wazuh.json
+!/docs/reference/aws-iam/policies/secure-wazuh-artifact-read.json
+!/docs/reference/aws-iam/policies/secure-wazuh-folder-admin.json
+!/docs/reference/aws-iam/policies/secure-wazuh_deploy-discovery-iam.json
+!/docs/reference/aws-iam/policies/secure-wazuh_deploy-ec2-launch.json
+!/docs/reference/aws-iam/policies/secure-wazuh_deploy-ec2-lifecycle.json
+!/docs/reference/aws-iam/policies/secure-wazuh_deploy-sg-ssm-kms.json
+!/docs/reference/aws-iam/roles/
+!/docs/reference/aws-iam/roles/github_nwarila-platform_secure-wazuh-admin.trust.json
+!/docs/reference/aws-iam/roles/github_nwarila-platform_secure-wazuh.trust.json
+!/docs/reference/aws-iam/roles/secure-wazuh-artifact-reader.trust.json
+!/docs/reference/aws-iam/roles/nwarila-ec2-role.trust.json
 !/docs/reference/inventory-and-topology.md
+!/docs/reference/poc-evidence.md
 !/docs/reference/s3-artifacts.md
 !/docs/tutorials/
 !/docs/tutorials/.gitkeep
@@ -93,11 +117,18 @@
 !/tools/
 !/tools/check_docs_layout.py
 
+# IAM substitution gate and policy tests. The gate is the control that stops a partial clone from
+# silently granting this repository authority over a sibling's resources, so it is tracked.
+!/scripts/
+!/scripts/assert-aws-resource-graph.py
+!/scripts/bootstrap-iam.sh
+!/scripts/check-iam-literals.sh
+!/scripts/test-iam-policies.sh
+
 # --------------------------------------------------------------------------- #
 #  Ansible — product roles + playbooks + inventory (loader/shared roles composed in).
-#  linux_disk_manager AND wazuh_agent are composed in from the pinned ansible-framework, not
-#  vendored — their source of truth is ansible-framework/applications/. Only wazuh_server (the
-#  product-specific central stack role) is vendored here.
+#  linux_disk_manager and the base wazuh_agent role come from the pinned ansible-framework.
+#  This repo carries wazuh_server plus two exact wazuh_agent artifact-fetch task overlays.
 # --------------------------------------------------------------------------- #
 !/ansible/
 !/ansible/README.md
@@ -125,6 +156,8 @@
 !/ansible/applications/wazuh_server/tasks/clean_redhat.yml
 !/ansible/applications/wazuh_server/tasks/main.yml
 !/ansible/applications/wazuh_server/tasks/present_redhat.yml
+!/ansible/applications/wazuh_server/tasks/terminate_stale_wazuh_apid.yml
+!/ansible/applications/wazuh_server/tasks/validate.yml
 !/ansible/applications/wazuh_server/templates/
 !/ansible/applications/wazuh_server/templates/.gitkeep
 !/ansible/applications/wazuh_server/templates/filebeat.yml.j2
@@ -136,23 +169,20 @@
 !/ansible/applications/wazuh_server/templates/wazuh.yml.j2
 !/ansible/applications/wazuh_server/vars/
 !/ansible/applications/wazuh_server/vars/main.yml
-!/ansible/applications/wazuh_server/vars/redhat_int.yml
+!/ansible/applications/wazuh_server/vars/redhat_dev.yml
 !/ansible/applications/wazuh_server/vars/redhat_prod.yml
 !/ansible/applications/wazuh_server/vars/redhat_test.yml
+!/ansible/applications/wazuh_agent/
+!/ansible/applications/wazuh_agent/tasks/
+!/ansible/applications/wazuh_agent/tasks/present_redhat.yml
+!/ansible/applications/wazuh_agent/tasks/present_windows.yml
 !/ansible/inventory/
+!/ansible/inventory/aws/
+!/ansible/inventory/aws/aws_ec2.yml
+!/ansible/inventory/aws_ec2.yml
 !/ansible/inventory/proxmox.yml
 !/ansible/playbooks/
-!/ansible/playbooks/aws_runner_env.yml
-!/ansible/playbooks/bootstrap.yml
-!/ansible/playbooks/deploy_all.yml
-!/ansible/playbooks/linux_disk_manager.yml
-!/ansible/playbooks/site.yml
-!/ansible/playbooks/wazuh_agent.yml
-!/ansible/playbooks/wazuh_agent_windows.yml
-!/ansible/playbooks/wazuh_pipeline_smoke.yml
-!/ansible/playbooks/wazuh_server.yml
-!/ansible/playbooks/wazuh_trigger_fim.yml
-!/ansible/playbooks/wazuh_trigger_fim_windows.yml
+!/ansible/playbooks/deploy-aws-poc.yml
 !/ansible/requirements.yml
 
 # --------------------------------------------------------------------------- #

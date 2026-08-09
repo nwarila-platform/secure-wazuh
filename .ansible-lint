@@ -2,9 +2,9 @@
 # =============================================================================
 # ansible-lint Configuration — secure-wazuh
 # =============================================================================
-# Mirrors the nwarila-platform/ansible-framework convention so the canonical
-# generic role loader (which expects the uppercase ENV play-var and uses
-# __dunder__ loop vars) lints cleanly across every sibling repo.
+# Applies the product conventions that remain valid after composition with
+# ansible-framework. The generic loader expects the uppercase ENV play var and
+# uses __dunder__ loop vars across the platform.
 # =============================================================================
 
 profile: safety
@@ -12,9 +12,20 @@ profile: safety
 exclude_paths:
   - .git/
   - .github/
+  # Shared roles and OS loaders are linted in ansible-framework. They remain
+  # present for composed syntax resolution but are outside this product gate's
+  # ownership; every product YAML path is supplied explicitly by the Makefile.
+  - applications/linux_disk_manager/
+  - applications/python3_pip/
+  - applications/wazuh_agent/
+  - operating_systems/
 
 warn_list:
-  - experimental
+  # Paired #region/#endregion markers are stable navigational delimiters in role
+  # loaders, task files, playbooks, and framework content.
+  - yaml[comments]
+  # The repository's yamllint policy permits rare lines through 160 columns as
+  # warnings; ansible-lint reports the same policy without making it fatal.
   - yaml[line-length]
 
 # Loop variables across this platform use the __dunder__ convention so the

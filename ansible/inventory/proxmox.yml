@@ -9,9 +9,10 @@
 # Collapsed all-in-one topology: the whole central stack (indexer + manager + filebeat +
 # dashboard) is ONE role (wazuh_server) on ONE host. `wazuh_indexers`/`wazuh_dashboards` remain
 # only because the loader/consumers still reference them; the AIO host is a member of all three
-# central groups. Endpoint agents run on SEPARATE hosts — `wazuh_agents` (Linux) and
-# `wazuh_agents_windows` (Windows) are intentionally empty here (the agent role's BEGIN guard
-# refuses to install on any wazuh_servers member).
+# central groups. Endpoint agents run on SEPARATE hosts — `wazuh_agents` (all endpoints) and its
+# `wazuh_agents_linux` / `wazuh_agents_windows` platform subsets are intentionally empty here
+# because this parked inventory defines no endpoint hosts. The manager host stays separate because
+# it owns `/var/ossec`; the Linux agent installer rejects a manager endpoint matching its host.
 # =========================================================================================== #
 
 all:
@@ -26,9 +27,21 @@ all:
           ansible_ssh_private_key_file: /root/.ssh/id_rsa_wazuh
           node_name: tcnhq-prxmx01
           vm_id: 1000
-          wazuh_data_device: /dev/disk/by-id/scsi-SQEMU_QEMU_HARDDISK_wazuh-data
-          wazuh_data_mount: /mnt/data
-          wazuh_data_fstype: xfs
+          # The Proxmox-specific linux_disk_manager targeting, kept here with the host it
+          # describes. NOTE: nothing consumes it today — the playbook that read
+          # wazuh_disk_platform / wazuh_disks through default() fallbacks is gone, and the one
+          # remaining playbook (deploy-aws-poc.yml) declares its AWS disk literally instead.
+          # This target is parked (see .github/workflows/deploy.yml's proxmox job); when it is
+          # picked back up, whatever play drives it must read these two keys explicitly.
+          # Before its first live run, verify the QEMU by-id serial and the disk's current layout.
+          wazuh_disk_platform: proxmox
+          wazuh_disks:
+            - unique_id: scsi-SQEMU_QEMU_HARDDISK_wazuh-data
+              mount_point: /mnt/data
+              fstype: xfs
+              label: wazuh-data
+              opts: defaults,nodev,nosuid
+              passno: 2
 
     # Vestigial central groups — the same AIO host, vars inherited from wazuh_servers above.
     wazuh_indexers:
@@ -40,6 +53,8 @@ all:
 
     # Endpoint agent groups (populated per environment; empty on the AIO-only topology).
     wazuh_agents:
+      hosts: {}
+    wazuh_agents_linux:
       hosts: {}
     # Windows-over-SSH: connection vars (ansible_shell_type=powershell, ansible_become=false) come from inventory
     wazuh_agents_windows:

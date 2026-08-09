@@ -12,10 +12,10 @@
 | Review-by      | N/A (Accepted)                               |
 
 > **Amendment.** `wazuh_agent` has since joined `linux_disk_manager` as a framework-owned
-> role composed in at run time rather than vendored. Wherever this ADR's allowlist-check
-> description names only `linux_disk_manager/` as the guard's framework-owned exclusion
-> (the confirmation guard and the assumptions below), read `wazuh_agent/` as excluded for the
-> identical reason — the Makefile's `GUARD_EXCLUDE` pattern already covers both paths. See
+> base role composed in at run time. Two exact `wazuh_agent/tasks/present_*.yml` product overlays
+> are explicitly allowlisted; all other files under the role remain excluded by
+> `GUARD_EXCLUDE`. Wherever this ADR names only `linux_disk_manager/` as a framework-owned
+> exclusion, read the non-overlaid `wazuh_agent/` content as excluded for the same reason. See
 > [`explanation/composition-model.md`](../../explanation/composition-model.md) for the
 > current state.
 
@@ -50,8 +50,8 @@ contains high-sensitivity, non-committable content:
 - **`.tfvars` and `.env`** carrying provisioning inputs and, historically, credential-like
   values.
 - **AWS credential material** staged for the deploy runner.
-- **On-target-minted certificate keys** and generated secrets from the rotate-every-run
-  model (see [ADR-0001](0001-secrets-and-tls.md)) that may transit the working tree.
+- **Locally staged secret material** that an operator may create outside the tracked tree. The
+  role's on-target-minted internal PKI never enters the repository working tree.
 - **`_dev-build/`**, the generated Ansible composition tree (framework@pin overlaid with
   this repo's `applications/*`), which is a build artifact and must never be tracked.
 - **Lab and agent scratch** — `*.retry`, `__pycache__/`, editor and agent tooling files.
@@ -99,8 +99,8 @@ baseline and adding a repo-local CI guard.
 - Every tracked path is a subsequent `!`-prefixed allowlist entry, grouped by category with
   `#` comments (repository-root governance/tooling, `ansible/`, `terraform/` data-only,
   `docs/`, `.github/`).
-- A directory requires **two** entries — one for the directory (`!/path/`) and one for its
-  contents (`!/path/**`) — because a single entry does not suffice in all git versions.
+- Each traversed directory and each committed file has its own exact entry. No subtree wildcard
+  re-admits a directory's contents.
 - Adding a **new** committed file requires adding its allowlist line in the **same** pull
   request. A PR that adds a file without allowlisting it is a reviewer-detectable defect:
   the file will not appear in `git status` after `git add`.
@@ -110,13 +110,12 @@ baseline and adding a repo-local CI guard.
 ### The forgot-to-allowlist CI guard
 
 The Makefile `allowlist-check` target (part of `make ci`) is the mechanical guard for the
-strategy's single failure mode. It lists ignored-but-untracked files inside the deliverable
-trees (`ansible terraform docs .github`), filters out the intentionally-ignored paths
-(`.terraform/`, `*.tfstate`, `__pycache__`, `*.retry`, the framework-owned
-`linux_disk_manager/` composed in at run time), and **fails** if anything remains:
+strategy's single failure mode. It lists ignored-but-untracked files across the repository,
+filters out the intentionally ignored local artifacts and the framework-owned
+`linux_disk_manager/` and `wazuh_agent/` composition paths, and **fails** if anything remains:
 
 ```
-git ls-files --others --ignored --exclude-standard -- ansible terraform docs .github
+git ls-files --others --ignored --exclude-standard -- .
 ```
 
 A non-empty result means someone added a deliverable-area file but forgot the matching
@@ -149,7 +148,7 @@ an allowlist edit that admits something it should not.
   tracked surface.
 - **Bad, because** it is unusual; a contributor may be surprised when a new file does not
   show up in `git status` until allowlisted.
-- **Bad, because** each new directory needs two allowlist entries.
+- **Bad, because** every new directory and file needs its own allowlist entry.
 
 ### Option 3: `git add` discipline only
 
@@ -174,13 +173,16 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
    `.terraform/`, `*.tfstate`), caches, `.env`, or credential material.
 5. **`.gitignore` not edited outside intent.** The `.gitignore` is orchestrated as an
    allowlist; edits MUST add specific paths, not weaken the deny-all rule.
+6. **Allowlist entries name tracked paths.** `make allowlist-check` MUST reject a file
+   allowlist entry that does not resolve in Git's tracked set, while directory entries remain
+   valid when their directory exists.
 
 ## Consequences
 
 ### Positive
 
-- Terraform state, `.tfvars`, `.env`, AWS credentials, minted cert keys, `_dev-build/`, and
-  caches cannot enter the repo through `git add .` alone.
+- Terraform state, unlisted `.tfvars`, `.env`, AWS credentials, minted cert keys, `_dev-build/`,
+  and caches cannot enter the repo through `git add .` alone.
 - Every tracked file is a deliberate, reviewable allowlist entry; `.gitignore` is the
   tracked-content inventory.
 - The one ergonomic failure — forgetting to allowlist a wanted file — is caught by
@@ -191,7 +193,7 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
 
 - Contributors unfamiliar with the pattern may be surprised when a new file does not appear
   in `git status`; the fix is `git check-ignore -v <path>` plus an allowlist line.
-- Each new directory costs two allowlist entries.
+- Each new directory and file costs an exact allowlist entry.
 - The allowlist must be maintained; a new deliverable subtree is a small, deliberate edit.
 
 ### Neutral
@@ -199,7 +201,7 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
 - Per-directory `.gitignore` files are not used; the single top-level file carries the whole
   deny-all + allowlist.
 - The `allowlist-check` exclusion list (`.terraform/`, `*.tfstate`, `__pycache__`, `*.retry`,
-  `linux_disk_manager/`) is itself part of the intent and is reviewed when it changes.
+  `linux_disk_manager/`, `wazuh_agent/`) is itself part of the intent and changes with the guard.
 - The strategy is cheap to reverse: migrating back to allow-all-with-denies is a single PR,
   though doing so would forfeit the default-safe property this repo depends on.
 
@@ -215,8 +217,9 @@ revisited:
    worth its friction.
 3. The `make allowlist-check` guard remains part of `make ci` and runs on every pull
    request.
-4. The framework-owned `linux_disk_manager/` role continues to be composed in at run time
-   rather than tracked, so its exclusion from the guard remains correct.
+4. The framework-owned `linux_disk_manager/` and base `wazuh_agent/` roles continue to be composed
+   at run time, while exact product overlay files under `wazuh_agent/` remain explicitly
+   allowlisted.
 
 ## Supersedes
 
@@ -228,9 +231,8 @@ None (current).
 
 ## Implementing PRs
 
-Pending. The strategy predates this ADR — `.gitignore` already opens with `**` and an
-explicit allowlist, and `make allowlist-check` already guards it — so no new implementing
-PR is required; this ADR records the repo-specific rationale and the local guard.
+Landed before this ADR. `.gitignore` opens with `**` and an explicit allowlist, and
+`make allowlist-check` enforces both forward and reverse checks.
 
 ## Related ADRs
 

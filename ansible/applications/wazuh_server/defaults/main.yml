@@ -12,9 +12,11 @@
 # Operator prereqs:
 #   - The persistent data volume is mounted at data_root (by linux_disk_manager / the deploy
 #     layer) before this role runs.
-#   - `env` via --extra-vars; AWS creds from the runner env (playbooks/aws_runner_env.yml).
-#   - Exactly ONE operator secret: `wazuh_server.secrets.admin_password` (see below). Every
-#     other credential is generated fresh each run (nothing persisted).
+#   - `ENV` as an Ansible fact (playbooks/deploy-aws-poc.yml propagates literal `dev` — no
+#     --extra-vars); AWS creds from the runner env via that playbook's run-input bridge.
+#   - Exactly ONE Wazuh secret: `wazuh_server.secrets.admin_password` (see below). The playbook
+#     resolves it independently for each invocation, normally minting a fresh value when no
+#     explicit environment override is supplied. Every other credential is generated or derived.
 # =========================================================================================== #
 
 wazuh_server_defaults:
@@ -23,22 +25,22 @@ wazuh_server_defaults:
   state: 'present'
   #endregion --- [ Lifecycle ] ------------------------------------------------------------------ #
 
-  #region ------ [ Secrets (rotate-every-run; nothing persisted) ] ------------------------------ #
-  # The ONLY operator-provided credential: the OpenSearch `admin` superuser, which is also the
-  # dashboard / web-UI login. Set it in the `wazuh_server.secrets:` override dict.
+  #region ------ [ Secrets (rotate every invocation; no controller persistence) ] --------------- #
+  # The ONLY resolved credential input: the OpenSearch `admin` superuser, which is also the
+  # dashboard / web-UI login. The playbook sets it in the `wazuh_server.secrets:` override dict.
   #
-  # Every other credential (OpenSearch internal service users + manager API users) is
-  # PROCEDURALLY GENERATED FRESH ON EVERY RUN and never written to disk — the credential tasks
-  # therefore always report `changed` (rotation by design). `generated_users` is the exact set
-  # rendered into internal_users.yml + the manager API sync + the keystores.
+  # Every other credential (OpenSearch internal service users + manager API users) is generated or
+  # derived fresh for the invocation, with no controller persistence. Target-side bcrypt hashes,
+  # keystores, RBAC state, and the locked dashboard config are rewritten as appropriate, so the
+  # credential tasks always report `changed` (rotation by design).
   secrets:
     admin_password: ''
     # Fresh 32-char random every run (OpenSearch internal users + service auth). These live only
     # in bcrypt hashes (internal_users.yml, pushed via the admin CERT), so rotating them never
     # locks anything out. The manager API users (wazuh, wazuh-wui) are NOT here — their creds live
-    # in the persistent rbac.db and can only be changed by authenticating with the current one,
-    # so they are DERIVED deterministically from admin_password in present_redhat.yml #region 01
-    # (stable across reruns => always re-authenticatable, still nothing persisted).
+    # in the persistent rbac.db and can only be changed by authenticating with the current one.
+    # They are DERIVED deterministically from this invocation's admin_password; when that root
+    # changes, present_redhat.yml's guarded ladder rebuilds only rbac.db and rotates them.
     generated_users:
       - 'anomalyadmin'    # OpenSearch internal (hash-only)
       - 'kibanaserver'    # dashboard -> indexer service auth
@@ -51,12 +53,17 @@ wazuh_server_defaults:
   #region ------ [ Persistent data volume (union of all components) ] --------------------------- #
   data_root: '/mnt/data/wazuh'
   data_binds:
-    - { canonical: '/var/lib/wazuh-indexer',   subpath: 'indexer/data' }
-    - { canonical: '/var/log/wazuh-indexer',   subpath: 'indexer/logs' }
-    - { canonical: '/var/ossec',               subpath: 'server/ossec' }
-    - { canonical: '/var/log/filebeat',        subpath: 'server/filebeat-logs' }
+    - { canonical: '/var/lib/wazuh-indexer', subpath: 'indexer/data' }
+    - { canonical: '/var/log/wazuh-indexer', subpath: 'indexer/logs' }
+    - { canonical: '/var/ossec', subpath: 'server/ossec' }
+    - { canonical: '/var/log/filebeat', subpath: 'server/filebeat-logs' }
     - { canonical: '/var/lib/wazuh-dashboard', subpath: 'dashboard/data' }
     - { canonical: '/var/log/wazuh-dashboard', subpath: 'dashboard/logs' }
+
+  # The inline PoC proof stages persist their append-only ledger on the same data disk so the
+  # pre-swap entries survive an AIO root-volume replacement.
+  poc_fim_proof:
+    ledger_path: '/mnt/data/wazuh-fim-ledger.jsonl'
   #endregion --- [ Persistent data volume ] ---------------------------------------------------- #
 
   #region ------ [ Directories ] ---------------------------------------------------------------- #
@@ -64,37 +71,36 @@ wazuh_server_defaults:
   # post = created AFTER RPM install (service accounts now exist); re-chowns the bind targets.
   directories:
     pre:
-      - { path: '/mnt/data/wazuh',              owner: 'root', group: 'root', mode: '0750' }
-      - { path: '/mnt/data/wazuh/indexer/data', owner: 'root', group: 'root', mode: '0750' }
-      - { path: '/mnt/data/wazuh/indexer/logs', owner: 'root', group: 'root', mode: '0750' }
-      - { path: '/var/lib/wazuh-indexer',       owner: 'root', group: 'root', mode: '0750' }
-      - { path: '/var/log/wazuh-indexer',       owner: 'root', group: 'root', mode: '0750' }
+      - { path: '/mnt/data/wazuh', mode: '0750' }
+      - { path: '/mnt/data/wazuh/indexer/data', mode: '0750' }
+      - { path: '/mnt/data/wazuh/indexer/logs', mode: '0750' }
+      - { path: '/var/lib/wazuh-indexer', mode: '0750' }
+      - { path: '/var/log/wazuh-indexer', mode: '0750' }
     post:
-      - { path: '/var/lib/wazuh-indexer',           owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }
-      - { path: '/var/log/wazuh-indexer',           owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }
-      - { path: '/etc/wazuh-indexer/certs',         owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0500' }
-      - { path: '/var/lib/wazuh-indexer/tmp',       owner: 'wazuh-indexer',   group: 'wazuh-indexer',   mode: '0750' }
-      - { path: '/usr/share/wazuh-indexer/lib/jna', owner: 'root',            group: 'wazuh-indexer',   mode: '0750' }
-      - { path: '/etc/filebeat/certs',              owner: 'root',            group: 'root',            mode: '0500' }
-      - { path: '/etc/wazuh-dashboard/certs',       owner: 'wazuh-dashboard', group: 'wazuh-dashboard', mode: '0500' }
+      - { path: '/var/lib/wazuh-indexer', owner: 'wazuh-indexer', group: 'wazuh-indexer', mode: '0750' }
+      - { path: '/var/log/wazuh-indexer', owner: 'wazuh-indexer', group: 'wazuh-indexer', mode: '0750' }
+      - { path: '/etc/wazuh-indexer/certs', owner: 'wazuh-indexer', group: 'wazuh-indexer', mode: '0500' }
+      - { path: '/var/lib/wazuh-indexer/tmp', owner: 'wazuh-indexer', group: 'wazuh-indexer', mode: '0750' }
+      - { path: '/usr/share/wazuh-indexer/lib/jna', owner: 'root', group: 'wazuh-indexer', mode: '0750' }
+      - { path: '/etc/filebeat/certs', owner: 'root', group: 'root', mode: '0500' }
+      - { path: '/etc/wazuh-dashboard/certs', owner: 'wazuh-dashboard', group: 'wazuh-dashboard', mode: '0500' }
   #endregion --- [ Directories ] ---------------------------------------------------------------- #
 
   #region ------ [ Services ] ------------------------------------------------------------------- #
   # Start ORDER is enforced per-#region (indexer green BEFORE filebeat), NOT by looping this
   # list. Listed for enable/daemon_reload bookkeeping.
   services:
-    - { name: 'wazuh-indexer',   enabled: true, state: 'started' }
-    - { name: 'wazuh-manager',   enabled: true, state: 'started' }
-    - { name: 'filebeat',        enabled: true, state: 'started' }
+    - { name: 'wazuh-indexer', enabled: true, state: 'started' }
+    - { name: 'wazuh-manager', enabled: true, state: 'started' }
+    - { name: 'filebeat', enabled: true, state: 'started' }
     - { name: 'wazuh-dashboard', enabled: true, state: 'started' }
   #endregion --- [ Services ] ------------------------------------------------------------------- #
 
   #region ------ [ Endpoints (AIO => all local; no group deref — DASH-04 safe) ] ---------------- #
   indexer_host: '127.0.0.1'   # filebeat + manager indexer-connector + dashboard opensearch.hosts
   manager_host: '127.0.0.1'   # dashboard wazuh.yml manager API
-  endpoint_host: ''           # on-target reachability (health/api/443); '' => ansible_host|inventory_hostname
-  cert_name: ''               # S3 PEM basename; '' => inventory_hostname
-  node_name: ''               # OpenSearch node.name; '' => cert_name/inventory_hostname
+  endpoint_host: "{{ private_ip_address | default('', true) }}"  # '' => ansible_host|inventory_hostname
+  node_name: ''               # OpenSearch node.name + minted DNS SAN; '' => inventory_hostname
   #endregion --- [ Endpoints ] ------------------------------------------------------------------ #
 
   #region ------ [ Firewall (union) ] ----------------------------------------------------------- #
@@ -138,12 +144,12 @@ wazuh_server_defaults:
 
   #region ------ [ Filebeat config ] ------------------------------------------------------------ #
   filebeat:
-    certs_dir:          '/etc/filebeat/certs'
-    config_path:        '/etc/filebeat/filebeat.yml'
-    module_config_dir:  '/etc/filebeat/modules.d'
+    certs_dir: '/etc/filebeat/certs'
+    config_path: '/etc/filebeat/filebeat.yml'
+    module_config_dir: '/etc/filebeat/modules.d'
     module_config_path: '/etc/filebeat/modules.d/wazuh.yml'
-    module_dir:         '/usr/share/filebeat/module'
-    indexer_username:   'logstash'
+    module_dir: '/usr/share/filebeat/module'
+    indexer_username: 'logstash'
   #endregion --- [ Filebeat config ] ------------------------------------------------------------ #
 
   #region ------ [ Manager (ossec.conf + keystore + API users + FIM) ] -------------------------- #
@@ -151,10 +157,14 @@ wazuh_server_defaults:
     config_path: '/var/ossec/etc/ossec.conf'
     keystore_bin: '/var/ossec/bin/wazuh-keystore'
     # The manager indexer-connector authenticates as the cluster admin (full write on
-    # wazuh-states-*). admin is the ONE operator-provided password.
+    # wazuh-states-*). admin is this invocation's ONE resolved password.
     keystore_indexer_user: 'admin'
+    # Narrow no-password-literal exemption: these are Wazuh's public vendor factory bootstrap
+    # values, not operator secrets or desired credentials. They are used only to authenticate a
+    # fresh rbac.db for immediate rotation; present_redhat.yml then proves the running API rejects
+    # every factory value.
     api_users:
-      - { id: 1, username: 'wazuh',     default_password: 'wazuh' }
+      - { id: 1, username: 'wazuh', default_password: 'wazuh' }
       - { id: 2, username: 'wazuh-wui', default_password: 'wazuh-wui' }
 
     # FILE INTEGRITY MONITORING (the headline fix). The all-in-one box's local agent 000 runs
@@ -180,13 +190,17 @@ wazuh_server_defaults:
 
   #region ------ [ Dashboard config ] ----------------------------------------------------------- #
   dashboard:
-    certs_dir:        '/etc/wazuh-dashboard/certs'
-    main_config:      '/etc/wazuh-dashboard/opensearch_dashboards.yml'
-    wazuh_config:     '/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml'
+    certs_dir: '/etc/wazuh-dashboard/certs'
+    main_config: '/etc/wazuh-dashboard/opensearch_dashboards.yml'
+    wazuh_config: '/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml'
     indexer_username: 'kibanaserver'
     manager_username: 'wazuh-wui'
-    bind_address:     '0.0.0.0'
-    service_state:    'started'
+    bind_address: '0.0.0.0'
+    service_state: 'started'
+    # Exact SHA-256 X.509 fingerprint configured for the self-signed dev listener placeholder.
+    # Set to an empty string when the placeholder is retired; issued certificates use the
+    # target's normal trust store and never enter the leaf-pinning exception.
+    dev_placeholder_fingerprint: 'C2:2B:8D:FF:DF:94:7A:96:5A:79:D1:11:65:F3:80:B3:55:A3:81:2A:5C:75:45:0C:D4:E2:A5:E4:22:17:D9:E1'
   #endregion --- [ Dashboard config ] ----------------------------------------------------------- #
 
   #region ------ [ Side-deps ] ------------------------------------------------------------------ #
@@ -194,6 +208,7 @@ wazuh_server_defaults:
     - 'gzip'
     - 'lsof'
     - 'openssl'
+    - 'python3-libselinux'
     - 'tar'
   #endregion --- [ Side-deps ] ------------------------------------------------------------------ #
 

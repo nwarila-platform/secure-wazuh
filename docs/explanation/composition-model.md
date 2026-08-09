@@ -2,29 +2,46 @@
 
 **Type**: Explanation (Diátaxis). For the deploy that runs inside the composed tree, see [`how-to/deploy-the-stack.md`](../how-to/deploy-the-stack.md); for the stack it configures, see [`explanation/architecture.md`](architecture.md).
 
-secure-wazuh is the org's canonical exemplar of a **combined delivery repo**: it provisions infrastructure with Terraform and configures it with Ansible, from one repository, driven by commit-to-main GitOps. It carries almost none of the machinery it runs on. Both the Ansible loader and the Terraform resource logic are **composed in from pinned frameworks** at run time. This document explains that model and why it is built this way.
+secure-wazuh is the org's canonical exemplar of a **combined delivery repo**: it provisions infrastructure with Terraform and configures it with Ansible, from one repository, driven by commit-to-main GitOps. The AWS path is active; the Proxmox job is parked. The repository carries almost none of the machinery it runs on. Both the Ansible loader and the Terraform resource logic are **composed in from pinned frameworks** at run time. This document explains that model and why it is built this way.
 
 ## What this repo actually contains
 
 The repo carries only the product-specific delta:
 
-- **Ansible product role** — `wazuh_server` under `ansible/applications/`, plus the playbooks and inventory that wire it together.
+- **Ansible product delta** — `wazuh_server`, two `wazuh_agent` artifact-fetch task overlays, and
+  the playbooks and inventory that wire them together.
 - **Terraform data, not code** — `terraform/proxmox.tfvars` and `terraform/aws.tfvars`. There are **no `.tf` files** in this repo. Variable declarations and resource logic live in the pinned frameworks.
 
-Everything else — the generic role loader, shared roles like `linux_disk_manager` and `wazuh_agent`, and every Terraform resource — belongs to a framework and is pulled in when a run happens.
+Everything else — the generic role loader, the base `linux_disk_manager` and `wazuh_agent` roles,
+the shared `s3_artifact_delivery` role, and every Terraform resource — belongs to a framework and
+is pulled in when a run happens.
 
 ## The Ansible composition
 
 The product roles resolve fully only when they sit **inside** the framework's directory layout, next to the generic `tasks/main.yml` loader and the shared roles they call. The composition assembles that tree:
 
 1. Read the framework pin at `.github/.framework-pin` — a single commit SHA; see that file for the exact value currently pinned.
-2. Lay down `ansible-framework` at that exact commit (this already includes `wazuh_agent` and `linux_disk_manager`).
-3. Overlay this repo's `ansible/applications/*` on top, so `wazuh_server` joins the framework's loader and shared roles.
+2. Lay down `ansible-framework` at that exact commit (this already includes `wazuh_agent`,
+   `linux_disk_manager`, and `s3_artifact_delivery`).
+3. Overlay this repo's `ansible/` tree on top. `wazuh_server` joins the framework roles, and the
+   two product `wazuh_agent` task files replace only the package-fetch entries.
 4. Run Ansible from inside the resulting tree.
 
-Locally this produces a `_dev-build/` folder via a dev-only compose helper that is **not committed** to the repo — it is a convenience for iterating on a workstation. CI performs the identical composition inside its execution container. The two paths are the same recipe, so "works in `_dev-build/`" and "works in CI" stay in agreement.
+The dashboard listener path uses the shared role's public controller-side `get` entry point. One
+invocation downloads the certificate, private key, and both digest sidecars under one scoped
+session before `wazuh_server` pushes them from controller staging. Entering the role also places
+its controller-download module on Ansible's role search path, so the consumer does not add the
+framework role's `library/` directory to `ansible.cfg`.
 
-Because `linux_disk_manager` and `wazuh_agent` are framework-owned and composed in, they are present in the working tree at run time but are **not** deliverables of this repo. The allowlist guard in the `Makefile` excludes the `linux_disk_manager/` and `wazuh_agent/` paths for exactly this reason: it patrols the deliverable trees and would otherwise flag a framework-owned role as an un-allowlisted file.
+Locally an operator can reproduce the workflow's checkout-and-overlay steps in the ignored
+`_dev-build/` folder. This repository does not ship a compose helper. CI performs the composition
+inside its execution container; a local tree matches CI only when it uses the same pinned checkout
+and overlay steps.
+
+The base `linux_disk_manager` and `wazuh_agent` trees remain framework-owned. The two explicitly
+allowlisted `wazuh_agent/tasks/present_*.yml` files are product deliverables that replace their
+matching framework files during overlay. The `Makefile` still excludes other files under those
+framework-owned role paths so a local composition is not mistaken for product content.
 
 ## The Terraform composition
 
@@ -39,12 +56,16 @@ CI runs each framework with `-var-file=<target>.tfvars`. The repo supplies the *
 
 ## Two targets, one repo
 
-The combined repo delivers the same product to two targets with opposite lifecycles:
+The repository retains data for two targets with opposite intended lifecycles:
 
-- **Proxmox is the permanent live instance.** Every commit to `main` redeploys it in place.
-- **AWS is an ephemeral proof-of-concept.** Every commit runs deploy, then test, then destroy.
+- **Proxmox is the intended permanent instance.** Its workflow job is currently parked with
+  `if: false`, and no playbook drives it.
+- **AWS is an active ephemeral proof-of-concept.** Applicable pushes run deploy, prove, then
+  destroy.
 
-Both targets use the same Ansible roles and the same inventory group names; only the `.tfvars` and the inventory addresses differ. The Ansible layer does not know or care which target it is configuring — it sees a reachable RHEL/Rocky 8 host with `/mnt/data` mounted.
+The inventories use the same central group names, and the target data remains separate. The active
+Ansible layer currently runs only against AWS; restoring Proxmox requires reconnecting its
+playbook path.
 
 ## Why compose instead of vendor
 

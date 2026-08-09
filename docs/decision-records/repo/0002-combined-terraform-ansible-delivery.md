@@ -2,7 +2,7 @@
 
 | Field          | Value                                        |
 | -------------- | -------------------------------------------- |
-| Status         | Accepted                                     |
+| Status         | Accepted (AWS active; Proxmox parked)        |
 | Date           | 2026-07-21                                   |
 | Authors        | Smarter > Harder (@NWarila)                  |
 | Decision-maker | Smarter > Harder (sole portfolio maintainer) |
@@ -19,6 +19,11 @@
 > state at acceptance: `wazuh_server` is now the only vendored product role. See
 > [`explanation/composition-model.md`](../../explanation/composition-model.md) for the
 > current state.
+>
+> **Current delivery state.** The data-only Terraform layout, pinned framework composition,
+> deny-all guard, and ephemeral AWS deploy-prove-destroy path are implemented. The Proxmox job is
+> parked with `if: false`, and no playbook currently drives that target. The two-target loop below
+> remains the accepted target state, not a claim that both jobs run today.
 
 ## TL;DR
 
@@ -28,14 +33,13 @@ commit-to-main GitOps loop. Terraform in this repo is **data-only**:
 `terraform/proxmox.tfvars` and `terraform/aws.tfvars` with **no `.tf` files** — the
 resource logic and variable declarations live in the pinned
 `proxmox-vm-terraform-framework` and `aws-terraform-framework`, which CI runs with
-`-var-file=<target>.tfvars`. Ansible is **composed**: the product roles
-(`wazuh_server`, `wazuh_agent`) live in `ansible/applications/`, and the generic loader
-plus shared roles (`linux_disk_manager`) are composed in from the pinned
-`ansible-framework` at run time (pin in `.github/.framework-pin`). Two targets are driven
-from that one source on every commit to `main`: **Proxmox** is the **permanent** live
-instance (each commit redeploys **in place**), and **AWS** is an **ephemeral**
-proof-of-concept (each commit runs **deploy → test → destroy**). This repository is the
-reusable exemplar for the combined-delivery pattern in `nwarila-platform`.
+`-var-file=<target>.tfvars`. Ansible is **composed**: `wazuh_server` lives in
+`ansible/applications/`, while the generic loader and shared roles (`linux_disk_manager`,
+`wazuh_agent`) are composed in from the pinned `ansible-framework` at run time (pin in
+`.github/.framework-pin`). The active AWS path runs **deploy → prove → destroy** on applicable
+commits to `main`. Proxmox remains the intended permanent target, but its job is parked.
+This repository is the reusable exemplar for the combined-delivery pattern in
+`nwarila-platform`.
 
 ## Context and Problem Statement
 
@@ -116,31 +120,32 @@ framework upgrade is a pin bump, not a merge.
 
 ### Ansible is composed
 
-The product roles that are genuinely this repo's — `wazuh_server`, `wazuh_agent` — live in
+The product role that is genuinely this repo's — `wazuh_server` — lives in
 `ansible/applications/`. The generic role loader and the shared roles
-(`linux_disk_manager`) are **composed in from `ansible-framework` at run time** rather than
-vendored. The framework commit is pinned in `.github/.framework-pin` — a single commit SHA;
-see that file for the exact value currently pinned. A dev-only, **uncommitted** compose script
-builds a local `_dev-build/` tree — copy `ansible-framework@pin`, overlay this repo's
-`ansible/applications/*` onto it, then run Ansible from inside the composed tree. CI
+(`linux_disk_manager`, `wazuh_agent`) are **composed in from `ansible-framework` at run time**
+rather than vendored. The framework commit is pinned in `.github/.framework-pin` — a single commit SHA;
+see that file for the exact value currently pinned. A local operator can build an ignored
+`_dev-build/` tree by copying `ansible-framework@pin`, overlaying this repo's
+`ansible/applications/*`, and running Ansible from inside the composed tree. The repository does
+not ship a compose helper. CI
 performs the same composition inside its execution container. The generated `_dev-build/`
 is never tracked (see [ADR-0003](0003-deny-all-explicit-gitignore.md)), so the loader stays
 byte-identical to its framework source and the product surface stays small.
 
-### One source, two targets, commit-to-main GitOps
+### One source, two target definitions, one active delivery path
 
-Every commit to `main` drives both targets from the same source:
+The accepted target state is:
 
-- **Proxmox — permanent, in place.** The permanent live SIEM is redeployed in place on
-  every commit (converge, or revert-to-clean-snapshot then Ansible). This is the instance
-  that actually collects alerts.
-- **AWS — ephemeral, deploy → test → destroy.** On every commit the AWS target is stood up
-  from zero, exercised by the test path, then **destroyed**. This proves the from-scratch
-  provisioning path on a second cloud and avoids standing cost.
+- **Proxmox — permanent, in place.** The target is intended to converge in place from the same
+  source as AWS. It is currently parked: `deploy.yml` gates the job with `if: false`, and the
+  repository has no active Proxmox playbook.
+- **AWS — ephemeral, deploy → test → destroy.** On applicable commits the AWS target is stood up
+  from zero when the workflow path filters match, exercised by the proof path, then
+  **destroyed**. This proves the from-scratch provisioning path and avoids standing cost.
 
-Because both targets are built from the same commit, "what was tested on AWS" and "what is
-live on Proxmox" cannot structurally diverge: they are the same source of truth applied to
-two targets.
+The repository keeps both target definitions under one source of truth. It does not currently
+claim AWS proof is also a live Proxmox deployment; that relationship resumes only when the parked
+job has an active playbook again.
 
 ## Pros and Cons of the Options
 
@@ -214,10 +219,11 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
 ### Positive
 
 - One commit is the whole product; infra and config are reviewed and shipped together.
-- Tested (AWS, from zero) equals live (Proxmox, in place) by construction.
+- The accepted layout keeps AWS and Proxmox target definitions beside the same product source.
 - Framework logic is consumed, not forked; upgrades are pin bumps and the loader stays
   byte-identical to its source.
-- The ephemeral AWS target continuously proves the from-scratch path without standing cost.
+- The ephemeral AWS target proves the from-scratch path when its workflow triggers, without
+  standing cost.
 - The repo is a copyable exemplar: another product adopts the pattern by pinning the
   frameworks, adding its own `applications/` roles, and supplying its two `.tfvars`.
 
@@ -228,9 +234,9 @@ Adherence to this ADR is confirmed by the following mechanisms. The wording `MUS
 - Contributors must learn the compose step; roles do not resolve fully standalone, so
   local linting of the product roles alone is partial (see the Makefile `ansible-lint`
   target's note).
-- Driving a permanent in-place target from every commit means a bad commit reaches the
-  live SIEM through the same loop that reaches the disposable one; the AWS test gate is the
-  primary safeguard.
+- Resuming a permanent in-place target on every commit would make a bad commit reach the live SIEM
+  through the same loop as the disposable target; the parked job does not create that exposure
+  today.
 
 ### Neutral
 
@@ -266,15 +272,14 @@ None (current).
 
 ## Implementing PRs
 
-Pending. The implementing change set covers the data-only `terraform/` layout, the
-`.github/.framework-pin` composition wiring in CI, the commit-to-main workflows for the
-Proxmox in-place and AWS deploy-test-destroy targets, and the `allowlist-check` guard that
-keeps `_dev-build/` untracked.
+Partially landed. The data-only `terraform/` layout, `.github/.framework-pin` composition,
+`allowlist-check`, and AWS deploy-prove-destroy path are present. The Proxmox in-place path remains
+parked and has no active playbook.
 
 ## Related ADRs
 
-- [ADR-0001 (repo)](0001-secrets-and-tls.md) — the secrets and TLS model that this delivery
-  loop stands up on both targets; rotate-every-run is only cheap because of this loop.
+- [ADR-0001 (repo)](0001-secrets-and-tls.md) — the secrets and TLS model the active AWS path
+  stands up; rotate-every-run is cheap because each invocation is self-contained.
 - [ADR-0003 (repo)](0003-deny-all-explicit-gitignore.md) — the deny-all `.gitignore` that
   keeps the generated `_dev-build/` composition, Terraform state, and `.tfvars` secrets out
   of version control.
@@ -283,10 +288,10 @@ keeps `_dev-build/` untracked.
 
 ## Compliance Notes
 
-This ADR establishes a delivery architecture rather than a deployed control. Its value is
-in reproducibility and traceability: a single commit deterministically produces both a
-tested and a live deployment. The table is illustrative, not exhaustive, and is not a claim
-of compliance by adoption alone.
+This ADR establishes a delivery architecture rather than a deployed control. Its current value is
+the reproducible AWS path and the shared source for both target definitions; it does not represent
+the parked Proxmox target as deployed. The table is illustrative, not exhaustive, and is not a
+claim of compliance by adoption alone.
 
 | Framework              | Control / Practice ID                                    | Potential Evidence Contribution                                                                                       |
 | ---------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |

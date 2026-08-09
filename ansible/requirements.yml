@@ -4,9 +4,9 @@
 # assets emit `from __future__ import annotations` (Python 3.7+) and fail on 3.6 with
 # "SyntaxError: future feature annotations is not defined". So both the CONTROLLER ansible-core
 # AND these collections must stay on the last releases that still support Python 3.6 targets:
-#   - ansible-core  >=2.16,<2.17   (2.21 — the wsus framework pin — CANNOT manage RHEL 8; see
-#                                    _handoff/REARCH-PLAN.md toolchain note. Not set here; it is
-#                                    a controller install, not a collection.)
+#   - ansible-core  >=2.16,<2.17   (newer controller lines cannot manage the target's Python 3.6;
+#                                    see docs/explanation/toolchain-rhel8.md. Not set here because
+#                                    ansible-core is a controller install, not a collection.)
 #   - community.general <8         (>=8 / 13.x use future-annotations -> break on 3.6)
 #   - ansible.posix     <2         (2.x uses future-annotations -> breaks on 3.6)
 collections:
@@ -16,9 +16,31 @@ collections:
   # (the step-0 storage initializer). Pinned <8 for Python 3.6 target compatibility.
   - name: 'community.general'
     version: '<8.0.0'
-  # amazon.aws runs on the TARGET (not controller). python3-boto3 / python3-botocore are
-  # installed via dnf in each role's side_deps.
+  # amazon.aws runs only on the CONTROLLER: sts_assume_role mints each scoped artifact session,
+  # inventory/aws/aws_ec2.yml uses the aws_ec2 inventory plugin, and linux_disk_manager delegates
+  # its EBS Function-tag resolution there. Targets fetch package artifacts with get_url over
+  # HTTPS and need neither this collection nor boto3. Install it wherever
+  # ansible-inventory/ansible-playbook actually run — CI's existing
+  # `ansible-galaxy collection install -r ansible/requirements.yml` step already covers both.
+  #
+  # Pinned <11.0.0 for a DIFFERENT reason than the community.general/ansible.posix ceilings above:
+  # every amazon.aws >=11.0.0 declares requires_ansible >=2.17.0 (confirmed against the installed
+  # 11.4.0's meta/runtime.yml), which conflicts with this repo's hard ansible-core >=2.16,<2.17
+  # controller pin (requirements-dev.txt, .pre-commit-config.yaml, docs/explanation/
+  # toolchain-rhel8.md — "do not bump these pins"). 10.3.2 (the newest <11 release; Galaxy always
+  # resolves the newest version satisfying a range, so the 6.0.0 floor below is headroom, not the
+  # version that actually installs) declares requires_ansible >=2.16.0 (confirmed) and carries
+  # every module/plugin option this repo uses: sts_assume_role's duration_seconds and returned
+  # sts_creds, ec2_vol_info's filters, and the aws_ec2 plugin's
+  # regions/filters/hostnames/compose/groups/strict options.
+  #
+  # `ec2_tags` (the non-deprecated tag hostvar in >=11.2.0) is therefore NOT available under this
+  # pin — ansible/inventory/aws/aws_ec2.yml's groups block deliberately uses the plain `tags`
+  # hostvar instead, which is correct and undeprecated throughout the <11 series (confirmed
+  # against the installed 10.3.2's plugin source: it sets host_vars["tags"] directly, no
+  # deprecation call).
   - name: 'amazon.aws'
+    version: '>=6.0.0,<11.0.0'
   # Windows agent path (native win_* modules; run on the CONTROLLER, so no RHEL8 py3.6 concern).
   # ansible.windows: win_get_url/win_package/win_file/win_service/win_copy/win_powershell.
   - name: 'ansible.windows'

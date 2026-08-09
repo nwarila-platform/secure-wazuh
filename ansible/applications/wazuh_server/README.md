@@ -19,9 +19,10 @@ The endpoint `wazuh_agent` role is separate and does not consume the central bun
 
 | Variable | Type | Description |
 |---|---|---|
-| `ENV` | str | Environment selector (`int`/`test`/`prod`); selects the `vars/redhat_<env>.yml` overlay. |
+| `ENV` | str | Environment selector (`dev`/`test`/`prod`); selects the `vars/redhat_<env>.yml` overlay. |
 | `state` | str | `present` (default) or `clean`. Top-level per the loader contract (only `ENV`/`state` stay top-level). |
-| `wazuh_server.secrets.admin_password` | str | The ONE operator-provided password (dashboard/OpenSearch `admin`). Everything else is generated or derived and rotated every run. |
+| `wazuh_server.secrets.admin_password` | str | The ONE resolved password input (dashboard/OpenSearch `admin`). The playbook normally mints it per invocation; everything else is generated or derived and rotated every run. |
+| `wazuh_server.s3.bucket` | str | Artifact bucket supplied by the deployment. Empty values and the committed `<account-id>` tripwire fail during role validation. |
 
 Everything else lives in `defaults/main.yml` (S3 coordinates, ports, FIM realtime dirs, bind
 mounts, service state). User overrides go in the `wazuh_server:` extra-var dict.
@@ -31,18 +32,24 @@ mounts, service state). User overrides go in the `wazuh_server:` extra-var dict.
 - The `/mnt/data` data disk mounted (step 0 — `linux_disk_manager`). The role binds the
   indexer/manager/dashboard state onto subdirectories of `/mnt/data/wazuh`; it does not
   partition or format raw disks.
-- The bootstrap venv (`bootstrap.yml`) — the S3 download borrows its boto3.
-- The offline bundle + cert PEMs in S3 at the keys pinned in the env overlay, each verified
-  against a SHA-256 pin after download. See
+- Controller access to `secure-wazuh-artifact-reader`; the package URL is signed locally and the
+  dashboard listener pair is pushed from controller staging. No AWS SDK is installed on the host.
+- The offline bundle plus `dashboard.pem` / `dashboard-key.pem` and their SHA-256 sidecars in S3
+  at the keys pinned in the env overlay. See
   [`../../../docs/reference/s3-artifacts.md`](../../../docs/reference/s3-artifacts.md).
 
 ## Secrets and TLS
 
-The operator supplies exactly one password. OpenSearch internal service users are generated
-fresh each run and exist only as bcrypt hashes; the manager-API users are derived
-deterministically from the admin password so reruns stay authenticatable without persisting
-anything. TLS material is currently fetched from S3 and verified; the target two-tier PKI is
-tracked in [ADR-0001](../../../docs/decision-records/repo/0001-secrets-and-tls.md).
+The playbook resolves exactly one admin password per invocation, normally minting it when no
+explicit environment override is supplied. OpenSearch internal service users are generated fresh
+each run and exist only as bcrypt hashes; manager-API users are derived from that invocation's
+admin password, with guarded `rbac.db` recovery when prior state holds another value. Every run
+mints an RSA-3072/SHA-256 internal CA and separate indexer-node, securityadmin, and manager-API
+certificates on the target, then shreds the CA key after issuance. Filebeat, the manager indexer
+connector, and the dashboard backend authenticate from their keystores and verify the internal CA;
+internal PKI never transits S3. The separate dashboard 443 listener pair and sidecars are the only
+certificate material S3 holds, making its listener key the single externally-custodied private key.
+See [ADR-0001](../../../docs/decision-records/repo/0001-secrets-and-tls.md).
 
 ## Example
 
@@ -51,7 +58,7 @@ tracked in [ADR-0001](../../../docs/decision-records/repo/0001-secrets-and-tls.m
   roles:
     - role: 'wazuh_server'
       vars:
-        ENV: 'int'
+        ENV: 'dev'
         state: 'present'
         wazuh_server:
           secrets:

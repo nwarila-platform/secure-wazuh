@@ -22,8 +22,15 @@ ansible-core>=2.16,<2.17
 # Pre-commit hook framework
 pre-commit==4.0.1
 
-# boto3/botocore on the CONTROLLER: the Windows agent path downloads the MSI from S3 with
-# amazon.aws.s3_object DELEGATED to the runner (a Windows target can't run boto3), so the
-# runner venv needs these. (Linux agents get boto3 from the target's /opt/ansible/venv instead.)
+# boto3/botocore on the CONTROLLER: amazon.aws.sts_assume_role mints artifact-reader sessions,
+# the framework's s3_artifact module signs locally and retrieves the dashboard listener pair, the
+# dynamic inventory queries EC2, and the delegated EBS Function-tag resolver runs there. Targets
+# need no AWS SDK.
 boto3
 botocore
+
+# pywinrm on the CONTROLLER: the winrm connection plugin imports it, so the WinRM leg of the
+# transport matrix (terraform/aws.tfvars, Connection = "winrm-direct") fails at connect without it
+# — "winrm or requests is not installed" — while every SSH leg is unaffected. ntlm transport pulls
+# requests-ntlm through this package's own extras. Targets need nothing; WS-Management is in-box.
+pywinrm>=0.4.3

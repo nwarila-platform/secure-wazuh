@@ -17,8 +17,9 @@ all_systems = [
     name      = "wazuh-aio"
     node_name = "tcnhq-prxmx01"
     pool_id   = "tcn-infrastructure"
-    # RHEL/Rocky 8 ONLY: bootstrap.yml hard-asserts distribution_major_version == 8 (platform-
-    # python 3.6 carries the libselinux/dnf/firewalld bindings the roles need). Matches aws.tfvars.
+    # RHEL/Rocky 8 ONLY: the deploy playbook's Linux Bootstrap section hard-asserts
+    # distribution_major_version == 8 (platform-python 3.6 carries the libselinux/dnf/firewalld
+    # bindings the roles need). Matches aws.tfvars.
     template = "rocky_linux_8_x64"
     vm_id    = 1000
 

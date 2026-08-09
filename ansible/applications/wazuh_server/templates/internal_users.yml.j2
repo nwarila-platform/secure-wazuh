@@ -1,11 +1,12 @@
 ---
-# Rendered by the wazuh_server role from the run's __wazuh_pw__ map (admin = the one operator
-# password; every other user generated fresh each run). Pushed to the OpenSearch security plugin
+# Rendered by the wazuh_server role from the run's __wazuh_pw__ map (admin = this invocation's
+# resolved password; every other user generated fresh each run). Pushed to the security plugin
 # via `securityadmin.sh -cd /etc/wazuh-indexer/opensearch-security/`.
 #
-# SECRETS rotate every run and are never persisted, so the bcrypt hashes below change on every
-# deploy and the securityadmin push ALWAYS runs (no fingerprint skip). securityadmin authenticates
-# with the admin CERT, not a password, so rotating the internal-user passwords never locks it out.
+# SECRETS rotate every run without controller persistence, so the bcrypt hashes below change on
+# every deploy and the securityadmin push ALWAYS runs (no fingerprint skip). securityadmin
+# authenticates with the admin CERT, not a password, so rotating the internal-user passwords never
+# locks it out.
 
 _meta:
   type: "internalusers"
