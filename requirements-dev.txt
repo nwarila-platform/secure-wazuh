@@ -33,4 +33,4 @@ botocore
 # transport matrix (terraform/aws.tfvars, Connection = "winrm-direct") fails at connect without it
 # — "winrm or requests is not installed" — while every SSH leg is unaffected. ntlm transport pulls
 # requests-ntlm through this package's own extras. Targets need nothing; WS-Management is in-box.
-pywinrm>=0.4.3
+pywinrm>=0.5.0
