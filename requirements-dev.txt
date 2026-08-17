@@ -20,7 +20,7 @@ ansible-lint>=24.2,<25
 ansible-core>=2.16,<2.17
 
 # Pre-commit hook framework
-pre-commit==4.0.1
+pre-commit==4.6.2
 
 # boto3/botocore on the CONTROLLER: amazon.aws.sts_assume_role mints artifact-reader sessions,
 # the framework's s3_artifact module signs locally and retrieves the dashboard listener pair, the
