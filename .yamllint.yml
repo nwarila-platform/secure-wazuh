@@ -65,30 +65,6 @@ rules:
     max-spaces-inside: 1
 
   # ---------------------------------------------------------------------------
-  # Colons & Commas
-  # ---------------------------------------------------------------------------
-  # Use one space after mapping separators and commas. This keeps yamllint and
-  # ansible-lint on the same formatting contract.
-  # ---------------------------------------------------------------------------
-  colons:
-    max-spaces-before: 0
-    max-spaces-after: 1
-  commas:
-    max-spaces-before: 0
-    min-spaces-after: 1
-    max-spaces-after: 1
-
-  # ---------------------------------------------------------------------------
-  # Octal Values
-  # ---------------------------------------------------------------------------
-  # File modes are quoted strings. Reject implicit and explicit YAML octal
-  # numbers so ansible-lint can safely reuse this yamllint configuration.
-  # ---------------------------------------------------------------------------
-  octal-values:
-    forbid-implicit-octal: true
-    forbid-explicit-octal: true
-
-  # ---------------------------------------------------------------------------
   # Indentation
   # ---------------------------------------------------------------------------
   # Standard 2-space indentation. indent-sequences: consistent allows both

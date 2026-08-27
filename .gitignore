@@ -24,6 +24,7 @@
 # --------------------------------------------------------------------------- #
 !/.ansible-lint
 !/.editorconfig
+!/.framework-pin
 !/.gitattributes
 !/.gitignore
 !/.pre-commit-config.yaml
@@ -36,13 +37,15 @@
 !/mkdocs.yml
 !/release-please-config.json
 !/requirements-dev.txt
+!/quality-tools.env
+!/requirements-quality.txt
+!/requirements-quality.yml
 
 # --------------------------------------------------------------------------- #
 #  GitHub — CI, the deploy loop, templates, CODEOWNERS, framework pin.
 # --------------------------------------------------------------------------- #
 !/.github/
-!/.github/.framework-pin
-!/.github/.aws-tf-framework-pin
+!/.github/terraform-framework-pin
 !/.github/actionlint.yaml
 !/.github/CODEOWNERS
 !/.github/ISSUE_TEMPLATE/
@@ -53,6 +56,8 @@
 !/.github/pull_request_template.md
 !/.github/workflows/
 !/.github/workflows/ci.yml
+!/.github/workflows/powershell.yml
+!/.github/workflows/quality.yml
 !/.github/workflows/deploy.yml
 !/.github/workflows/aws-deploy.yml
 !/.github/workflows/aws-reaper.yml
@@ -121,6 +126,8 @@
 # silently granting this repository authority over a sibling's resources, so it is tracked.
 !/scripts/
 !/scripts/assert-aws-resource-graph.py
+!/scripts/compose-and-run.sh
+!/scripts/materialize-role-scripts.sh
 !/scripts/bootstrap-iam.sh
 !/scripts/check-iam-literals.sh
 !/scripts/test-iam-policies.sh
