@@ -134,8 +134,9 @@
 
 # --------------------------------------------------------------------------- #
 #  Ansible — product roles + playbooks + inventory (loader/shared roles composed in).
-#  linux_disk_manager and the base wazuh_agent role come from the pinned ansible-framework.
-#  This repo carries wazuh_server plus two exact wazuh_agent artifact-fetch task overlays.
+#  linux_disk_manager and wazuh_agent come whole from the pinned ansible-framework.
+#  This repo carries wazuh_server only; the former wazuh_agent task overlays were superseded
+#  by the framework's own role and deleted.
 # --------------------------------------------------------------------------- #
 !/ansible/
 !/ansible/README.md
@@ -179,10 +180,6 @@
 !/ansible/applications/wazuh_server/vars/redhat_dev.yml
 !/ansible/applications/wazuh_server/vars/redhat_prod.yml
 !/ansible/applications/wazuh_server/vars/redhat_test.yml
-!/ansible/applications/wazuh_agent/
-!/ansible/applications/wazuh_agent/tasks/
-!/ansible/applications/wazuh_agent/tasks/present_redhat.yml
-!/ansible/applications/wazuh_agent/tasks/present_windows.yml
 !/ansible/inventory/
 !/ansible/inventory/aws/
 !/ansible/inventory/aws/aws_ec2.yml

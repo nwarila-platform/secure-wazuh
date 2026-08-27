@@ -49,7 +49,7 @@ all_systems = [
       # inventory's untagged default, so this and connection_type = "ssh-ssm" above are visibly
       # the same decision. MUST AGREE WITH IT — see any agent block below for why disagreement
       # fails as a timeout rather than an error.
-      Connection = "ssm-ssh"
+      Connection = "ssh-ssm"
       Backup     = false #
     }
 
@@ -221,7 +221,7 @@ all_systems = [
       # never restates it. The durable fix, if the matrix outlives the PoC, is for the framework to
       # emit the channel as an identity tag so the inventory reads connection_type directly and
       # this tag disappears.
-      Connection = "ssm-ssh"
+      Connection = "ssh-ssm"
       Backup     = false
     }
 
@@ -490,7 +490,7 @@ all_systems = [
       # never restates it. The durable fix, if the matrix outlives the PoC, is for the framework to
       # emit the channel as an identity tag so the inventory reads connection_type directly and
       # this tag disappears.
-      Connection = "ssm-ssh"
+      Connection = "ssh-ssm"
       Backup     = false
     }
 

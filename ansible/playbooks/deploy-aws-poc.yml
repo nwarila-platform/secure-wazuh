@@ -234,13 +234,13 @@
           - 'ec2'
           - 'get-password-data'
           - '--instance-id'
-          - "{{ hostvars[inventory_hostname].instance_id }}"
+          - "{{ hostvars[inventory_hostname].aws_instance_id }}"
           # Expanded on the CONTROLLER, which is where this delegated task runs — the '~' the
           # inventory leaves unexpanded for the ssh plugin is meaningless to argv.
           - '--priv-launch-key'
           - "{{ hostvars[inventory_hostname].ansible_ssh_private_key_file | expanduser }}"
           - '--region'
-          - "{{ hostvars[inventory_hostname].placement.region | default('us-east-1', true) }}"
+          - "{{ hostvars[inventory_hostname].aws_placement.region | default('us-east-1', true) }}"
           - '--output'
           - 'json'
 
@@ -322,7 +322,7 @@
         # Loader lookup('vars', role_name) requires this role-named override; the noqa is inapplicable.
         wazuh_agent:  # noqa: var-naming[no-role-prefix]
           # ansible_host is an EC2 instance ID for SSM here, so enrollment needs the private IPv4.
-          agent_ip: "{{ private_ip_address | default('', true) }}"
+          agent_ip: "{{ aws_private_ip_address | default('', true) }}"
           # Product-owned single source for both the Linux realtime watch and Stage 3a write path.
           fim:
             realtime_paths:
@@ -330,7 +330,7 @@
           # Step 0 asserts exactly one manager, so topology indexing is safe in this playbook.
           manager:
             host: >-
-              {{ hostvars[groups['wazuh_servers'][0]].private_ip_address
+              {{ hostvars[groups['wazuh_servers'][0]].aws_private_ip_address
                  | default(hostvars[groups['wazuh_servers'][0]].ansible_host, true)
                  | default(groups['wazuh_servers'][0], true) }}
           s3:

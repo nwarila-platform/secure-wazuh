@@ -359,6 +359,10 @@ jobs:
           # run's instance, and a lookup('env') has no command-line equivalent.
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
+          # This repository's one app-specific converge input: wazuh_server fetches its offline
+          # bundle and dashboard listener pair through the framework's s3_artifact_delivery role,
+          # which mints per-attempt presigned URLs from this scoped reader role.
+          ARTIFACT_READER_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/secure-wazuh-artifact-reader
         run: |
           set -euo pipefail
           # Dynamic inventory publishes an instance attribute named state; extra-vars take precedence.

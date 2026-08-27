@@ -14,7 +14,7 @@
 # COMPOSED-TREE CAVEAT (ansible-lint):
 #   The product roles under ansible/applications/ are CONSUMERS of the
 #   ansible-framework and resolve fully only inside the composed tree — the
-#   generic loader + shared roles (wazuh_agent, linux_disk_manager) are composed
+#   generic loader + shared roles (wazuh_agent, linux_disk_manager) are composed whole
 #   in from the framework pinned at .framework-pin. The `Ansible Lint
 #   (composed tree)` job below builds that tree itself (copy ansible-framework@pin,
 #   overlay this repo's ansible/applications/*, exactly as deploy.yml's compose
@@ -81,7 +81,7 @@ jobs:
   # Ansible Lint  (authoritative: lints the COMPOSED tree)
   # ---------------------------------------------------------------------------
   # linux_disk_manager and the base wazuh_agent role are composed from the pinned
-  # ansible-framework (.framework-pin); the product overlays two wazuh_agent task files.
+  # ansible-framework (.framework-pin); the product overlays wazuh_server only.
   # This job composes the tree the same way deploy.yml does (framework base + this repo's
   # ansible/ overlay) and invokes the same explicit-file Make target used locally.
   # ---------------------------------------------------------------------------

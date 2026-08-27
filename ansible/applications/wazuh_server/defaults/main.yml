@@ -99,7 +99,7 @@ wazuh_server_defaults:
   #region ------ [ Endpoints (AIO => all local; no group deref — DASH-04 safe) ] ---------------- #
   indexer_host: '127.0.0.1'   # filebeat + manager indexer-connector + dashboard opensearch.hosts
   manager_host: '127.0.0.1'   # dashboard wazuh.yml manager API
-  endpoint_host: "{{ private_ip_address | default('', true) }}"  # '' => ansible_host|inventory_hostname
+  endpoint_host: "{{ aws_private_ip_address | default('', true) }}"  # '' => ansible_host|inventory_hostname
   node_name: ''               # OpenSearch node.name + minted DNS SAN; '' => inventory_hostname
   #endregion --- [ Endpoints ] ------------------------------------------------------------------ #
 
