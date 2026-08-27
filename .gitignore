@@ -48,6 +48,7 @@
 #  GitHub — CI, the deploy loop, templates, CODEOWNERS, framework pin.
 # --------------------------------------------------------------------------- #
 !/.github/
+!/.github/renovate.json5
 !/.github/terraform-framework-pin
 !/.github/actionlint.yaml
 !/.github/CODEOWNERS
@@ -55,7 +56,6 @@
 !/.github/ISSUE_TEMPLATE/bug_report.yml
 !/.github/ISSUE_TEMPLATE/config.yml
 !/.github/ISSUE_TEMPLATE/feature_request.yml
-!/.github/dependabot.yml
 !/.github/pull_request_template.md
 !/.github/workflows/
 !/.github/workflows/ci.yml
