@@ -67,7 +67,7 @@ jobs:
       performed: ${{ steps.sweep.outputs.performed || 'false' }}
     env:
       AWS_REGION: us-east-1
-      DEPLOY_ROLE: github_nwarila-platform_secure-wazuh
+      DEPLOY_ROLE: nwarila-platform_secure-wazuh_reaper
       # Four hours on the scheduled sweep: it enumerates every terminal run, so a generous window
       # keeps it clear of anything a human might still be inspecting.
       #
