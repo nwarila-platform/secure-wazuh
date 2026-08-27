@@ -33,6 +33,8 @@
 !/CHANGELOG.md
 !/LICENSE
 !/Makefile
+!/AGENTS.md
+!/CLAUDE.md
 !/README.md
 !/mkdocs.yml
 !/release-please-config.json
