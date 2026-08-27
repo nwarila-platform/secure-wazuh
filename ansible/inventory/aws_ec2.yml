@@ -1,249 +1,204 @@
----
 # =========================================================================================== #
 # File: 'ansible/inventory/aws_ec2.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
-# THE AWS INVENTORY FOR THE TRANSPORT-MATRIX PoC. Both phases of .github/workflows/aws-deploy.yml
-# pass `-i inventory/aws_ec2.yml`, and so should a local operator run.
 #
-# Its job is to make CONNECTION METHOD A PROPERTY OF THE DATA. Each system in terraform/aws.tfvars
-# declares a `Connection` tag, and every connection variable below is derived from that one value:
-# ansible_connection, ansible_port, ansible_host, windows_password_source, and whether the SSM
-# ProxyCommand is applied at all. Adding a sixth transport is a tfvars entry, not an edit here.
+# The dynamic EC2 inventory, and the only one: the deployment is ephemeral, so an instance id
+# written into a static file here would be wrong the moment its run ended. This finds the instance
+# the current run created and derives every connection setting from that instance, which is why the
+# playbook declares no connection variables of its own.
 #
-#   ssm-ssh      SSH tunnelled through `aws ssm start-session`; dials the INSTANCE-ID and needs no
-#                inbound rule. Both platforms.
-#   ssh-direct   SSH straight to the routable address on 22. Both platforms — Windows Server 2025
-#                ships OpenSSH, and that path was already proven through the tunnel.
-#   winrm-direct WinRM/HTTPS on 5986. Windows only. Needs pywinrm on the CONTROLLER
-#                (requirements-dev.txt) and a launch password (see PRECONDITION 2).
-#
-# WHY THIS EXISTS ALONGSIDE ansible/inventory/aws/aws_ec2.yml. That file tunnels EVERY host through
-# SSM unconditionally. Running the matrix against it would collapse all five legs onto one
-# transport and quietly prove a single method five times while reporting green. It is kept as the
-# zero-inbound fallback for when the security groups are shut or an SSM-only posture is wanted.
-#
-# WHY THE DIRECT LEGS ARE NOT A COMPROMISE. The permanent Proxmox target does not permit SSM at
-# all, so a proof carried entirely over SSM demonstrates nothing transferable to it. ssh-direct and
-# winrm-direct are exactly what prod uses; ssm-ssh proves the zero-inbound posture beside them.
-#
-# ------------------------------------------------------------------------------------------- #
-# PRECONDITION 1 — INBOUND IS RUN-SCOPED AND TERRAFORM-OWNED.
-# ------------------------------------------------------------------------------------------- #
-# Every `ingress` in terraform/aws.tfvars is empty apart from the AIO's agent-facing 1514/1515 and
-# dashboard 443, both scoped to the deploy subnet. The direct legs are reachable only because the
-# workflow passes `-var "runner_ip=<addr>"`, and the framework then creates ONE security group
-# carrying tcp/22, tcp/5986 and ICMP from exactly `<runner_ip>/32` and attaches it to every
-# interface. That group is a Terraform resource, so teardown removes it — there is no revoke step
-# to strand and no orphaned rule for the reaper.
-#
-# The variable takes a BARE ADDRESS, never a CIDR, so a range is not merely rejected by validation
-# but unrepresentable in the input type. Omit it (local runs, prod) and no group exists at all.
-# ADR-0005 records this as the amended residual.
-#
-# ------------------------------------------------------------------------------------------- #
-# LOCATION — FLAT, ALONGSIDE proxmox.yml.
-# ------------------------------------------------------------------------------------------- #
-# This file sits directly in ansible/inventory/, sharing a basedir with proxmox.yml. The default
-# AWS variant keeps its own 'aws/' subdirectory specifically to contain a real hazard: Ansible
-# discovers group_vars/host_vars as SIBLINGS OF EACH INVENTORY SOURCE'S OWN DIRECTORY, so a vars
-# file dropped directly under ansible/inventory/ is silently picked up by EVERY run that sources an
-# inventory from here — including `-i inventory/proxmox.yml` against the PERMANENT target. A prior
-# revision of this repo was bitten by exactly that.
-#
-# Nothing enforces the separation for this file, so the invariant is manual and load-bearing:
-# ansible/inventory/ MUST stay free of group_vars/ and host_vars/. Every connection and identity
-# fact this target needs rides compose: below (compose: applies only to hosts THIS plugin returns
-# and cannot leak), and every deployment input lives in the playbook. If a group_vars/ directory
-# ever becomes necessary, move this file into its own basedir first.
-#
-# The flat basename still ends in `aws_ec2.yml`, which is all the plugin's own filename check
-# requires (INVENTORY_FILE_SUFFIXES = ("aws_ec2.yml", "aws_ec2.yaml")), and it does not collide
-# with the default variant at aws/aws_ec2.yml.
 # =========================================================================================== #
+---
+#region ------ [ This Repository ] ------------------------------------------------------------ #
+# The play addresses a group, not a run. Terraform stamps each system with a Function tag, so the
+# group is the set of functions whose hosts this playbook configures -- add a function to the list
+# to have its hosts join, and give a second group its own list to split a deployment by role.
+groups:
+  # One AIO server and five agents. The platform and connection splits are what the playbook's
+  # count assertions and transport-matrix proofs address: the play proves 2 tunnelled, 2 direct
+  # and 1 WinRM agent against one topology, so these groups are test coverage, not plumbing.
+  wazuh_servers: "(aws_tags.Function | default('', true)) == 'wazuh-aio'"
+  wazuh_agents: "(aws_tags.Function | default('', true)) == 'wazuh-agent'"
+  wazuh_agents_linux: >-
+    (aws_tags.Function | default('', true)) == 'wazuh-agent'
+    and not (aws_platform_details | default('') | lower is search('windows'))
+  wazuh_agents_windows: >-
+    (aws_tags.Function | default('', true)) == 'wazuh-agent'
+    and (aws_platform_details | default('') | lower is search('windows'))
+  conn_ssm_ssh: "(aws_tags.Connection | default('', true)) == 'ssh-ssm'"
+  conn_ssh_direct: "(aws_tags.Connection | default('', true)) == 'ssh-direct'"
+  conn_winrm_direct: "(aws_tags.Connection | default('', true)) == 'winrm-direct'"
 
+#endregion --- [ This Repository ] ------------------------------------------------------------ #
+
+
+#region ------ [ Selecting This Run ] --------------------------------------------------------- #
+# Where to look, then which instance. These deployments run in one region.
+regions: [ us-east-1 ]
+
+# One run's instance and no other. Three tags are the identifiers GitHub sets for any workflow, so
+# a run can only ever see what it created; the fourth names the deployment and defaults to the one
+# these pipelines build. Nothing here is particular to this repository.
+filters:
+  instance-state-name: running
+  'tag:RepositoryId': "{{ lookup('ansible.builtin.env', 'GITHUB_REPOSITORY_ID') }}"
+  'tag:RunId': "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}"
+  'tag:Repository': "{{ lookup('ansible.builtin.env', 'GITHUB_REPOSITORY') }}"
+  'tag:Environment': "{{ lookup('ansible.builtin.env', 'ENVIRONMENT') | default('test', true) }}"
+
+#endregion --- [ Selecting This Run ] --------------------------------------------------------- #
+
+
+#region ------ [ Plugin Behaviour ] ----------------------------------------------------------- #
+
+# The inventory plugin itself, and the three settings that decide how it presents what it finds.
 plugin: amazon.aws.aws_ec2
 
-# Identical to the default inventory: a single TEMPLATED region. An empty/omitted regions: list
-# makes the plugin call describe_regions() and then query EVERY region, which hard-fails against
-# this repo's aws:RequestedRegion == us-east-1 IAM scoping. See aws/aws_ec2.yml's "REGION is NOT
-# simply omitted" note for the full reasoning.
-regions:
-  - "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default(lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'), true) | default('us-east-1', true) }}"
+# Terraform's hostname becomes the Name tag, so naming hosts after it makes inventory_hostname the
+# system's own name and nothing downstream needs telling it twice.
+hostnames: [ 'tag:Name', instance-id ]
 
-# A Jinja error evaluating compose/groups for one malformed matching host skips that host instead
-# of failing the whole inventory. Step 0 then rejects the resulting incomplete topology. Note the
-# interaction with disable_lookups described in PRECONDITION 2 — keep every compose expression
-# below TOTAL so the silent-skip path cannot fire.
-strict: false
+# Fail on a bad expression rather than silently dropping the variable it was meant to set.
+strict: true
 
-filters:
-  # Same run-scoped provenance contract as the default inventory: only this workflow run's
-  # instances, never a stale or concurrent deployment. The framework stamps identity tags in
-  # PascalCase (RunId, RepositoryId, CommitSha, Repository); the nwarila:-namespaced keys are gone.
-  "tag:RunId": "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}"
-  instance-state-name:
-    - running
+# The plugin publishes a host variable named 'state' -- the EC2 instance state -- which would
+# collide with the role input that selects present_windows.yml or absent_windows.yml. Prefixing
+# removes the collision at the source. It applies BEFORE compose, so the expressions below read
+# prefixed names; hostnames and filters read raw ones.
+hostvars_prefix: 'aws_'
 
-hostnames:
-  - tag:Name
+#endregion --- [ Plugin Behaviour ] ----------------------------------------------------------- #
 
+
+#region ------ [ Host Variables ] ------------------------------------------------------------- #
+# EVERY EXPRESSION RE-READS THE INSTANCE, never another compose value: Ansible templates them all
+# against one snapshot, so an entry cannot see one set beside it. The repetition is load-bearing.
+#
+# The operating system comes from AWS's own platform_details, which every instance carries and which
+# names the platform it is licensed as -- 'Windows', 'Windows with SQL Server', 'Red Hat Enterprise
+# Linux'. It is matched, not compared, so every Windows variant answers alike.
 compose:
-  # THE CENTRAL DIFFERENCE. The default inventory sets ansible_host to the instance-id because the
-  # SSM ProxyCommand makes an instance-id dialable; here there is no tunnel, so the host must be an
-  # actual address. Public first (the operator is off-VPC), private as the fallback for a
-  # controller that already sits inside the VPC.
+
+  #region ------ [ Reaching the host ] -------------------------------------------------------- #
+  # The Connection tag in terraform/aws.tfvars decides all four values below. Absent means
+  # ssh-direct, which is what this repository's pipeline uses.
   #
-  # Written as an `or` chain rather than nested default() calls because Jinja evaluates filter
-  # ARGUMENTS eagerly: `public_ip_address | default(private_ip_address, true)` still raises when
-  # private_ip_address is Undefined, which under `strict: false` would silently drop ansible_host
-  # and report the host as UNREACHABLE with no diagnostic. Each operand here is independently
-  # guarded, so the expression is total. The final instance_id operand is deliberately NOT dialable
-  # — it is a loud, obviously-wrong value that surfaces a public-IP-less topology as a connection
-  # error rather than as a missing variable.
-  # ssm-ssh dials the INSTANCE-ID (the ProxyCommand below is what makes that dialable); both direct
-  # methods need a real address. Public first (the runner is off-VPC), private as the fallback for
-  # an in-VPC controller. Written as an `or` chain rather than nested default() calls because Jinja
-  # evaluates filter ARGUMENTS eagerly — `public_ip_address | default(private_ip_address, true)`
-  # still raises when private_ip_address is Undefined, which under `strict: false` would silently
-  # drop ansible_host and report the host UNREACHABLE with no diagnostic.
+  #   ssh-direct     SSH to the routable address on 22.
+  #   ssh-ssm        SSH to the INSTANCE ID, tunnelled by the ProxyCommand below. No inbound rule.
+  #   winrm-direct   WinRM over HTTPS to the routable address on 5986.
+  #   winrm-ssm      WinRM over HTTPS to a local port an SSM session already forwards. WinRM has
+  #                  no proxy hook, so that session is started alongside rather than from here.
+
+  # Public address first for a controller outside the VPC, private for one inside it. The trailing
+  # instance id is deliberately NOT dialable: it surfaces an address-less topology as a connection
+  # error rather than a missing variable. An 'or' chain because Jinja evaluates filter ARGUMENTS
+  # eagerly, so a nested default() still raises on an absent address.
   ansible_host: >-
-    ((tags.Connection | default('ssm-ssh')) == 'ssm-ssh') | ternary(
-      instance_id,
-      (public_ip_address | default('', true)) or (private_ip_address | default('', true)) or instance_id
+    ((aws_tags.Connection | default('ssh-direct', true)) == 'ssh-ssm')
+    | ternary(
+        aws_instance_id,
+        ((aws_tags.Connection | default('ssh-direct', true)) == 'winrm-ssm')
+        | ternary(
+            '127.0.0.1',
+            (aws_public_ip_address | default('', true))
+            or (aws_private_ip_address | default('', true))
+            or aws_instance_id
+          )
+      )
+
+  ansible_connection: >-
+    ((aws_tags.Connection | default('ssh-direct', true)) in ['winrm-direct', 'winrm-ssm'])
+    | ternary('winrm', 'ssh')
+
+  ansible_port: >-
+    ((aws_tags.Connection | default('ssh-direct', true)) in ['winrm-direct', 'winrm-ssm'])
+    | ternary(5986, 22)
+
+  # Keepalive: a settle poll can wait minutes with no SSH traffic, and an idle connection that times
+  # out is reported as UNREACHABLE. The 30s probes keep the link from counting as idle; twenty
+  # unanswered ones are the dead-peer budget. Only the tunnelled leg adds the proxy.
+  #
+  # Each quoted fragment stays on ONE line. YAML preserves a line break inside an indented block,
+  # and a newline landing inside the quoted ProxyCommand would split it into two shell commands --
+  # the second failing, the first silently losing its port. Breaks between fragments are harmless.
+  ansible_ssh_common_args: >-
+    '-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20'
+    ~ (
+      ((aws_tags.Connection | default('ssh-direct', true)) == 'ssh-ssm') |
+        ternary(
+          ' -o ProxyCommand="aws ssm start-session --target %h'
+          ~ ' --document-name AWS-StartSSHSession --parameters portNumber=%p"',
+          ''
+        )
     )
 
-  # Same rationale as the default inventory: the plugin snake-cases describe-instances into
-  # hostvars, so every host gets a bare `state` hostvar holding the INSTANCE-STATE dict
-  # ({code: 16, name: running}), which would silently beat every framework role loader's
-  # `state | default('present')`. Pin the literal string.
-  state: "'present'"
+  #endregion --- [ Reaching the host ] -------------------------------------------------------- #
 
-  # TRANSPORT IS DATA, NOT CODE. Each system declares its own access method through the `Connection`
-  # tag in terraform/aws.tfvars, and every entry below derives from that one tag. Three values:
-  #
-  #   ssm-ssh      SSH tunnelled through `aws ssm start-session` — dials the INSTANCE-ID, needs no
-  #                inbound rule at all. Works on both platforms.
-  #   ssh-direct   SSH straight to the routable address on 22. Works on both platforms (Windows
-  #                Server 2025 ships OpenSSH; that path is already proven over the tunnel today).
-  #   winrm-direct WinRM/HTTPS to the routable address on 5986. Windows only.
-  #
-  # This is what makes the PoC a transport matrix rather than a single happy path: five agents, five
-  # methods, one set of roles. It is also the portability argument — `ssh-direct` and `winrm-direct`
-  # are exactly what the permanent Proxmox target uses, so those two legs prove the prod code path
-  # while `ssm-ssh` proves the zero-inbound one.
-  #
-  # EVERY EXPRESSION RE-READS `tags.Connection` RATHER THAN A PRIOR COMPOSE VAR. Ansible's
-  # Constructable._set_composite_vars takes ONE snapshot of the host's variables and templates every
-  # compose entry against that same snapshot, so a compose value CANNOT see another compose value
-  # set in the same pass. Chaining them would silently produce Undefined — and under `strict: false`
-  # that is swallowed. The repetition below is load-bearing, not clumsy.
-  #
-  # `| default(...)` is mandatory throughout: `tags.Connection` is absent on any instance that has
-  # not been retagged, and `platform` is set (to 'Windows') ONLY on Windows and absent on Linux.
-  # NOTE the outer parentheses everywhere: `|` binds tighter than `==`, so without them Jinja parses
-  # `a == b | ternary(x, y)` as `a == (b | ternary(x, y))`.
-  ansible_connection: "((tags.Connection | default('ssm-ssh')) == 'winrm-direct') | ternary('winrm', 'ssh')"
-  ansible_port: "((tags.Connection | default('ssm-ssh')) == 'winrm-direct') | ternary(5986, 22)"
+  #region ------ [ Logging in ] --------------------------------------------------------------- #
+  ansible_user: >-
+    (aws_platform_details | lower is search('windows'))
+      | ternary('Administrator', 'ec2-user')
 
-  # Administrator is the Windows local account whose launch password AWS encrypts to the key pair;
-  # ec2-user is the CIS/DISA RHEL 8 STIG marketplace image's default login (= terraform/aws.tfvars
-  # readiness_user, and NOT "rocky" — that is the on-prem/Proxmox image).
-  ansible_user: "((platform | default('') | lower) == 'windows') | ternary('Administrator', 'ec2-user')"
+  # Over SSH on Windows the bootstrap flips OpenSSH's DefaultShell to PowerShell before any non-raw
+  # work begins. The value is correct before that flip too, where only raw tasks run and the
+  # registry reads the bootstrap uses parse under either shell. A WinRM leg is different rather than
+  # indifferent: that plugin expects cmd and warns when handed powershell.
+  ansible_shell_type: >-
+    ((aws_tags.Connection | default('ssh-direct', true)) in ['winrm-direct', 'winrm-ssm'])
+    | ternary(
+        'cmd',
+        (aws_platform_details | lower is search('windows'))
+        | ternary('powershell', 'sh')
+      )
 
-  # THE PORTABILITY SEAM. The transport here is deliberately IDENTICAL to the permanent Proxmox
-  # target — WinRM to a routable address on 5986 — so the AWS run exercises the same code path prod
-  # exercises. A proof over a transport prod cannot use proves nothing transferable, which is why
-  # this inventory does not tunnel.
-  #
-  # What genuinely differs between the two targets is only where the Windows password comes from,
-  # so that is the single thing declared here. deploy-aws-poc.yml's credential play gates on THIS,
-  # not on ansible_connection: prod's Windows endpoints are ALSO winrm, so a transport gate would
-  # fire there and run `aws ec2 get-password-data` against a VM with no EC2 identity.
-  # inventory/proxmox.yml declares nothing, so the play skips and prod supplies its own credential.
-  # Only the winrm-direct leg needs a password: WinRM has no key-based authentication. The two SSH
-  # legs authenticate with the EC2 key pair on both platforms, so they declare no source and the
-  # credential play skips them. inventory/proxmox.yml likewise declares nothing and supplies prod's
-  # credential its own way — see the play's own header for why this gates on the SOURCE and never on
-  # ansible_connection (prod's Windows endpoints are winrm too).
-  windows_password_source: "((tags.Connection | default('')) == 'winrm-direct') | ternary('ec2', '')"
+  # The workflow stages its key and names it;
+  ansible_ssh_private_key_file: >-
+    lookup('ansible.builtin.env', 'CI_PRIVATE_KEY')
+    | default('~/.ssh/nwarila-ec2-key', true)
 
-  # Inert under the winrm connection plugin (which always selects the powershell shell), and the
-  # value ansible-core would pick anyway for Linux. Set explicitly so a reader does not have to
-  # know that, and so the two inventories stay diff-able.
-  ansible_shell_type: "((platform | default('') | lower) == 'windows') | ternary('powershell', 'sh')"
+  # Linux interpreter: RHEL converges on platform-python, the interpreter its system packages
+  # target; every other distribution uses the standard python3. Windows connections ignore
+  # this variable. A task needing a newer boto3 than the pinned interpreter carries overrides
+  # itself, per-task, onto its bootstrap venv.
+  ansible_python_interpreter: >-
+    (aws_platform_details | lower is search('red hat'))
+      | ternary('/usr/libexec/platform-python', '/usr/bin/python3')
 
-  # WinRM transport. ntlm rather than basic: it does not require the plaintext credential to cross
-  # the wire in a header, and it works against a workgroup-joined local Administrator, which is
-  # what a freshly launched EC2 Windows instance is. Inert on the Linux hosts.
+  #endregion --- [ Logging in ] --------------------------------------------------------------- #
+
+  #region ------ [ WinRM only ] --------------------------------------------------------------- #
+  # The SSH legs are what this repository deploys over and what its proofs cover. A WinRM leg needs
+  # three things this repository does not supply: pywinrm on the controller, a password (WinRM has
+  # no key authentication), and a listener on the target. These are what it would connect with.
+
+  # NTLM rather than basic: the credential never crosses the wire in a header, and it works against
+  # the workgroup-joined local Administrator a freshly launched instance is.
   ansible_winrm_transport: "'ntlm'"
 
-  # EC2 Windows AMIs configure their 5986 listener with a SELF-SIGNED certificate generated on the
-  # instance, so there is nothing for the controller to chain to and validation must be relaxed.
-  # This is a genuine downgrade against the default inventory: the SSM tunnel authenticated the
-  # channel end-to-end through the AWS control plane, whereas this accepts any certificate the
-  # listener presents. Do not carry this into anything but an escape-hatch or lab run.
-  #
-  # If the STIG image turns out to ship no HTTPS listener at all, fix it by CONFIGURING one over an
-  # SSM session (`Enable-PSRemoting`, then a listener bound to a real certificate) rather than by
-  # falling back to unencrypted 5985 — ntlm over plain HTTP would put the session's message
-  # encryption on NTLM alone.
+  # An EC2 Windows image generates its 5986 certificate on the instance, so there is nothing to
+  # chain to. A real downgrade against the SSH legs, which authenticate the host key.
   ansible_winrm_server_cert_validation: "'ignore'"
 
-  # Linux only, and unchanged from the default inventory. Matches terraform/aws.tfvars
-  # all_systems[].key_name = "nwarila-ec2-key". The '~' is left UNEXPANDED here and expanded by the
-  # ssh connection plugin itself at connect time, so it follows the controller user's home. It is
-  # also the key ec2_win_password needs, but that module reads it from its own `key_file:` argument
-  # (see PRECONDITION 2) — this var is not what feeds it.
-  ansible_ssh_private_key_file: "'~/.ssh/nwarila-ec2-key.pem'"
+  # Where the launch password comes from on a WinRM leg. The play that fetches it gates on
+  # 'ec2'; every other leg composes empty, so SSH-only repositories never trip that play.
+  windows_password_source: >-
+    ((aws_tags.Connection | default('ssh-direct', true)) == 'winrm-direct')
+    | ternary('ec2', '')
 
-  # RHEL/Rocky 8 STIG images ship platform-python with the distribution-supported bindings used by
-  # target modules. Set unconditionally; inert on Windows endpoints, while every
-  # controller-delegated AWS call selects ansible_playbook_python at task scope.
-  ansible_python_interpreter: "'/usr/libexec/platform-python'"
+  #endregion --- [ WinRM only ] --------------------------------------------------------------- #
 
-  # THE TUNNEL, APPLIED ONLY TO THE ssm-ssh LEG. Both direct methods get an empty string, so their
-  # ssh/sftp/scp calls dial ansible_host (a real address) with no ProxyCommand; ssm-ssh gets the
-  # tunnel that makes an instance-id dialable. The two must agree — ansible_host above switches on
-  # the same tag — or a host would dial an instance-id with no tunnel and hang until timeout.
-  #
-  # `host_key_checking = False` is already set project-wide in ansible/ansible.cfg (these instances
-  # are destroyed and recreated every deploy cycle, so host keys never persist), so it is not
-  # repeated here.
-  #
-  # NO AWS PROFILE IS HARDCODED. The `aws` CLI this ProxyCommand shells out to inherits whatever
-  # ambient AWS_PROFILE / credential chain the operator's shell (or CI's OIDC session) already has.
-  #
-  # --region comes from the host's OWN placement and NOT from an env lookup, because lookups are
-  # DISABLED in compose (Constructable._compose passes disable_lookups=True) and under
-  # `strict: false` that failure would be silent — no tunnel, every ssm-ssh host UNREACHABLE, no
-  # error. Sourcing it from placement is equivalent by construction: the templated `regions:` list
-  # above resolves exactly one region and the plugin queries only that one.
-  ansible_ssh_common_args: >-
-    ((tags.Connection | default('ssm-ssh')) == 'ssm-ssh') | ternary(
-      '-o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession
-    --parameters portNumber=%p --region ' ~ (placement.region | default('us-east-1', true)) ~ '"',
-      ''
-    )
+  #region ------ [ Framework inputs ] --------------------------------------------------------- #
+  # The bootstrap dispatcher reads this to pick a bootstrap role WITHOUT running a fact module
+  # first, which on Windows would precede the transport repair the bootstrap exists to perform.
+  platform: >-
+    (aws_platform_details | lower is search('windows'))
+      | ternary('Windows', 'Linux')
 
-groups:
-  # `tags` (NOT `ec2_tags`) deliberately: ansible/requirements.yml pins amazon.aws <11.0.0 because
-  # every >=11.0.0 declares requires_ansible >=2.17.0 against this repo's hard ansible-core
-  # >=2.16,<2.17 pin. `ec2_tags` only landed in 11.2.0, so it does not exist under this pin; `tags`
-  # is the plain, non-deprecated hostvar in the <11 series. Keyed off the org's mandatory Function
-  # auto-tag. Identical to the default inventory — topology is discovery, not connection.
-  wazuh_servers: "tags.Function | default('') == 'wazuh-aio'"
-  wazuh_agents: "tags.Function | default('') == 'wazuh-agent'"
-  # EC2's Platform field is only ever set — to the literal 'Windows', capital W — for Windows
-  # instances, and absent for Linux. lower() both sides defensively so casing can never silently
-  # misclassify an agent.
-  wazuh_agents_linux: "tags.Function | default('') == 'wazuh-agent' and (platform | default('') | lower) != 'windows'"
-  wazuh_agents_windows: "tags.Function | default('') == 'wazuh-agent' and (platform | default('') | lower) == 'windows'"
+  # The framework loader requires a variable NAMED 'ENV' and lower-cases the value itself. Read bare
+  # because the Environment filter above admits only instances that carry the tag.
+  ENV: "aws_tags.Environment"
 
-  # TRANSPORT GROUPS. Not used to dispatch roles — the roles are transport-agnostic and dispatch off
-  # the platform groups above. These exist so the topology assertion in deploy-aws-poc.yml Step 0
-  # can prove the MATRIX resolved, not merely that the right number of hosts appeared: a mistagged
-  # system would otherwise still satisfy a plain agent count while silently collapsing two legs onto
-  # one transport and proving one method twice.
-  conn_ssm_ssh: "tags.Connection | default('') == 'ssm-ssh'"
-  conn_ssh_direct: "tags.Connection | default('') == 'ssh-direct'"
-  conn_winrm_direct: "tags.Connection | default('') == 'winrm-direct'"
+  #endregion --- [ Framework inputs ] --------------------------------------------------------- #
+
+
+#endregion --- [ Host Variables ] ------------------------------------------------------------- #

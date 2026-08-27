@@ -1,778 +1,514 @@
----
-# =============================================================================
-# E2E-Full Workflow — two-phase AWS deploy / OS-swap / destroy test for secure-wazuh
-# =============================================================================
-# Expensive, destructive-cycle proof of the AIO's OS-swap ("replace-OS-only") lever — fires once
-# per merge request that touches `ansible/**`, `terraform/**`, or a framework pin (plus the
-# `rerun-poc` label and `workflow_dispatch`; see the trigger block below). This is the only active
-# AWS workflow path; it is not a routine per-commit deploy. It stands up the full 6-system AWS PoC
-# (AIO + a five-agent transport matrix: 2 SSH-over-SSM, 2 SSH-direct, 1 WinRM-direct), proves one
-# fresh agent-sourced FIM event per agent (phase 1),
-# force-replaces ONLY the AIO's OS via `terraform apply -var refresh_serial=1` (its data disk
-# survives, re-attached to the new instance), redeploys, then completes the cumulative proof —
-# the pre-swap survivors AND the new events, cumulative by construction (see deploy-aws-poc.yml's
-# "Cumulative FIM Proof" ledger section) — before ALWAYS tearing everything down.
+# =========================================================================================== #
+# AWS Deploy — secure-wazuh
+# ------------------------------------------------------------------------------------------- #
+# Ephemeral lifecycle: terraform init/apply -> ansible -> terraform destroy on the normal path.
+# Terraform is DATA-ONLY here (a plain tfvars, no .tf files); resources live in the pinned
+# aws-terraform-framework, configuration in the pinned ansible-framework + this repo's role.
 #
-# ONE Ansible command drives both phases identically (see playbooks/deploy-aws-poc.yml's own
-# header):
-#   ansible-playbook -i inventory/aws_ec2.yml playbooks/deploy-aws-poc.yml
-# ZERO -e: the whole AWS target is two files — that playbook plus inventory/aws_ec2.yml — and
-# product inputs come from those files plus the controller environment. This workflow leaves
-# WAZUH_ADMIN_PASSWORD unset, so each playbook invocation independently resolves its own
-# credential. Except for a negligible collision between random draws, phase 2 presents a value the
-# surviving rbac.db does not hold and exercises the normal recovery ladder. Its marker is required
-# as evidence that recovery occurred. Neither phase uses an extra var.
-#
-# Actions and both framework inputs are SHA-pinned. Terraform is pinned to 1.15.1 because
-# aws-terraform-framework sets `required_version = "= 1.15.1"` exactly (terraform/versions.tf).
-#
-# -----------------------------------------------------------------------------
-# AWS CONFIGURATION MODEL — org-global secrets provide AWS_ACCOUNT_ID and
-# AWS_EC2_SSH_PRIVATE_KEY. TF_STATE_BUCKET is derived as <AWS_ACCOUNT_ID>-terraform; the optional
-# AWS_REGION org variable defaults to us-east-1. The repo commits both framework pins. Each
-# Ansible invocation independently resolves its own Wazuh admin password. Except for a negligible
-# collision between random draws, phase 2 therefore presents a value absent from the surviving
-# rbac.db; its required marker proves the recovery rung ran. Role ARN, artifact bucket, state
-# bucket, stack, and owner are derived at runtime.
-# -----------------------------------------------------------------------------
-
+#   * AWS credentials are issued only to this workflow at refs/heads/main. Pull requests use
+#     the credential-free quality workflow; feature-branch workflow code never reaches AWS.
+#   * Reachability: direct SSH to a subnet-assigned public IPv4. At runtime the framework adds
+#     one run-scoped security group to every interface, sourced from the runner's validated
+#     public IPv4 and, when an operator hostname is configured, from the address it resolves to
+#     as well — that one adding RDP, so a person can work on a held host. This configuration
+#     creates no EIP and has no NAT. The playbook performs the bounded direct-SSH readiness
+#     check because readiness_gate remains disabled.
+#   * AWS credentials are exchanged before provisioning and refreshed before eligible teardown.
+#     The initial 7,800-second session covers normal deployment work; the teardown refresh uses a
+#     modest 3,600-second session so long holds do not reach destroy with expired credentials.
+#     The 330-minute job budget includes a four-hour hold plus measured-path margin and stays below
+#     the runner's 360-minute execution limit. It is not a teardown guarantee: abnormal delay can
+#     exhaust the job budget before destroy and strand paid resources. That risk is accepted for
+#     this temporary proof bed.
+#   * One fixed state key; this workflow's concurrency group prevents overlapping applies and
+#     never cancels a live lifecycle. A later lifecycle can clean predecessor state before apply;
+#     no age-gated reaper exists for a run killed before destroy.
+#   * Protected-main pushes prove immediately; an off-minute weekly schedule proves recurrence.
+#     One durable incident is updated on failure and closed after the next successful lifecycle.
+# =========================================================================================== #
 name: AWS Deploy
 
-# Fires automatically ONCE per merge request: at MR-open, at reopen, and at draft->ready-for-
-# review (the `types:` list below). `synchronize` — GitHub's "new commit pushed to this MR"
-# event — is DELIBERATELY ABSENT, so pushing more commits to an already-open MR does NOT re-run
-# this. The `rerun-poc` label is the ONLY way to force a fresh proof on an already-open MR —
-# apply it to fire another run on demand; the job-level `if:` below gates every OTHER label so
-# an unrelated label change (triage, size/*, anything) never triggers a real AWS spend.
-# workflow_dispatch stays available for a fully manual run. Neither trigger ever fires on a
-# push/merge to main. With deploy.yml's superseded AWS job retired, no commit-to-main AWS deploy
-# gate remains.
-#
-# RECURSION SAFE: the "Fold evidence into the MR" step below commits onto the SAME PR branch
-# this workflow just proved — authored via GITHUB_TOKEN (github.token), and GitHub does not let
-# GITHUB_TOKEN-authored pushes trigger further workflow runs. Belt-and-suspenders: `synchronize`
-# isn't in `types:` above either, so that commit's own synchronize event is not something this
-# workflow listens for regardless.
-#
-# COST: roughly $1 of real AWS spend per MR-open (or per `rerun-poc` label), $0 standing.
-on:
+'on':
   workflow_dispatch:
-  pull_request:
-    types: [opened, reopened, ready_for_review, labeled]
-    paths:
-      # ansible/** stays WHOLE, deliberately. The Compose step rsyncs this directory wholesale
-      # onto the pinned framework tree, where any file can shadow framework content — so the set
-      # of ansible/ files affecting this deploy is "all of them, including paths that do not
-      # exist yet". Enumerating subdirectories would bet on today's layout and silently stop
-      # triggering when a new top-level path appears. paths: has no negation, so the price of
-      # that safety is that a README edit still costs one run. That is the correct trade: too
-      # broad wastes a dollar and announces itself; too narrow skips the proof in silence.
-      - ansible/**
-      # terraform/** was over-broad — it also matched terraform/proxmox.tfvars, so editing a
-      # Proxmox variable fired a real AWS deploy. Every terraform apply in this workflow passes
-      # exactly this one file.
-      - terraform/aws.tfvars
-      - .github/.framework-pin
-      - .github/.aws-tf-framework-pin
-      # Must track this workflow's filename: a stale entry here means edits to the deploy
-      # workflow itself never trigger their own proof.
-      - .github/workflows/aws-deploy.yml
-
-# Least privilege at the workflow level; the one job elevates only what it needs.
+    inputs:
+      hold_minutes:
+        description: Hold the converged guest before teardown
+        type: choice
+        options: [ '0', '15', '60', '120', '240' ]
+        default: '0'
+  push:
+    branches: [ main ]
+  schedule:
+    # Avoid the top-of-hour load spike documented for scheduled Actions workflows.
+    - cron: '17 9 * * 1'
 permissions: {}
 
-# The PoC is a singleton with one state key and one set of identity tags. Serialize AWS Deploy runs so
-# an apply, OS-swap, or destroy never overlaps another run or is interrupted mid-mutation.
+# One boundary, one state key — never two runs at once, never cancel a live apply.
 concurrency:
-  group: secure-wazuh-aws-poc
+  group: aws-deploy-${{ github.repository }}
   cancel-in-progress: false
 
-env:
-  # Framework source repositories composed and run at deploy time.
-  # Their immutable refs are committed in .github/.framework-pin and
-  # .github/.aws-tf-framework-pin, then resolved with tr in the checkout steps below.
-  ANSIBLE_FRAMEWORK_REPO: nwarila-platform/ansible-framework
-  AWS_TF_FRAMEWORK_REPO: nwarila-platform/aws-terraform-framework
-  # Controller toolchain. RHEL/Rocky 8 targets run platform-python 3.6.8, so the CONTROLLER
-  # ansible-core must stay on the last line that can manage a 3.6 target.
-  ANSIBLE_CORE_SPEC: ">=2.16,<2.17"
-  TF_DIR: .frameworks/aws-tf/terraform
-
 jobs:
+  main-ref:
+    name: Protected main ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Refuse privileged execution outside protected main
+        env:
+          EXPECTED_REF: refs/heads/main
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "${EXPECTED_REF}" ]; then
+            echo "::error::AWS lifecycle runs only from ${EXPECTED_REF}; got ${GITHUB_REF}."
+            exit 1
+          fi
 
-  # ===========================================================================
-  # ONE job, ONE workspace: every terraform command below reuses the SAME initialized working
-  # directory (init runs once, near the top) so local terraform state persists step to step —
-  # phase-1 apply, the OS-swap apply, phase-2's ansible run, and the final destroy all see the
-  # SAME state Terraform already knows about, with no re-checkout/re-init in between. Splitting
-  # this across multiple jobs would force a fresh checkout (and a fresh init) per job, which is
-  # exactly what this single-job design avoids.
-  # ===========================================================================
   aws-deploy:
-    name: AWS (two-phase deploy / OS-swap / destroy)
-    # Same-repository PRs run for each deliberate one-shot event. For `labeled`, only
-    # `rerun-poc` passes; fork PRs never enter this credentialed job. workflow_dispatch has no
-    # pull_request object and passes through the event-name branch without dereferencing one.
-    if: >-
-      github.event_name != 'pull_request' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.event.action != 'labeled' || github.event.label.name == 'rerun-poc'))
-    runs-on: ubuntu-latest
-    # Bounded headroom for two deployments, Windows arming, cumulative proof, and three
-    # infrastructure mutations. A job-level timeout is NOT a teardown guarantee: the durable
-    # backstop must be an out-of-job, account-side reaper keyed by
-    # RepositoryId / stack deployment tags (tracked hardening item).
-    timeout-minutes: 180
-
+    name: AWS (ephemeral deploy-test-destroy)
+    needs: main-ref
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # The 330-minute budget leaves measured-path margin around a 240-minute hold and remains below
+    # the runner's 360-minute execution limit; a timeout can still strand resources before teardown.
+    timeout-minutes: 330
     permissions:
-      # contents: write (was read) — the "Fold evidence into the MR" step below commits
-      # docs/reference/poc-evidence.md onto the PR head branch via the GitHub contents API.
-      contents: write
-      id-token: write # required for AWS OIDC federation (no long-lived keys)
-
+      id-token: write
+      contents: read
     env:
-      ANSIBLE_CACHE_PLUGIN_CONNECTION: ${{ github.workspace }}/.ansible/facts
-      ANSIBLE_SSH_CONTROL_PATH_DIR: ${{ github.workspace }}/.ansible/cp
+      AWS_REGION: us-east-1
+      DEPLOY_ROLE: nwarila-platform_secure-wazuh_runner
+      # Must match key_name in terraform/aws.tfvars.
+      CI_KEY_NAME: nwarila-ec2-key
 
     steps:
-      # Module payloads can contain censored task arguments. Keep controller/delegated-localhost
-      # transfer temp in the runner-owned temporary tree, outside the workspace. Target remote_tmp
-      # remains the STIG-compatible /opt path from the composed ansible.cfg.
-      #
-      # This is a step rather than a job-level `env:` entry because the `runner` context is not
-      # available when job env is evaluated; RUNNER_TEMP is only defined once steps begin.
-      - name: Point the Ansible controller temp outside the workspace
-        run: echo "ANSIBLE_LOCAL_TEMP=${RUNNER_TEMP:?}/secure-wazuh-ansible/local" >> "${GITHUB_ENV}"
-
-      # -----------------------------------------------------------------------
-      # Source checkout + pinned framework checkouts
-      # -----------------------------------------------------------------------
-      - name: Checkout secure-wazuh
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
 
-      # aws-terraform-framework's runner protocol (docs/reference/runner-protocol.md,
-      # "Deployment Identity Tags"). Exports TF_VAR_resource_metadata for every later terraform
-      # step in this job; docs/reference/aws-iam/README.md's StampRepoIdentityTagOnRootVolumes and
-      # create-time RequestTag controls require it, or the applicable request is denied.
-      - name: Derive deployment identity + targets
-        shell: bash
+      - name: Validate hold duration
+        if: github.event_name == 'workflow_dispatch'
         env:
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-          GH_OWNER: ${{ github.repository_owner }}
-          GH_REPOSITORY: ${{ github.repository }}
-          GH_REPOSITORY_ID: ${{ github.repository_id }}
-          GH_RUN_ID: ${{ github.run_id }}
+          HOLD_MINUTES: ${{ inputs.hold_minutes }}
         run: |
           set -euo pipefail
-          stack="${GH_REPOSITORY##*/}"          # repo name, e.g. secure-wazuh
-          owner="${GH_OWNER}"                    # org, e.g. nwarila-platform
-          commit_sha="$(git rev-parse HEAD)"
-          {
-            echo "DEPLOY_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/github_${owner}_${stack}"
-            echo "ARTIFACT_READER_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/secure-wazuh-artifact-reader"
-            echo "ANSIBLE_S3_BUCKET=${AWS_ACCOUNT_ID}-ansible"
-            echo "TF_STATE_BUCKET=${AWS_ACCOUNT_ID}-terraform"
-            # Org state-key convention is <owner>/<repo>/<target>.tfstate — derived, so it always
-            # matches the bucket layout (and the IAM policy scoped to that prefix) with no input.
-            echo "TF_STATE_KEY_PREFIX=${owner}/${stack}"
-            # Deployment identity, one scalar per variable. The framework retired the single
-            # resource_metadata object; passing the old TF_VAR_resource_metadata against the
-            # current pin would be SILENTLY IGNORED (Terraform only warns on an undeclared
-            # TF_VAR_*), leaving every identity variable null, every identity tag absent, and every
-            # create-time RequestTag condition in docs/reference/aws-iam/ denied. Note there is no
-            # stack or owner variable any more: both were dropped with the object, and no IAM
-            # condition in this repository referenced either.
-            echo "TF_IDENTITY_REPOSITORY=${GH_REPOSITORY}"
-            echo "TF_IDENTITY_REPOSITORY_ID=${GH_REPOSITORY_ID}"
-            echo "TF_IDENTITY_COMMIT_SHA=${commit_sha}"
-            echo "TF_IDENTITY_RUN_ID=${GH_RUN_ID}"
-          } >> "$GITHUB_ENV"
+          case "${HOLD_MINUTES}" in
+            0|15|60|120|240) ;;
+            *)
+              echo "::error::hold_minutes must be one of 0, 15, 60, 120, or 240; re-dispatch with a listed choice."
+              exit 1
+              ;;
+          esac
 
-      - name: Resolve ansible-framework pin
-        id: pin
-        run: echo "sha=$(tr -d ' \n\r' < .github/.framework-pin)" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout ansible-framework (pinned)
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up pinned Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
-          repository: ${{ env.ANSIBLE_FRAMEWORK_REPO }}
-          ref: ${{ steps.pin.outputs.sha }}
-          path: .frameworks/ansible-framework
-          persist-credentials: false
-          # ansible-framework is public — the default GITHUB_TOKEN reads it; no PAT needed.
+          python-version: '3.12.11'
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
 
-      - name: Resolve aws-terraform-framework pin
-        id: tfpin
-        run: echo "sha=$(tr -d ' \n\r' < .github/.aws-tf-framework-pin)" >> "$GITHUB_OUTPUT"
+      - name: Install Ansible
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        run: |
+          set -euo pipefail
+          . ./quality-tools.env
+          runtime_venv="${RUNNER_TEMP}/aws-proof-venv"
+          python3 -m venv "${runtime_venv}"
+          "${runtime_venv}/bin/python" -m pip install --quiet --no-cache-dir \
+            --requirement requirements-quality.txt
+          "${runtime_venv}/bin/ansible-galaxy" collection install --force \
+            --requirements-file requirements-quality.yml
+          echo "${runtime_venv}/bin" >> "${GITHUB_PATH}"
+
+      # The framework consumes a pre-existing key pair and never creates one, so the standing
+      # account key pair named in terraform/aws.tfvars is the launch key. Windows user_data
+      # installs its public half by reading IMDS; only the private half is secret, and it
+      # exists solely in this runner's temporary directory, mode 0600, for this one job.
+      - name: Stage the launch private key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          private_key="${RUNNER_TEMP}/${CI_KEY_NAME}.pem"
+          umask 077
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${private_key}"
+          staged_public="$(ssh-keygen -y -f "${private_key}")" \
+            || { echo "::error::AWS_EC2_SSH_PRIVATE_KEY is not a usable private key."; exit 1; }
+          echo "CI_PRIVATE_KEY=${private_key}" >> "${GITHUB_ENV}"
+          echo "CI_STAGED_PUBLIC_KEY=${staged_public}" >> "${GITHUB_ENV}"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: aws-deploy-${{ github.run_id }}
+          role-duration-seconds: 7800
+
+      # actions/checkout cannot read a file into ref:, so validated immutable SHAs pass through
+      # step outputs. Reject malformed/multiline pins before any external framework checkout.
+      # A rotated secret that no longer matches the launch key pair is invisible until Ansible
+      # cannot log in — which surfaces fifteen minutes and one instance later as a readiness
+      # timeout. Compare the two public halves here instead, before anything is created.
+      - name: Assert the staged key matches the launch key pair
+        run: |
+          set -euo pipefail
+          launch_public="$(aws ec2 describe-key-pairs --key-names "${CI_KEY_NAME}" \
+            --include-public-key --query 'KeyPairs[0].PublicKey' --output text)"
+          staged_material="$(awk '{print $1" "$2}' <<< "${CI_STAGED_PUBLIC_KEY}")"
+          launch_material="$(awk '{print $1" "$2}' <<< "${launch_public}")"
+          if [ "${staged_material}" != "${launch_material}" ]; then
+            echo "::error::AWS_EC2_SSH_PRIVATE_KEY does not match EC2 key pair ${CI_KEY_NAME}." \
+                 "The guest installs the key pair's public half, so SSH would fail after launch." \
+                 "Rotate the secret to the matching private key, or repoint key_name."
+            exit 1
+          fi
+          echo "staged key matches ${CI_KEY_NAME}"
+
+      - name: Read framework pins
+        id: pins
+        run: |
+          set -euo pipefail
+          emit_pin() {
+            local name="$1" path="$2" pin
+            local -a lines
+            mapfile -t lines < "${path}"
+            [ "${#lines[@]}" -eq 1 ] || {
+              echo "${path} must contain exactly one line" >&2
+              return 1
+            }
+            pin="${lines[0]}"
+            [[ "${pin}" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "${path} must contain exactly one lowercase 40-character Git SHA" >&2
+              return 1
+            }
+            printf '%s=%s\n' "${name}" "${pin}" >> "${GITHUB_OUTPUT}"
+          }
+          # The ansible-framework pin is the single root .framework-pin, read by BOTH this workflow
+          # and scripts/compose-and-run.sh, so local and CI can never diverge. The terraform pin
+          # stays under .github/ because only CI consumes terraform.
+          emit_pin terraform .github/terraform-framework-pin
+          emit_pin ansible .framework-pin
 
       - name: Checkout aws-terraform-framework (pinned)
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          repository: ${{ env.AWS_TF_FRAMEWORK_REPO }}
-          # Version-locked in .github/.aws-tf-framework-pin — a committed SHA that mirrors
-          # .framework-pin for the Ansible framework.
-          ref: ${{ steps.tfpin.outputs.sha }}
-          path: .frameworks/aws-tf
+          repository: ${{ github.repository_owner }}/aws-terraform-framework
+          ref: ${{ steps.pins.outputs.terraform }}
+          path: .frameworks/aws-terraform-framework
           persist-credentials: false
-          # aws-terraform-framework is public — the default GITHUB_TOKEN reads it; no PAT needed.
 
-      # -----------------------------------------------------------------------
-      # AWS auth via OIDC — no long-lived credentials in the repo
-      # -----------------------------------------------------------------------
-      - name: Configure AWS credentials (OIDC)
-        # The checked-in trust source requires this workflow file's job_workflow_ref claim, the
-        # immutable repository ID, and the sts.amazonaws.com audience. The job guard above remains
-        # defense in depth and excludes fork PRs before this credentialed step.
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      - name: Checkout ansible-framework (pinned)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          # The role ARN is derived from the org-global AWS_ACCOUNT_ID and the
-          # github_<owner>_<repo> naming convention. Its trust is pinned to this repository and
-          # workflow file; its policy retains the EC2/EBS/VPC and state scope and may assume the
-          # scoped artifact-reader role.
-          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-        # configure-aws-credentials exports the deploy identity for Terraform, inventory, SSM,
-        # controller-side EBS discovery, and each playbook invocation's use-boundary
-        # artifact-reader role assumptions. No deploy credential is copied to a target or used for
-        # an artifact read.
+          repository: ${{ github.repository_owner }}/ansible-framework
+          ref: ${{ steps.pins.outputs.ansible }}
+          path: .frameworks/ansible-framework
+          persist-credentials: false
 
-      # -----------------------------------------------------------------------
-      # Terraform — ONE init, reused by every apply/destroy below (see the job-level comment)
-      # -----------------------------------------------------------------------
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
-          terraform_version: "1.15.1"
+          terraform_version: '1.15.1'
           terraform_wrapper: false
 
-      # Every run uses the singleton secure-wazuh/aws.tfstate. The workflow concurrency group
-      # prevents two AWS Deploy runs from touching that state at the same time.
-      - name: Terraform init (AWS Deploy — singleton aws.tfstate)
-        working-directory: ${{ env.TF_DIR }}
-        run: |
-          terraform init \
-            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/aws.tfstate" \
-            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
-
-      # Terraform needs no SSH key here (all systems readiness_gate=false, SSM-only); only Ansible
-      # reads this key. If a system ever sets readiness_gate=true, Terraform's SSH readiness will
-      # also need it and the committed aws.tfvars readiness path (a /root local-harness path) must
-      # then be overridden to a runner-readable path.
-      - name: Write target SSH key
+      - name: Discover and validate runner public IPv4
         run: |
           set -euo pipefail
-          # The org-global AWS_EC2_SSH_PRIVATE_KEY secret is the private half of
-          # terraform/aws.tfvars' key_name = "nwarila-ec2-key".
-          install -d -m 0700 "$HOME/.ssh"
-          install -m 0600 /dev/stdin "$HOME/.ssh/nwarila-ec2-key.pem" <<< "${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}"
+          runner_ip="$(curl -fsS https://checkip.amazonaws.com)"
+          ipv4_octet='(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])'
+          if [[ ! "${runner_ip}" =~ ^${ipv4_octet}\.${ipv4_octet}\.${ipv4_octet}\.${ipv4_octet}$ ]]; then
+            echo "::error::Runner public address discovery did not return a bare IPv4 address."
+            exit 1
+          fi
+          echo "::add-mask::${runner_ip}"
+          echo "RUNNER_IP=${runner_ip}" >> "${GITHUB_ENV}"
+          echo 'runner public IPv4 validated'
 
-      # Three of the five agent legs are reached WITHOUT SSM — two over SSH direct to 22, one over
-      # WinRM direct to 5986 — so this runner's own address must be permitted inbound for the life
-      # of the run. checkip.amazonaws.com is AWS's own endpoint: no third-party action (which would
-      # also fail scripts/check-action-pins.py, since that gate requires a 40-hex SHA and the
-      # published dynamic-whitelist actions are tag-only) and no third-party dependency.
+      # The operator's own address, so a held host can be reached directly rather than through a
+      # tunnel. The secret carries a NAME, not an address: the name is stable and private, the
+      # address behind it changes with the operator's connection, and resolving here means only
+      # the address reaches Terraform -- masked in the log, exactly as the runner's is. The
+      # address does reach Terraform state and the security group it builds; what no commit
+      # records is the operator it belongs to.
       #
-      # GitHub does publish its runner ranges at api.github.com/meta, but `actions` currently holds
-      # 5,658 IPv4 CIDRs against a hard ceiling of 1,000 rules per security group — allowlisting the
-      # published set is not merely impractical, it does not fit. A single /32 is also a far tighter
-      # grant: the published ranges are Azure, shared with arbitrary tenants.
-      - name: Resolve this runner's public address
+      # Absent secret means no operator access, not a failed run: the framework's debug_ip is
+      # optional and a pipeline with nobody watching should grant nobody anything. A name that
+      # is set and will not resolve DOES fail, because the alternative is a host that silently
+      # cannot be reached by the person who asked for it.
+      - name: Resolve the operator address for direct access
+        env:
+          DEBUG_HOSTNAME: ${{ secrets.AWS_DEBUG_HOSTNAME }}
         run: |
           set -euo pipefail
-          ip="$(curl -fsS --retry 3 --max-time 15 https://checkip.amazonaws.com | tr -d '[:space:]')"
-          [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "::error::checkip returned a non-IPv4 value"; exit 1; }
-          echo "RUNNER_IP=${ip}" >> "${GITHUB_ENV}"
+          if [ -z "${DEBUG_HOSTNAME}" ]; then
+            echo 'no operator hostname configured; this run grants no direct access'
+            exit 0
+          fi
+          # `|| true` so the check below is the ONE gate: a name that does not resolve and a name
+          # that resolves to something that is not an address fail the same way to a reader, and
+          # without it the first kills the step on pipefail before this message can explain
+          # itself. The check proves the SHAPE of an address, not that it is routable -- a name
+          # pointing somewhere private yields a rule that simply reaches nobody.
+          debug_ip="$(getent ahostsv4 "${DEBUG_HOSTNAME}" | awk '{ print $1; exit }' || true)"
+          ipv4_octet='(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])'
+          if [[ ! "${debug_ip}" =~ ^${ipv4_octet}\.${ipv4_octet}\.${ipv4_octet}\.${ipv4_octet}$ ]]; then
+            echo "::error::The operator hostname did not resolve to a bare IPv4 address."
+            exit 1
+          fi
+          echo "::add-mask::${debug_ip}"
+          echo "DEBUG_IP=${debug_ip}" >> "${GITHUB_ENV}"
+          echo 'operator IPv4 resolved and validated'
 
-      # runner_ip is passed with -var, NOT through the tfvars: -var is the highest-precedence
-      # source, so a value file can never override who this run says it is. The framework owns the
-      # protocols (tcp/22, tcp/5986, ICMP) as literals and takes a BARE ADDRESS, never a CIDR —
-      # which makes a range structurally unrepresentable rather than merely validated against. The
-      # group it creates is destroyed with the stack, so there is no revoke step to strand and no
-      # orphaned rule for the reaper to sweep after a cancelled job.
-      - name: Terraform apply (phase 1 — stand up the AIO + the five-transport agent matrix)
-        working-directory: ${{ env.TF_DIR }}
-        run: |
-          terraform apply -auto-approve \
-            -var-file="${{ github.workspace }}/terraform/aws.tfvars" \
-            -var "repository=${TF_IDENTITY_REPOSITORY:?}" \
-            -var "repository_id=${TF_IDENTITY_REPOSITORY_ID:?}" \
-            -var "commit_sha=${TF_IDENTITY_COMMIT_SHA:?}" \
-            -var "run_id=${TF_IDENTITY_RUN_ID:?}" \
-            -var "runner_ip=${RUNNER_IP:?}"
-
-      # Instance IDs are non-secret infrastructure identifiers. Capture Terraform's exact
-      # six-host set once so readiness checks cannot be satisfied by another SSM record.
-      # The AIO ID also supplies the before/after evidence for the OS swap.
-      - name: Capture phase-1 instance IDs
-        working-directory: ${{ env.TF_DIR }}
+      - name: Terraform init
+        id: tf-init
+        working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          instances="$(terraform output -json aws_instances)"
-          jq -e '
-            (type == "object") and
-            (keys == [
-              "secure-wazuh-poc",
-              "sw-lin-ssh",
-              "sw-lin-ssm",
-              "sw-win-ssh",
-              "sw-win-ssm",
-              "sw-win-winrm"
-            ]) and
-            ([.[].instance_id] |
-              (length == 6) and
-              (unique | length == 6) and
-              all(.[]; test("^i-[0-9a-f]+$")))
-          ' <<< "$instances" >/dev/null
-          {
-            echo "PRE_SWAP_INSTANCE_ID=$(jq -r '."secure-wazuh-poc".instance_id' <<< "$instances")"
-            echo "LINUX_SSM_AGENT_INSTANCE_ID=$(jq -r '."sw-lin-ssm".instance_id' <<< "$instances")"
-            echo "LINUX_SSH_AGENT_INSTANCE_ID=$(jq -r '."sw-lin-ssh".instance_id' <<< "$instances")"
-            echo "WINDOWS_SSM_AGENT_INSTANCE_ID=$(jq -r '."sw-win-ssm".instance_id' <<< "$instances")"
-            echo "WINDOWS_SSH_AGENT_INSTANCE_ID=$(jq -r '."sw-win-ssh".instance_id' <<< "$instances")"
-            echo "WINDOWS_WINRM_AGENT_INSTANCE_ID=$(jq -r '."sw-win-winrm".instance_id' <<< "$instances")"
-          } >> "$GITHUB_ENV"
+          terraform init -input=false                                      \
+            -backend-config="bucket=${AWS_ACCOUNT_ID}-terraform"           \
+            -backend-config="key=${{ github.repository }}/aws-poc.tfstate" \
+            -backend-config="region=${AWS_REGION}"
 
-      # -----------------------------------------------------------------------
-      # Ansible — compose the framework + this repo's roles, then run phase 1
-      # -----------------------------------------------------------------------
-      - name: Setup Python (controller)
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      # A killed predecessor can leave state and an instance whose one-time SSH private key no
+      # longer exists. Never adopt it: destroy under the same lock, then apply with a fresh key.
+      # A live/out-of-band lock makes this fail closed.
+      - name: Remove interrupted predecessor state before apply
+        timeout-minutes: 15
+        working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+          terraform destroy -input=false -auto-approve -lock-timeout=300s    \
+            -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars"             \
+            -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
+            -var "environment=test"                                          \
+            -var "repository=${GITHUB_REPOSITORY}"                           \
+            -var "repository_id=${GITHUB_REPOSITORY_ID}"                     \
+            -var "run_id=${GITHUB_RUN_ID}"                                   \
+            -var "runner_ip=${RUNNER_IP}"                                    \
+            ${DEBUG_IP:+-var "debug_ip=${DEBUG_IP}"}
+
+      # The value file comes FIRST and the identity flags after it. Terraform resolves repeated
+      # command-line assignments in the order they are given, so this ordering -- not the kind of
+      # flag -- is what stops the file from renaming who this fresh deployment says it is.
+      - name: Terraform apply
+        id: tf-apply
+        timeout-minutes: 15
+        working-directory: .frameworks/aws-terraform-framework/terraform
+        run: |
+          set -euo pipefail
+          terraform apply -input=false -auto-approve -lock-timeout=120s      \
+            -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars"             \
+            -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
+            -var "environment=test"                                          \
+            -var "repository=${GITHUB_REPOSITORY}"                           \
+            -var "repository_id=${GITHUB_REPOSITORY_ID}"                     \
+            -var "run_id=${GITHUB_RUN_ID}"                                   \
+            -var "runner_ip=${RUNNER_IP}"                                    \
+            ${DEBUG_IP:+-var "debug_ip=${DEBUG_IP}"}
+
+      # This repo's roles overlay onto the pinned framework tree. A framework-TRACKED role
+      # path is refused so an overlay can never replace framework-owned code.
+      - name: Compose the Ansible tree
+        run: |
+          set -euo pipefail
+          # A role that runs a first-class PowerShell script tracks only files/<Name>.ps1.stub;
+          # the script itself is developed and pair-tested under scripts/ and copied into place
+          # here. This must precede the rsync below, which is what carries the materialized copy
+          # into the composed tree.
+          bash "${GITHUB_WORKSPACE}/scripts/materialize-role-scripts.sh"
+
+          framework_dir="${GITHUB_WORKSPACE}/.frameworks/ansible-framework"
+
+          # The framework's own roles track only files/<Name>.ps1.stub. Materialize them in the
+          # checkout before the overlay: that materializer validates every stub it finds, and this
+          # repository's roles resolve their sources from this repository, not from the framework.
+          if [ -x "${framework_dir}/scripts/materialize-role-scripts.sh" ]; then
+            (cd "${framework_dir}" && ./scripts/materialize-role-scripts.sh)
+          fi
+
+          for role_source in "${GITHUB_WORKSPACE}"/ansible/applications/*; do
+            role_name="$(basename "${role_source}")"
+            [ -f "${role_source}/tasks/main.yml" ] || { echo "!! missing tasks/main.yml in ${role_source}" >&2; exit 1; }
+            [ -z "$(git -C "${framework_dir}" ls-files -- "applications/${role_name}/")" ] \
+              || { echo "!! refusing framework-tracked role path applications/${role_name}" >&2; exit 1; }
+            rsync -a --delete "${role_source}/" "${framework_dir}/applications/${role_name}/"
+          done
+
+      # Readiness, configuration and the application proof all live in the playbook. The EC2
+      # inventory plugin filters live AWS instances to this repository and run before exposing
+      # one target. The budget guards against a hung converge without cutting a working one short.
+      - name: Run the application playbook
+        timeout-minutes: 60
+        working-directory: .frameworks/ansible-framework
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          # A secret reaches the shell through the environment, never by substitution into the
+          # script text, so its value cannot be read as shell syntax. Forwarded on as an
+          # extra-var below because the play requires it; same value the OIDC role ARN uses.
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          # NOT extra-vars: the dynamic inventory reads these from the environment to pick this
+          # run's instance, and a lookup('env') has no command-line equivalent.
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          # This repository's one app-specific converge input: wazuh_server fetches its offline
+          # bundle and dashboard listener pair through the framework's s3_artifact_delivery role,
+          # which mints per-attempt presigned URLs from this scoped reader role.
+          ARTIFACT_READER_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/secure-wazuh-artifact-reader
+        run: |
+          set -euo pipefail
+          # Dynamic inventory publishes an instance attribute named state; extra-vars take precedence.
+          ansible-playbook "${GITHUB_WORKSPACE}/ansible/playbooks/deploy-aws-poc.yml" \
+            --extra-vars aws_account_id="${AWS_ACCOUNT_ID}"                    \
+            --extra-vars aws_region="${AWS_REGION}"                            \
+            --extra-vars env=test                                              \
+            --extra-vars state=present                                         \
+            --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"
+
+      - name: Hold the converged guest for interactive work
+        if: >-
+          !cancelled() &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.hold_minutes != '0' &&
+          steps.tf-apply.outcome == 'success'
+        timeout-minutes: 245
+        env:
+          HOLD_MINUTES: ${{ inputs.hold_minutes }}
+        run: |
+          set -euo pipefail
+          instance_id="$(
+            aws ec2 describe-instances \
+              --filters "Name=tag:RepositoryId,Values=${GITHUB_REPOSITORY_ID}" \
+                        "Name=tag:RunId,Values=${GITHUB_RUN_ID}" \
+                        "Name=tag:Repository,Values=${GITHUB_REPOSITORY}" \
+                        "Name=tag:Environment,Values=test" \
+                        "Name=instance-state-name,Values=running" \
+              --query 'Reservations[].Instances[].InstanceId' \
+              --output text 2>/dev/null || true
+          )"
+          if [[ ! "${instance_id}" =~ ^i-[0-9a-f]+$ ]]; then
+            instance_id='unavailable'
+          fi
+
+          remaining_minutes="${HOLD_MINUTES}"
+          echo "Holding EC2 instance ${instance_id} for ${remaining_minutes} minutes."
+          while (( remaining_minutes > 0 )); do
+            sleep 300
+            remaining_minutes=$((remaining_minutes - 5))
+            echo "Hold heartbeat for EC2 instance ${instance_id}: ${remaining_minutes} minutes remaining."
+          done
+          exit 0
+
+      - name: Refresh AWS credentials for teardown (OIDC)
+        if: always() && steps.tf-init.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
-          python-version: '3.11'
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: aws-deploy-${{ github.run_id }}-teardown
+          role-duration-seconds: 3600
 
-      - name: Compose _dev-build (framework base + product-role overlay)
-        run: |
-          set -euo pipefail
-          DEV_BUILD="${GITHUB_WORKSPACE}/_dev-build"
-          rm -rf "${DEV_BUILD}"; mkdir -p "${DEV_BUILD}"
-          rsync -a "${GITHUB_WORKSPACE}/.frameworks/ansible-framework/" "${DEV_BUILD}/"
-          rsync -a "${GITHUB_WORKSPACE}/ansible/" "${DEV_BUILD}/"
-          LOADER_DEFAULTS="${DEV_BUILD}/operating_systems/RedHat_Rocky_8/defaults/main.yml"
-          sed -i \
-            "/^# product's '/c\\# product's '/opt/ansible/tmp' when run under secure-wazuh's ansible/ansible.cfg." \
-            "${LOADER_DEFAULTS}"
-
-      - name: Install ansible-core + collections
-        working-directory: _dev-build
-        env:
-          # Collections must land in the SAME collections_path the composed ansible.cfg
-          # points ansible-playbook at (must run AFTER Compose, for the same reason).
-          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
-        run: |
-          python -m pip install --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}"
-          # boto3/botocore: required only on the controller for sts_assume_role, local S3
-          # presigning/dashboard-pair retrieval, dynamic inventory, and linux_disk_manager's
-          # delegated AWS Function-tag resolver.
-          python -m pip install --no-cache-dir boto3 botocore
-          # The winrm connection plugin imports pywinrm; without it the winrm-direct
-          # leg fails at connect while every SSH leg still passes, so the matrix would
-          # report four of five transports proven and one unreachable.
-          python -m pip install --no-cache-dir "pywinrm>=0.4.3"
-          ansible-galaxy collection install -r "${GITHUB_WORKSPACE}/ansible/requirements.yml"
-
-      # The AWS systems take NO inbound SSH (see docs/reference/aws-iam/README.md's PoC-networking
-      # note): inventory/aws_ec2.yml's compose: block tunnels the ssm-ssh legs through
-      # `aws ssm start-session --document-name AWS-StartSSHSession`, and that ProxyCommand shells
-      # out to the Session Manager plugin — a separate binary the AWS CLI does NOT bundle and
-      # ubuntu-latest does not ship. Without it every host is UNREACHABLE with the misleading
-      # "Connection closed by UNKNOWN port 65535".
-      - name: Install the SSM Session Manager plugin (SSH transport for no-inbound-SSH hosts)
-        run: |
-          set -euo pipefail
-          curl -fsSL -o /tmp/session-manager-plugin.deb \
-            "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb"
-          sudo dpkg -i /tmp/session-manager-plugin.deb
-          session-manager-plugin --version
-
-      # `terraform apply` returns when the API says the instances exist, not when their SSM agents
-      # have registered. The exact Terraform-emitted set proves that each intended host is Online;
-      # no unrelated or expired managed-instance record can substitute for one.
-      # Only the ssm-ssh legs are gated here. The three direct-transport hosts (sw-lin-ssh,
-      # sw-win-ssh, sw-win-winrm) are reached over the runner's /32 and never open an SSM session,
-      # so waiting on their agents would block the run on a capability the matrix does not use for
-      # them — and would fail outright on an image whose SSM agent never registers.
-      - name: Wait for the SSM-transport instances to register with SSM
-        run: |
-          set -euo pipefail
-          mapfile -t expected_set < <(
-            printf '%s\n' \
-              "$PRE_SWAP_INSTANCE_ID" \
-              "$LINUX_SSM_AGENT_INSTANCE_ID" \
-              "$WINDOWS_SSM_AGENT_INSTANCE_ID" |
-              sort -u
-          )
-          if [[ "${#expected_set[@]}" -ne 3 ]]; then
-            echo "::error::Terraform did not emit three distinct ssm-ssh instance IDs" >&2
-            exit 1
-          fi
-          instance_filter="${expected_set[0]},${expected_set[1]},${expected_set[2]}"
-          for _ in $(seq 1 45); do
-            mapfile -t online_set < <(
-              aws ssm describe-instance-information \
-                --filters "Key=InstanceIds,Values=${instance_filter}" \
-                --query 'InstanceInformationList[?PingStatus==`Online`].InstanceId' \
-                --output json |
-                jq -r '.[]' |
-                sort -u
-            )
-            echo "SSM Online target IDs (${#online_set[@]}/3): ${online_set[*]:-none}"
-            if [[ "${#online_set[@]}" -eq "${#expected_set[@]}" ]] &&
-              cmp -s <(printf '%s\n' "${expected_set[@]}") <(printf '%s\n' "${online_set[@]}"); then
-              exit 0
-            fi
-            sleep 20
-          done
-          echo "::error::The exact phase-1 Terraform instance set was not Online in SSM within 15 minutes" >&2
-          exit 1
-
-      - name: "PHASE 1: deploy-aws-poc.yml, then trigger/prove 5 fresh FIM events"
-        working-directory: _dev-build
-        env:
-          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
-          # The OIDC step above exports AWS_REGION for every later step. Keep this fallback because
-          # deploy-aws-poc.yml's run-input bridge prefers AWS_REGION over AWS_DEFAULT_REGION.
-          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-          # WAZUH_ADMIN_PASSWORD is deliberately not bound: the playbook mints a fresh value for
-          # this invocation. Phase 2 does the same independently. Still zero -e.
-          # Read by deploy-aws-poc.yml's inline Stage 5 evidence block (gated so a local run
-          # without this var writes no evidence) — it writes the machine-readable proof JSON
-          # here, controller-side, for "Render PoC evidence" below to consume.
-          POC_EVIDENCE_JSON: ${{ github.workspace }}/poc-proof.json
-        run: |
-          set -euo pipefail
-          ansible-playbook -i inventory/aws_ec2.yml playbooks/deploy-aws-poc.yml
-          # Snapshot phase 1's proof (2 entries) before phase 2 overwrites the same path with the
-          # cumulative (4-entry) state — "Render PoC evidence" needs BOTH the phase-1-only and
-          # the final cumulative view, and the ledger itself doesn't record which phase produced
-          # which entry.
-          cp "${POC_EVIDENCE_JSON}" "${{ github.workspace }}/poc-proof-phase1.json"
-
-      - name: "PHASE 1: clean controller Ansible module payloads"
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          expected_local_temp="${RUNNER_TEMP:?}/secure-wazuh-ansible/local"
-          if [[ "${ANSIBLE_LOCAL_TEMP:?}" != "${expected_local_temp}" ]]; then
-            echo "Refusing to clean an unexpected ANSIBLE_LOCAL_TEMP path" >&2
-            exit 1
-          fi
-          rm -rf -- "${RUNNER_TEMP}/secure-wazuh-ansible"
-
-      # -----------------------------------------------------------------------
-      # OS-SWAP — force-replace ONLY the AIO's OS (refresh = true in aws.tfvars); both agents
-      # (refresh = false) are untouched. Same working directory, same state — no re-init.
-      # -----------------------------------------------------------------------
-      - name: Terraform apply (OS-swap — refresh_serial=1, AIO only)
-        working-directory: ${{ env.TF_DIR }}
-        run: |
-          terraform apply -auto-approve \
-            -var-file="${{ github.workspace }}/terraform/aws.tfvars" \
-            -var "repository=${TF_IDENTITY_REPOSITORY:?}" \
-            -var "repository_id=${TF_IDENTITY_REPOSITORY_ID:?}" \
-            -var "commit_sha=${TF_IDENTITY_COMMIT_SHA:?}" \
-            -var "run_id=${TF_IDENTITY_RUN_ID:?}" \
-            -var "runner_ip=${RUNNER_IP:?}" \
-            -var refresh_serial=1
-
-      # Same rationale as the pre-swap capture above — not secret, needed for the evidence doc.
-      - name: Capture post-swap AIO instance-id
-        working-directory: ${{ env.TF_DIR }}
-        run: |
-          set -euo pipefail
-          id="$(terraform output -json aws_instances | jq -r '."secure-wazuh-poc".instance_id')"
-          echo "POST_SWAP_INSTANCE_ID=${id}" >> "$GITHUB_ENV"
-
-      - name: Assert the OS-swap replaced the AIO instance
-        run: |
-          set -euo pipefail
-          if [[ -z "${PRE_SWAP_INSTANCE_ID:-}" || ! "${PRE_SWAP_INSTANCE_ID}" =~ ^i-[0-9a-f]+$ ]]; then
-            echo "Invalid or empty pre-swap AIO instance-id: '${PRE_SWAP_INSTANCE_ID:-}'" >&2
-            exit 1
-          fi
-          if [[ -z "${POST_SWAP_INSTANCE_ID:-}" || ! "${POST_SWAP_INSTANCE_ID}" =~ ^i-[0-9a-f]+$ ]]; then
-            echo "Invalid or empty post-swap AIO instance-id: '${POST_SWAP_INSTANCE_ID:-}'" >&2
-            exit 1
-          fi
-          if [[ "${PRE_SWAP_INSTANCE_ID}" == "${POST_SWAP_INSTANCE_ID}" ]]; then
-            echo "OS-swap did not replace the AIO: instance-id remained ${PRE_SWAP_INSTANCE_ID}" >&2
-            exit 1
-          fi
-
-      # The replacement AIO has a newly booted SSM agent, while Terraform leaves both endpoint
-      # instances unchanged. Requiring exactly that new AIO ID plus the two captured endpoint IDs
-      # proves every phase-2 target is Online; a third record with the same tag proves nothing.
-      - name: Wait for the exact phase-2 instance set to be Online in SSM
-        run: |
-          set -euo pipefail
-          mapfile -t expected_set < <(
-            printf '%s\n' \
-              "$POST_SWAP_INSTANCE_ID" \
-              "$LINUX_SSM_AGENT_INSTANCE_ID" \
-              "$WINDOWS_SSM_AGENT_INSTANCE_ID" |
-              sort -u
-          )
-          if [[ "${#expected_set[@]}" -ne 3 ]]; then
-            echo "::error::The phase-2 targets are not three distinct instance IDs" >&2
-            exit 1
-          fi
-          instance_filter="${expected_set[0]},${expected_set[1]},${expected_set[2]}"
-          for _ in $(seq 1 45); do
-            mapfile -t online_set < <(
-              aws ssm describe-instance-information \
-                --filters "Key=InstanceIds,Values=${instance_filter}" \
-                --query 'InstanceInformationList[?PingStatus==`Online`].InstanceId' \
-                --output json |
-                jq -r '.[]' |
-                sort -u
-            )
-            echo "SSM Online target IDs (${#online_set[@]}/3): ${online_set[*]:-none}"
-            if [[ "${#online_set[@]}" -eq "${#expected_set[@]}" ]] &&
-              cmp -s <(printf '%s\n' "${expected_set[@]}") <(printf '%s\n' "${online_set[@]}"); then
-              exit 0
-            fi
-            sleep 20
-          done
-          echo "::error::The exact phase-2 Terraform instance set was not Online in SSM within 15 minutes of the OS swap" >&2
-          exit 1
-
-      - name: "PHASE 2: redeploy the swapped AIO, then trigger/prove ALL 4 cumulative events"
-        working-directory: _dev-build
-        env:
-          ANSIBLE_CONFIG: ${{ github.workspace }}/_dev-build/ansible.cfg
-          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-          # The role writes this controller-side marker only after both 401 responses, rbac.db
-          # recovery, the manager restart, and recovered factory authentication.
-          WAZUH_PASSWORD_RECOVERY_PROOF_PATH: >-
-            ${{ github.workspace }}/wazuh-password-recovery.proof
-          # Same path as phase 1 (see that step's comment) — this run overwrites it with the
-          # cumulative (4-entry) state; phase 1's own snapshot already survives at
-          # poc-proof-phase1.json.
-          POC_EVIDENCE_JSON: ${{ github.workspace }}/poc-proof.json
-        run: |
-          set -euo pipefail
-          recovery_proof="${WAZUH_PASSWORD_RECOVERY_PROOF_PATH}"
-          rm -f -- "${recovery_proof}"
-          # SAME command as phase 1 — the playbook's deploy plays re-provision the swapped AIO
-          # (its data disk already carries an "ours" GPT+label, so linux_disk_manager's
-          # mutation-safety guard skips reformatting; the wazuh_server role reinstalls the stack
-          # fresh onto the new OS) and idempotent-reconnect both untouched agents; its FIM proof
-          # section then proves all 4 cumulative ledger entries — see that playbook's own header.
-          ansible-playbook -i inventory/aws_ec2.yml playbooks/deploy-aws-poc.yml
-          if [[ ! -f "${recovery_proof}" ]] ||
-            ! grep -Fqx 'manager-api-rbac-recovery' "${recovery_proof}"; then
-            echo "Phase 2 did not produce the required password-recovery rung evidence" >&2
-            exit 1
-          fi
-          echo "Phase 2 password-recovery rung evidence verified"
-
-      - name: "PHASE 2: clean controller Ansible module payloads"
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          expected_local_temp="${RUNNER_TEMP:?}/secure-wazuh-ansible/local"
-          if [[ "${ANSIBLE_LOCAL_TEMP:?}" != "${expected_local_temp}" ]]; then
-            echo "Refusing to clean an unexpected ANSIBLE_LOCAL_TEMP path" >&2
-            exit 1
-          fi
-          rm -rf -- "${RUNNER_TEMP}/secure-wazuh-ansible"
-
-      # -----------------------------------------------------------------------
-      # DESTROY — always tear the environment down, pass or fail. Same state, same working dir.
-      # Evidence is published only after this succeeds, so it cannot claim teardown on failure.
-      # -----------------------------------------------------------------------
+      # Gated on INIT, not apply: a failed apply still leaves state to tear down.
       - name: Terraform destroy (always)
-        if: ${{ always() }}
-        working-directory: ${{ env.TF_DIR }}
-        run: |
-          # Identity is REQUIRED by the framework (no defaults on repository, repository_id,
-          # commit_sha or run_id), so destroy needs it as much as apply — without it teardown fails
-          # with "No value for required variable" and leaves the whole stack running.
-          #
-          # :? is safe here despite always(): these are set by "Derive deployment identity" near the
-          # top of the job. If THAT step failed, no terraform ran and there is nothing to destroy,
-          # so aborting is correct rather than dangerous.
-          #
-          # runner_ip is deliberately NOT passed. It is nullable, and destroy removes the group from
-          # state regardless — whereas ${RUNNER_IP:?} would abort teardown whenever the IP-resolution
-          # step was the thing that failed.
-          terraform destroy -auto-approve \
-            -var-file="${{ github.workspace }}/terraform/aws.tfvars" \
-            -var "repository=${TF_IDENTITY_REPOSITORY:?}" \
-            -var "repository_id=${TF_IDENTITY_REPOSITORY_ID:?}" \
-            -var "commit_sha=${TF_IDENTITY_COMMIT_SHA:?}" \
-            -var "run_id=${TF_IDENTITY_RUN_ID:?}"
-
-      # -----------------------------------------------------------------------
-      # PoC EVIDENCE — self-proving MRs. The instance-ids captured in GITHUB_ENV and the
-      # workspace proof JSONs survive destroy. Default success gating on Render, and the existing
-      # event gates on Fold/Upload, publish only when both proof phases AND destroy succeeded.
-      # -----------------------------------------------------------------------
-      - name: Render PoC evidence
+        id: tf-destroy
+        if: >-
+          always() &&
+          steps.tf-init.outcome == 'success'
+        timeout-minutes: 15
+        working-directory: .frameworks/aws-terraform-framework/terraform
         env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          RUN_ID: ${{ github.run_id }}
-          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
-          sha_short="$(git rev-parse --short HEAD)"
-          gen_date="$(date -u +%Y-%m-%d)"
-          phase1="${{ github.workspace }}/poc-proof-phase1.json"
-          phase2="${{ github.workspace }}/poc-proof.json"
-          out="${{ github.workspace }}/docs/reference/poc-evidence.md"
+          terraform destroy -input=false -auto-approve -lock-timeout=300s    \
+            -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars"             \
+            -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
+            -var "environment=test"                                          \
+            -var "repository=${GITHUB_REPOSITORY}"                           \
+            -var "repository_id=${GITHUB_REPOSITORY_ID}"                     \
+            -var "run_id=${GITHUB_RUN_ID}"                                   \
+            -var "runner_ip=${RUNNER_IP}"                                    \
+            ${DEBUG_IP:+-var "debug_ip=${DEBUG_IP}"}
 
-          jq -e '
-            (.entries | type == "array") and
-            (.entries | length == 5) and
-            ([.entries[] | select(.proven == true)] | length == 5) and
-            ([.entries[] | select(.platform == "linux")] | length == 2) and
-            ([.entries[] | select(.platform == "windows")] | length == 3)
-          ' "$phase1" >/dev/null || {
-            echo "Phase 1 proof must contain exactly 5 proven entries: 2 linux + 3 windows" >&2
-            exit 1
-          }
-          jq -e '
-            (.entries | type == "array") and
-            (.entries | length == 10) and
-            ([.entries[] | select(.proven == true)] | length == 10) and
-            ([.entries[] | select(.platform == "linux")] | length == 4) and
-            ([.entries[] | select(.platform == "windows")] | length == 6)
-          ' "$phase2" >/dev/null || {
-            echo "Phase 2 proof must contain exactly 10 proven entries: 4 linux + 6 windows" >&2
-            exit 1
-          }
-
-          phase1_n="$(jq -r '.totals.proven' "$phase1")"
-          phase2_n="$(jq -r '.totals.proven' "$phase2")"
-          row_fmt='"| \(.agent) | \(.platform) | \(.rule_id) | \(.marker) |"'
-
-          {
-            echo "# Proof of Concept — live e2e evidence"
-            echo
-            echo "> Regenerated automatically by the AWS Deploy workflow on each proven MR."
-            echo
-            echo "**Provenance:** [workflow run](${RUN_URL}) · run \`${RUN_ID}\` · event \`${EVENT_NAME}\` · commit \`${sha_short}\`"
-            echo "**Date:** ${gen_date}"
-            echo
-            echo "## Phase 1 — initial deploy, fresh FIM proof"
-            echo
-            echo "${phase1_n}/${phase1_n} entries proven:"
-            echo
-            echo "| Agent | Platform | Rule | Marker |"
-            echo "|---|---|---|---|"
-            jq -r ".entries[] | ${row_fmt}" "$phase1"
-            echo
-            echo "## OS-swap — AIO OS-drive replacement"
-            echo
-            echo "- Pre-swap AIO instance: \`${PRE_SWAP_INSTANCE_ID}\`"
-            echo "- Post-swap AIO instance: \`${POST_SWAP_INSTANCE_ID}\`"
-            echo "- Data volume: preserved and re-attached (not replaced)"
-            echo
-            echo "## Phase 2 — cumulative validation after the swap"
-            echo
-            # Built across two source lines (yamllint line-length) but ONE rendered markdown
-            # line — separate echo calls here would inject an unwanted mid-sentence line break.
-            phase2_note="${phase2_n}/${phase2_n} cumulative ledger entries proven (pre-swap survivors + "
-            phase2_note+="new events) — agents reconnect after a manager OS rebuild AND data persists:"
-            echo "$phase2_note"
-            echo
-            echo "| Agent | Platform | Rule | Marker |"
-            echo "|---|---|---|---|"
-            jq -r ".entries[] | ${row_fmt}" "$phase2"
-            echo
-            echo "## Teardown"
-            echo
-            echo "This environment was destroyed successfully before this evidence was published"
-            echo "(\`terraform destroy -auto-approve\` — see this workflow's own"
-            echo "\"Terraform destroy (always)\" step)."
-            echo
-            echo "## Cost"
-            echo
-            echo "~\$1 total, torn down automatically. \$0 standing."
-          } > "$out"
-
-          # Belt: the JSON this reads carries no account id (see deploy-aws-poc.yml's proof
-          # task), but guard the rendered file anyway. Word-bounded (\b): unbounded, this
-          # corrupted 12-digit runs embedded INSIDE hex instance-ids (e.g.
-          # i-0b29a5ba327a90496) — \b does not match between two word characters (a hex letter
-          # and a digit are both "word" characters), so a real standalone 12-digit account id is
-          # still caught while an embedded run inside an identifier is left alone.
-          sed -i 's/\b[0-9]\{12\}\b/<acct>/g' "$out"
-
-      # web-flow-signed/Verified commit, NEVER `git commit`/`git push`: a runner-local commit
-      # would be authored by whatever (or no) local git identity is configured and land
-      # unsigned. The GitHub contents API commit is instead signed by GitHub on the Actions
-      # bot's behalf and shows Verified in the UI — the same bot-authored Verified pattern
-      # release-please.yml's googleapis/release-please-action already relies on for its own
-      # commits. GET-then-PUT: the API requires the CURRENT blob sha to update an existing file
-      # (optimistic concurrency); omit it entirely on a 404 (file not yet on this branch).
-      - name: Fold evidence into the MR
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # PR head-branch names are attacker-influenceable (a fork can name its branch
-          # anything) — pass through an env var rather than splicing ${{ github.head_ref }}
-          # directly into the script text below (script-injection hardening).
-          HEAD_REF: ${{ github.head_ref }}
-          REPO: ${{ github.repository }}
+      - name: Remove the ephemeral private key
+        if: always()
         run: |
           set -euo pipefail
-          api_path="repos/${REPO}/contents/docs/reference/poc-evidence.md"
-          content_b64="$(base64 -w0 docs/reference/poc-evidence.md)"
-          existing_sha="$(gh api "${api_path}?ref=${HEAD_REF}" --jq '.sha' 2>/dev/null || true)"
-          if [ -n "${existing_sha}" ]; then
-            gh api --method PUT "${api_path}" \
-              -f message="docs(poc): fold e2e proof evidence into this MR" \
-              -f content="${content_b64}" \
-              -f branch="${HEAD_REF}" \
-              -f sha="${existing_sha}"
-          else
-            gh api --method PUT "${api_path}" \
-              -f message="docs(poc): fold e2e proof evidence into this MR" \
-              -f content="${content_b64}" \
-              -f branch="${HEAD_REF}"
+          if [ -n "${CI_PRIVATE_KEY:-}" ]; then
+            rm -f -- "${CI_PRIVATE_KEY}"
           fi
 
-      # dispatch runs have no PR to fold evidence into — an artifact is the equivalent record.
-      - name: Upload PoC evidence as an artifact (dispatch runs only)
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: poc-evidence
-          path: docs/reference/poc-evidence.md
-          retention-days: 90
-          if-no-files-found: error
-
-      # -----------------------------------------------------------------------
-      # FAILURE BACKSTOP — the cost-control backstop; destroy-always above is the record's
-      # PRIMARY control (same principle as docs/reference/aws-iam/README.md's cost & count
-      # backstops section). This only matters if destroy ITSELF failed, or something upstream
-      # aborted the job before destroy could even run, and orphaned billable resources are left
-      # standing. A `terraform state pull` snapshot, taken only on failure, records exactly what
-      # existed at failure time (instance IDs, volume IDs, ...) so a human can destroy manually —
-      # `terraform destroy` against the same backend-config, or a direct `aws ec2
-      # terminate-instances` / `aws ec2 delete-volume` from the snapshot's resource IDs — without
-      # first having to reconstruct this job's state locally. Uploaded, not just logged, because
-      # the run's own logs expire well before this snapshot should.
-      # -----------------------------------------------------------------------
-      - name: On failure, snapshot Terraform state for manual recovery
-        if: ${{ failure() }}
-        working-directory: ${{ env.TF_DIR }}
-        continue-on-error: true
+  report:
+    name: AWS lifecycle incident
+    needs: [main-ref, aws-deploy]
+    if: always() && needs.main-ref.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INCIDENT_LABEL: automation-incident
+      INCIDENT_MARKER: '<!-- secure-wazuh-automation:aws-lifecycle -->'
+      INCIDENT_TITLE: '[automation] AWS lifecycle proof failed'
+      LIFECYCLE_RESULT: ${{ needs.aws-deploy.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Update or resolve the lifecycle incident
         run: |
-          snap="${{ github.workspace }}/aws-deploy-failure-state.json"
-          terraform state pull > "$snap"
-          sed -i 's/\b[0-9]\{12\}\b/<acct>/g' "$snap"
+          set -euo pipefail
 
-      - name: On failure, upload the state snapshot as an artifact
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: aws-deploy-failure-state
-          path: aws-deploy-failure-state.json
-          retention-days: 14
-          if-no-files-found: warn
+          gh label create "${INCIDENT_LABEL}" --repo "${GITHUB_REPOSITORY}" --force \
+            --color B60205 --description 'Owned exclusively by recurring automation incidents' > /dev/null
+          issue_json="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 100 \
+            --label "${INCIDENT_LABEL}" --json number,title,body,author,state)"
+          mapfile -t issue_numbers < <(jq -r --arg title "${INCIDENT_TITLE}" \
+            --arg marker "${INCIDENT_MARKER}" '
+              [.[] | select(
+                .title == $title
+                and .author.login == "app/github-actions"
+                and ((.body // "") | contains($marker))
+              )] | sort_by(.number) | .[].number
+            ' <<< "${issue_json}")
+          issue_number="${issue_numbers[0]:-}"
+          for duplicate in "${issue_numbers[@]:1}"; do
+            if [ "$(gh issue view "${duplicate}" --repo "${GITHUB_REPOSITORY}" \
+              --json state --jq .state)" = OPEN ]; then
+              gh issue close "${duplicate}" --repo "${GITHUB_REPOSITORY}" --reason duplicate \
+                --comment "Deduplicated into automation-owned incident #${issue_number}."
+            fi
+          done
+
+          if [ "${LIFECYCLE_RESULT}" = success ]; then
+            if [ -n "${issue_number}" ] && \
+              [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = OPEN ]; then
+              gh issue close "${issue_number}" --repo "${GITHUB_REPOSITORY}" \
+                --reason completed --comment "Recovered in ${RUN_URL}."
+            else
+              echo "Lifecycle is healthy; no open incident to resolve."
+            fi
+            exit 0
+          fi
+
+          message="Lifecycle result: ${LIFECYCLE_RESULT}. Inspect ${RUN_URL}."
+          message="${message} Cleanup was attempted when initialization succeeded;"
+          message="${message} inspect the destroy and post-cleanup steps."
+          if [ -z "${issue_number}" ]; then
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --label "${INCIDENT_LABEL}" --title "${INCIDENT_TITLE}" \
+              --body "$(printf '%s\n\n%s' "${INCIDENT_MARKER}" "${message}")"
+          else
+            if [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = CLOSED ]; then
+              gh issue reopen "${issue_number}" --repo "${GITHUB_REPOSITORY}"
+            fi
+            gh issue comment "${issue_number}" --repo "${GITHUB_REPOSITORY}" --body "${message}"
+          fi

@@ -14,8 +14,8 @@
 # COMPOSED-TREE CAVEAT (ansible-lint):
 #   The product roles under ansible/applications/ are CONSUMERS of the
 #   ansible-framework and resolve fully only inside the composed tree — the
-#   generic loader + shared roles (wazuh_agent, linux_disk_manager) are composed
-#   in from the framework pinned at .github/.framework-pin. The `Ansible Lint
+#   generic loader + shared roles (wazuh_agent, linux_disk_manager) are composed whole
+#   in from the framework pinned at .framework-pin. The `Ansible Lint
 #   (composed tree)` job below builds that tree itself (copy ansible-framework@pin,
 #   overlay this repo's ansible/applications/*, exactly as deploy.yml's compose
 #   step does) and lints there — this is the authoritative lint of the product
@@ -81,7 +81,7 @@ jobs:
   # Ansible Lint  (authoritative: lints the COMPOSED tree)
   # ---------------------------------------------------------------------------
   # linux_disk_manager and the base wazuh_agent role are composed from the pinned
-  # ansible-framework (.github/.framework-pin); the product overlays two wazuh_agent task files.
+  # ansible-framework (.framework-pin); the product overlays wazuh_server only.
   # This job composes the tree the same way deploy.yml does (framework base + this repo's
   # ansible/ overlay) and invokes the same explicit-file Make target used locally.
   # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ jobs:
 
       - name: Resolve ansible-framework pin
         id: framework
-        run: echo "sha=$(tr -d ' \n\r' < .github/.framework-pin)" >> "$GITHUB_OUTPUT"
+        run: echo "sha=$(tr -d ' \n\r' < .framework-pin)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout ansible-framework (pinned)
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
