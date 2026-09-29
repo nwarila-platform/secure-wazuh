@@ -1,0 +1,50 @@
+{
+  "Statement": [
+    {
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::<account-id>-ansible/functions/wazuh/*",
+        "arn:aws:s3:::<account-id>-ansible/applications/wazuh-agent/*"
+      ],
+      "Sid": "ReadWazuhArtifacts"
+    },
+    {
+      "Action": "s3:ListBucket",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        },
+        "StringLike": {
+          "s3:prefix": [
+            "functions/wazuh/*",
+            "applications/wazuh-agent/*"
+          ]
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::<account-id>-ansible",
+      "Sid": "ListWazuhArtifactPrefix"
+    },
+    {
+      "Action": "s3:GetBucketLocation",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::<account-id>-ansible",
+      "Sid": "ReadArtifactBucketLocation"
+    }
+  ],
+  "Version": "2012-10-17"
+}

@@ -1,0 +1,48 @@
+# This file declares consumption; IAM policy documents declare authorization.
+schema: aws-artifacts/v1
+artifacts:
+  - bucket: "registry://aws/s3/ansible"
+    key: "functions/wazuh/4.14.5/wazuh-offline.tar.gz"
+    sha256: 1a60b8c407a56ed45a1e431256f6c49cba083a329874be7b532ec48a56069bea
+    access: presigned-via-artifact-reader
+    path_status: disconnected-pending-m1
+  - bucket: "registry://aws/s3/ansible"
+    key: "functions/wazuh/certs/internal-ca.pem"
+    sha256: 52f0e2264fedcda543a320c3ddbed0783b5bf17146840df26a0e89265673cff7
+    access: presigned-via-artifact-reader
+    path_status: disconnected-pending-m1
+    status: proposed-m1
+  - bucket: "registry://aws/s3/ansible"
+    key: "functions/wazuh/certs/indexer.p12"
+    sha256: 3e1b602f995ac6b414cc4ac72fbb6709308dc7b7c42843d0ab34ecc483a345e6
+    access: presigned-via-artifact-reader
+    path_status: disconnected-pending-m1
+    status: proposed-m1
+  - bucket: "registry://aws/s3/ansible"
+    key: "functions/wazuh/certs/admin.p12"
+    sha256: 28f0d5941aebfe89fbc88c642fc079bfa9bf728e0f5d92aa66ee1e94a57e9c76
+    access: presigned-via-artifact-reader
+    path_status: disconnected-pending-m1
+    status: proposed-m1
+  - bucket: "registry://aws/s3/ansible"
+    key: "functions/wazuh/certs/manager-api.p12"
+    sha256: c8ffa8e4fddc433bcad9abaa02bcc7b0e071e24c016dadbd00d87b3d2a4ccf45
+    access: presigned-via-artifact-reader
+    path_status: disconnected-pending-m1
+    status: proposed-m1
+  - bucket: "registry://aws/s3/ansible"
+    key: "functions/wazuh/certs/dashboard.p12"
+    sha256: 198590b78b46368a6963c619ae7e5d724151689e67c463305127a2a124fbbaa5
+    access: presigned-via-artifact-reader
+    path_status: disconnected-pending-m1
+    status: proposed-m1
+  - bucket: "registry://aws/s3/ansible"
+    key: "applications/wazuh-agent/wazuh-agent-4.14.5-1.x86_64.rpm"
+    sha256: e320cdd225e56b311557de7b7ed9f176f10ef20315beac3de8846705495990da
+    access: presigned-via-artifact-reader
+    path_status: disconnected-pending-m1
+  - bucket: "registry://aws/s3/ansible"
+    key: "applications/wazuh-agent/wazuh-agent-4.14.5-1.msi"
+    sha256: bf35197fee30092d78aad648299e8fd3aba8a0f9bc7d5edebce483a0b2c8e38e
+    access: presigned-via-artifact-reader
+    path_status: disconnected-pending-m1

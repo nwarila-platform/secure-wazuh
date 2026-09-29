@@ -1,0 +1,223 @@
+{
+  "exported": "2026-09-28",
+  "roles": {
+    "nwarila-platform_secure-wazuh_admin": {
+      "attached": [
+        {
+          "name": "nwarila-platform_secure-wazuh_admin_s3",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_ebs",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_ec2",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_eni",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_iam",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_kms",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_s3",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_sg",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_ssm",
+          "version": "v1"
+        }
+      ],
+      "inline": []
+    },
+    "nwarila-platform_secure-wazuh_reaper": {
+      "attached": [
+        {
+          "name": "nwarila-platform_secure-wazuh_reaper_ebs",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_reaper_ec2",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_reaper_eni",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_reaper_iam",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_reaper_s3",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_reaper_sg",
+          "version": "v1"
+        }
+      ],
+      "inline": []
+    },
+    "nwarila-platform_secure-wazuh_runner": {
+      "attached": [
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_ebs",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_ec2",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_eni",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_iam",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_kms",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_s3",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_sg",
+          "version": "v1"
+        },
+        {
+          "name": "nwarila-platform_secure-wazuh_runner_ssm",
+          "version": "v1"
+        }
+      ],
+      "inline": []
+    },
+    "secure-wazuh-artifact-reader": {
+      "attached": [
+        {
+          "name": "secure-wazuh-artifact-read",
+          "version": "v5"
+        }
+      ],
+      "inline": []
+    }
+  },
+  "policies": {
+    "nwarila-platform_secure-wazuh_admin_s3": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_reaper_ebs": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_reaper_ec2": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_reaper_eni": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_reaper_iam": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_reaper_s3": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_reaper_sg": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_runner_ebs": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_runner_ec2": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_runner_eni": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_runner_iam": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_runner_kms": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_runner_s3": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_runner_sg": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "nwarila-platform_secure-wazuh_runner_ssm": {
+      "path": "/",
+      "description": null,
+      "tags": {},
+      "managed_by": "consumer"
+    },
+    "secure-wazuh-artifact-read": {
+      "path": "/",
+      "description": "Shared read-only Wazuh artifact access",
+      "tags": {},
+      "managed_by": "consumer"
+    }
+  },
+  "divergence": {
+    "note": "An empty not_yet_applied list means the tracked desired IAM policy documents matched live AWS as last exported on 2026-09-28. This is a point-in-time claim re-established by the mandatory live round-trip check, not a guarantee of current live state.",
+    "not_yet_applied": []
+  }
+}

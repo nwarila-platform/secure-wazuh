@@ -43,6 +43,43 @@
 !/requirements-quality.yml
 
 # --------------------------------------------------------------------------- #
+#  Dependency declarations — explicit per-object estate contract.
+# --------------------------------------------------------------------------- #
+!/dependencies/
+!/dependencies/aws/
+!/dependencies/aws/policies/
+!/dependencies/aws/roles/
+!/dependencies/MANIFEST.sha256
+!/dependencies/README.md
+!/dependencies/aws/artifacts.yml
+!/dependencies/aws/manifest.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_admin_s3.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_reaper_ebs.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_reaper_ec2.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_reaper_eni.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_reaper_iam.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_reaper_s3.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_reaper_sg.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_runner_ebs.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_runner_ec2.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_runner_eni.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_runner_iam.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_runner_kms.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_runner_s3.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_runner_sg.json
+!/dependencies/aws/policies/nwarila-platform_secure-wazuh_runner_ssm.json
+!/dependencies/aws/policies/secure-wazuh-artifact-read.json
+!/dependencies/aws/roles/nwarila-platform_secure-wazuh_admin.trust.json
+!/dependencies/aws/roles/nwarila-platform_secure-wazuh_admin.yml
+!/dependencies/aws/roles/nwarila-platform_secure-wazuh_reaper.trust.json
+!/dependencies/aws/roles/nwarila-platform_secure-wazuh_reaper.yml
+!/dependencies/aws/roles/nwarila-platform_secure-wazuh_runner.trust.json
+!/dependencies/aws/roles/nwarila-platform_secure-wazuh_runner.yml
+!/dependencies/aws/roles/secure-wazuh-artifact-reader.trust.json
+!/dependencies/aws/roles/secure-wazuh-artifact-reader.yml
+!/dependencies/registry-values.yml
+
+# --------------------------------------------------------------------------- #
 #  GitHub — CI, the deploy loop, templates, CODEOWNERS, framework pin.
 # --------------------------------------------------------------------------- #
 !/.github/
@@ -130,6 +167,7 @@
 !/scripts/compose-and-run.sh
 !/scripts/materialize-role-scripts.sh
 !/scripts/bootstrap-iam.sh
+!/scripts/check-dependencies.py
 !/scripts/check-iam-literals.sh
 !/scripts/test-iam-policies.sh
 

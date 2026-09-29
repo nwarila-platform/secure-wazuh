@@ -49,6 +49,9 @@ jobs:
           ansible-galaxy collection install --force \
             --requirements-file requirements-quality.yml
 
+      - name: Check dependency declarations
+        run: python3 scripts/check-dependencies.py
+
       - name: Lint YAML
         if: steps.detect.outputs.has_ansible == 'true'
         run: yamllint -c .yamllint.yml ansible

@@ -1,0 +1,8 @@
+# LOCAL-FIRST SHIM — delete this one file when the org registry exists.
+# Declaration files keep their registry:// references unchanged; every value carries evidence.
+"registry://aws/s3/ansible":
+  value: "<account-id>-ansible"
+  evidence: "_handoff/refactor-2026-09-28/iam-research/live/policies/nwarila-platform_secure-wazuh_runner_s3.document.json"
+"registry://ratifications/artifact-reader":
+  value: "docs/reference/aws-iam/README.md#the-artifact-reader-design"
+  evidence: "docs/reference/aws-iam/README.md:143: ## The artifact-reader design"

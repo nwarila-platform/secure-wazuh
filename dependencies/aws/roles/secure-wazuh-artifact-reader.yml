@@ -1,0 +1,10 @@
+schema: aws-role/v1
+name: "secure-wazuh-artifact-reader"
+session_seconds: 3600
+trust: "secure-wazuh-artifact-reader.trust.json"
+attach: ["secure-wazuh-artifact-read"]
+managed_attach: []
+path: /
+description: "Deploy-time artifact reads; assumed by the deploy roles only"
+managed_by: consumer
+ratification: "registry://ratifications/artifact-reader"
