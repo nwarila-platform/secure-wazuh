@@ -6,7 +6,9 @@ environment = "dev"
 all_systems = [
   {
 
-    ami = "ami-0ca8a2e788e4c5869"
+    # CIS Red Hat Enterprise Linux 8 Benchmark - STIG, v10. The publisher deprecates old versions,
+    # and the framework's lookup then fails ("Your query returned no results"): pin the newest.
+    ami = "ami-099eb08281f527485"
     # No Elastic IP: this is an ssm-ssh leg, so nothing dials it inbound and it needs egress only.
     # PROVEN 2026-08-09 on run 31319282728 — sw-lin-ssm launched with associate_public_ip = false,
     # received auto-assigned 32.199.247.229 from the subnet (MapPublicIpOnLaunch = true) and
@@ -162,7 +164,9 @@ all_systems = [
   },
   {
 
-    ami = "ami-0ca8a2e788e4c5869"
+    # CIS Red Hat Enterprise Linux 8 Benchmark - STIG, v10. The publisher deprecates old versions,
+    # and the framework's lookup then fails ("Your query returned no results"): pin the newest.
+    ami = "ami-099eb08281f527485"
     # Elastic IP on every system: a DETERMINISTIC routable address. The alternative — relying on the
     # subnet's MapPublicIpOnLaunch auto-assign — is contested between the framework's measured note
     # (e40a792) and windows-wsus's tfvars header, and a proof must not rest on a disputed behaviour.
@@ -303,7 +307,9 @@ all_systems = [
   },
   {
 
-    ami = "ami-0ca8a2e788e4c5869"
+    # CIS Red Hat Enterprise Linux 8 Benchmark - STIG, v10. The publisher deprecates old versions,
+    # and the framework's lookup then fails ("Your query returned no results"): pin the newest.
+    ami = "ami-099eb08281f527485"
     # Elastic IP on every system: a DETERMINISTIC routable address. The alternative — relying on the
     # subnet's MapPublicIpOnLaunch auto-assign — is contested between the framework's measured note
     # (e40a792) and windows-wsus's tfvars header, and a proof must not rest on a disputed behaviour.
